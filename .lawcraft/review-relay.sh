@@ -4,7 +4,7 @@
 # SSH_ORIGINAL_COMMAND = model id. stdin = full review prompt. stdout = one JSON line {text, tokens}.
 # Tools are off / read-only sandbox in an empty temp dir: the model only reads the prompt.
 set -euo pipefail
-export PATH="$HOME/.local/bin:$HOME/.grok/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$HOME/.local/bin:$HOME/.grok/bin:$HOME/.npm-global/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 model=${SSH_ORIGINAL_COMMAND:-}
 d=$(mktemp -d); trap 'rm -rf "$d"' EXIT
 cd "$d"; cat > prompt.md

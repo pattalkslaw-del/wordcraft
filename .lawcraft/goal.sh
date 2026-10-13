@@ -171,12 +171,11 @@ $(tail -40 "$W/build.err"; grep -h '"type":"error"' "$W/build.jsonl" 2>/dev/null
   # The loop's own files are never part of a goal change.
   rm -rf .lawcraft; git checkout -q HEAD -- .github 2>/dev/null || true; git clean -qfd -- .github
   git add -A
-  if git diff --cached --quiet && escalate "coder \`$CODER\` made no changes in round $round."; then
-    git reset -q; continue
-  fi
   if git diff --cached --quiet && [ "$(git rev-list --count origin/main..HEAD)" -gt 0 ] && [ -z "${reviewed_head:-}" ]; then
     # Nothing new, but the branch already carries unreviewed work (an earlier run, or a coder swap): test and review it.
     skip_commit=1
+  elif git diff --cached --quiet && escalate "coder \`$CODER\` made no changes in round $round."; then
+    git reset -q; continue
   elif git diff --cached --quiet; then
     comment "${PR:-$ISSUE}" "Goal loop stopped: coder \`$CODER\` made no changes in round $round.
 
