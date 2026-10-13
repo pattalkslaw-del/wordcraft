@@ -680,21 +680,24 @@ impl Session {
             findings.into_iter().take(crate::lint::MAX_FINDINGS).map(|f| crate::lint::finding_json(&f, crate::cmd::pos_json)).collect();
     }
 
-    /// Commands run before PDF export; each command's result may include a `findings` array.
+    /// Commands run before a save or export; each command's result may include a `findings` array.
     pub fn set_export_check_commands(&mut self, commands: Vec<(String, serde_json::Value)>) {
         self.export_check_commands = commands;
     }
 
-    /// Run [`export_check_commands`] with the export's own options and store merged findings in
-    /// [`lint_findings`]. Each command's parameters carry the actual `markup` option, so a check
-    /// that re-exports the document (such as `textSearchablePdf`) verifies what is being written.
-    pub fn run_export_checks(&mut self, opts: &crate::io::ExportOptions) -> Vec<serde_json::Value> {
+    /// Run [`export_check_commands`] with the export's own options and target `format` (a lower-case
+    /// extension such as `pdf`, `docx`, `png`), and store merged findings in [`lint_findings`].
+    /// Each command's parameters carry the actual `markup` option and the output `format`, so a
+    /// check that re-exports the document (such as `textSearchablePdf`) verifies what is being
+    /// written and only the checks that apply to that format run.
+    pub fn run_export_checks(&mut self, opts: &crate::io::ExportOptions, format: &str) -> Vec<serde_json::Value> {
         let cmds = self.export_check_commands.clone();
         let mut all = Vec::new();
         for (id, params) in cmds {
             let mut params = params;
             if let Some(obj) = params.as_object_mut() {
                 obj.insert("markup".into(), serde_json::json!(opts.markup));
+                obj.insert("format".into(), serde_json::json!(format));
             }
             match self.run(&id, &params) {
                 Ok(v) => {

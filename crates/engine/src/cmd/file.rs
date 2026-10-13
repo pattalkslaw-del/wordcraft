@@ -47,7 +47,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let path = p::req_str(v, "path")?;
             let path = if path.to_ascii_lowercase().ends_with(".pdf") { path.to_string() } else { format!("{path}.pdf") };
             let opts = export_options(s, v);
-            let findings = s.run_export_checks(&opts);
+            let findings = s.run_export_checks(&opts, "pdf");
             crate::io::save_path_with(std::path::Path::new(&path), &s.doc, None, &opts).map_err(CmdError::Failed)?;
             Ok(json!({"path": path, "markup": opts.markup, "findings": findings}))
         })
@@ -202,18 +202,19 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
     }
     s.stamp_save();
     let opts = export_options(s, v);
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
-        s.run_export_checks(&opts);
-    }
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    // Every save and export runs the applied profile's checks before writing (PDF verification
+    // only when the output is a PDF). The export still proceeds; findings are reported, not
+    // blocking.
+    let findings = s.run_export_checks(&opts, &ext);
     let password = s.password.as_ref().map(crate::io::Password::as_str);
     crate::io::save_path_with(&path, &s.doc, password, &opts).map_err(CmdError::Failed)?;
     let encrypted = password.is_some() && crate::io::can_encrypt(&path.to_string_lossy());
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if ["docx", "docm", "dotx", "dotm", "odt", "rtf", "json", "xml"].contains(&ext.as_str()) {
         s.path = Some(path.clone());
         s.dirty = false;
     }
-    Ok(json!({"saved": true, "path": path.to_string_lossy(), "encrypted": encrypted}))
+    Ok(json!({"saved": true, "path": path.to_string_lossy(), "encrypted": encrypted, "findings": findings}))
 }
 
 fn save_as(s: &mut Session, v: &Value) -> CmdResult {
@@ -235,12 +236,14 @@ fn export_png(s: &mut Session, v: &Value) -> CmdResult {
     let path = p::req_str(v, "path")?;
     let page = p::u64(v, "page").unwrap_or(1).max(1) as usize - 1;
     let scale = p::f32(v, "scale").unwrap_or(2.0).clamp(0.1, 8.0);
-    let l = s.export_layout_with(export_options(s, v).markup);
+    let opts = export_options(s, v);
+    let findings = s.run_export_checks(&opts, "png");
+    let l = s.export_layout_with(opts.markup);
     let pg = l.pages.get(page).ok_or_else(|| CmdError::Params(format!("no page {}", page + 1)))?;
     let img = wordcraft_render::render_page(&s.doc, pg, scale, &Default::default());
     let png = img.to_png();
     crate::io::write_file(path, &png).map_err(CmdError::Failed)?;
-    Ok(json!({"path": path, "width": img.width, "height": img.height, "bytes": png.len()}))
+    Ok(json!({"path": path, "width": img.width, "height": img.height, "bytes": png.len(), "findings": findings}))
 }
 
 fn properties(s: &mut Session, v: &Value) -> CmdResult {

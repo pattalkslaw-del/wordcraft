@@ -130,8 +130,8 @@ fn a_scanned_page_with_a_searchable_page_number_is_not_searchable() {
     assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable);
 }
 
-/// Incidental text alone (a lone page number, untagged) does not certify a text layer: a filing
-/// needs a substantive amount of its own text before it counts as searchable.
+/// Incidental text alone (a lone page number, untagged) does not certify a text layer: a number
+/// is page furniture, a word is document text — whatever the producer tagged.
 #[test]
 fn incidental_text_alone_does_not_certify_a_text_layer() {
     let mut d = Document::new();
@@ -142,6 +142,50 @@ fn incidental_text_alone_does_not_certify_a_text_layer() {
     // A paragraph of real text does certify it.
     d.body = vec![para_block(Paragraph::with_text("The quick brown fox jumps over the lazy dog.", CharProps::default()))];
     let bytes = export(&d, &PdfOptions { tagged: false, ..Default::default() }).unwrap();
+    assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
+}
+
+/// A searchable cover followed by scanned (image-only) body pages is **not** text-searchable: one
+/// page carrying text does not certify a whole PDF that has pages of its own with no text.
+#[test]
+fn a_searchable_cover_with_scanned_body_pages_is_not_searchable() {
+    let mut d = Document::new();
+    let media = d.add_media(png(), "png");
+    let mut scan = Paragraph::with_text("", CharProps::default());
+    scan.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    scan.props.page_break_before = Some(true);
+    d.body = vec![para_block(Paragraph::with_text("Cover page", CharProps::default())), para_block(scan)];
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    let pages = extract_text(&bytes);
+    assert_eq!(pages.len(), 2);
+    assert!(squash(&pages[0]).contains("Cover page"));
+    assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable, "a scanned body page leaves the PDF unsearchable");
+}
+
+/// There is no minimum document length: a fully extractable one-line document (far under any
+/// earlier character threshold) is searchable.
+#[test]
+fn a_short_text_document_is_searchable() {
+    let d = Document::from_text("Agreed.");
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
+}
+
+/// Blank and furniture-only pages do not defeat coverage: a text page with an inserted blank page
+/// after it is still text-searchable.
+#[test]
+fn a_blank_page_does_not_defeat_searchability() {
+    let mut d = Document::new();
+    let mut blank = Paragraph::with_text("", CharProps::default());
+    blank.props.page_break_before = Some(true);
+    d.body = vec![para_block(Paragraph::with_text("The only real text.", CharProps::default())), para_block(blank)];
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    assert_eq!(extract_text(&bytes).len(), 2, "the blank page is its own page");
     assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
 }
 

@@ -17,12 +17,15 @@ pub const PROP_PROFILE: &str = "LAW_PROFILE_ID";
 pub const PROP_DOC_TYPE: &str = "LAW_DOC_TYPE";
 
 /// Run every check for `doc_type` in `profile` against `doc`. `for_export` runs export-only
-/// checks such as `textSearchablePdf`. `export_opts` mirrors `file.exportPdf` when present.
+/// checks such as `textSearchablePdf`, but `textSearchablePdf` itself only runs when the output
+/// being exported is a PDF (`pdf_output`), since other formats cannot be verified as PDFs.
+/// `export_opts` mirrors the export when present.
 pub fn evaluate(
     doc: &Document,
     profile: &Profile,
     doc_type: &str,
     for_export: bool,
+    pdf_output: bool,
     export_opts: Option<&io::ExportOptions>,
 ) -> Result<Vec<Finding>, LawError> {
     let Some(spec) = profile.docs.get(doc_type) else {
@@ -36,7 +39,7 @@ pub fn evaluate(
     let mut out = Vec::new();
     for (i, check) in spec.checks.iter().enumerate() {
         let id = check_id(check, i);
-        run_one(doc, spec, &sections, check, &id, for_export, export_opts, &mut out);
+        run_one(doc, spec, &sections, check, &id, for_export, pdf_output, export_opts, &mut out);
         if out.len() >= MAX_FINDINGS {
             break;
         }
@@ -55,6 +58,7 @@ fn run_one(
     check: &CheckSpec,
     id: &str,
     for_export: bool,
+    pdf_output: bool,
     export_opts: Option<&io::ExportOptions>,
     out: &mut Vec<Finding>,
 ) {
@@ -65,7 +69,8 @@ fn run_one(
         "minLineSpacing" => min_line_spacing(doc, spec, check, id, out),
         "noHyperlinks" => no_hyperlinks(doc, id, out),
         "textSearchablePdf" => {
-            if for_export {
+            // Only a PDF export can be verified as a PDF; a `.docx` or `.png` copy is not one.
+            if for_export && pdf_output {
                 text_searchable_pdf(doc, id, export_opts, out);
             }
         }

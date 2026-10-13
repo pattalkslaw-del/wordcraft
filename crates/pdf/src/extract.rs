@@ -7,11 +7,21 @@ use hayro_interpret::{
 };
 use hayro_syntax::Pdf;
 
-struct Extractor {
+/// What one page yielded: its text, the text outside page furniture, and whether it drew a
+/// picture of its own.
+struct PageText {
     /// Every glyph drawn, page furniture (headers, footers, watermarks) included.
     all: String,
     /// Glyphs outside artifact-marked content: the document's own text, not its furniture.
     content: String,
+    /// A picture outside artifact-marked content was drawn: a scan, photograph or figure.
+    image: bool,
+}
+
+struct Extractor {
+    all: String,
+    content: String,
+    image: bool,
     /// Marked-content nesting, innermost last; `true` where the sequence is an artifact.
     marks: Vec<bool>,
 }
@@ -54,7 +64,12 @@ impl Device<'_> for Extractor {
             }
         }
     }
-    fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {}
+    fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {
+        // Page furniture can carry a logo or watermark image; that is not document content.
+        if !self.in_artifact() {
+            self.image = true;
+        }
+    }
     fn pop_clip_path(&mut self) {}
     fn pop_transparency_group(&mut self) {}
     // Headers, footers and watermarks are written inside an `Artifact` marked-content sequence.
@@ -66,8 +81,9 @@ impl Device<'_> for Extractor {
     }
 }
 
-/// Per page, the text inside and outside artifact-marked content.
-fn extract_pages(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
+/// Per page, the text inside and outside artifact-marked content, and whether the page drew a
+/// picture of its own.
+fn extract_pages(bytes: &[u8]) -> Result<Vec<PageText>, String> {
     if bytes.len() < 8 || !bytes.starts_with(b"%PDF") {
         return Err("not a PDF".into());
     }
@@ -76,9 +92,9 @@ fn extract_pages(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
     let mut out = Vec::new();
     for page in pdf.pages().iter() {
         let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
-        let mut ex = Extractor { all: String::new(), content: String::new(), marks: Vec::new() };
+        let mut ex = Extractor { all: String::new(), content: String::new(), image: false, marks: Vec::new() };
         interpret_page(page, &mut ctx, &mut ex);
-        out.push((ex.all, ex.content));
+        out.push(PageText { all: ex.all, content: ex.content, image: ex.image });
     }
     Ok(out)
 }
@@ -86,20 +102,33 @@ fn extract_pages(bytes: &[u8]) -> Result<Vec<(String, String)>, String> {
 /// Unicode extracted from every page (empty strings for pages with no text), page furniture
 /// included. [`has_extractable_text`] is what judges a PDF's text layer, leaving furniture out.
 pub fn extract_page_text(bytes: &[u8]) -> Result<Vec<String>, String> {
-    Ok(extract_pages(bytes)?.into_iter().map(|(all, _)| all).collect())
+    Ok(extract_pages(bytes)?.into_iter().map(|p| p.all).collect())
 }
 
-/// Fewest characters of a page's own text (outside artifact page furniture) before the PDF counts
-/// as carrying a real text layer. A page number or a short running head is far under it; a page of
-/// body text is far over it.
-const MIN_SUBSTANTIVE_CHARS: usize = 24;
-
-/// True when the PDF carries substantive, searchable document text, not merely font resources,
-/// images, or incidental text such as a scanner's page numbers. A scan with an extractable page
-/// number on every page has no page with enough of its own text and so is not searchable.
+/// True when the PDF carries searchable document text on every page that has content.
+///
+/// A page counts as carrying document text when it has letters of its own outside artifact-marked
+/// furniture. A lone page number is numeric and stays furniture, whether or not the producer
+/// tagged it; a word — however short — is document text. There is no minimum document length, so
+/// a fully extractable one-line document is searchable.
+///
+/// Coverage is what matters, not a single page: every page that draws a picture of its own (a
+/// scan, photograph or figure, outside page furniture) must also carry such text, so a searchable
+/// cover followed by scanned body pages is **not** searchable, while blank and furniture-only
+/// pages are allowed.
 pub fn has_extractable_text(bytes: &[u8]) -> bool {
     match extract_pages(bytes) {
-        Ok(pages) => pages.iter().any(|(_, content)| content.chars().filter(|c| c.is_alphanumeric()).count() >= MIN_SUBSTANTIVE_CHARS),
+        Ok(pages) => {
+            let any_text = pages.iter().any(|p| has_substantive_text(&p.content));
+            let every_content_page_is_text = pages.iter().all(|p| !p.image || has_substantive_text(&p.content));
+            any_text && every_content_page_is_text
+        }
         Err(_) => false,
     }
+}
+
+/// Does the page's own text (outside page furniture) contain letters? A page number or a numeric
+/// stamp is incidental furniture; a word is the document's text.
+fn has_substantive_text(content: &str) -> bool {
+    content.chars().any(char::is_alphabetic)
 }

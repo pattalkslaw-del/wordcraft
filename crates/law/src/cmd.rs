@@ -162,8 +162,13 @@ pub fn specs() -> Vec<CommandSpec> {
                     .to_string(),
             };
             let for_export = p::bool(v, "forExport").unwrap_or(false);
+            // The output format an export is writing. On demand the caller names one (`"pdf"`
+            // when omitted), and a PDF-only check such as `textSearchablePdf` runs only for a
+            // PDF: saving a `.docx` does not make the copy a PDF.
+            let format = p::str(v, "format").unwrap_or("pdf").to_ascii_lowercase();
+            let pdf_output = format == "pdf";
             let export_opts = if for_export { Some(wordcraft_engine::export_options(s, v)) } else { None };
-            let findings = checks::evaluate(&s.doc, &p, &doc_type, for_export, export_opts.as_ref())
+            let findings = checks::evaluate(&s.doc, &p, &doc_type, for_export, pdf_output, export_opts.as_ref())
                 .map_err(|e| CmdError::Failed(e.to_string()))?;
             let json_findings = checks::findings_json(&findings);
             if p::bool(v, "store").unwrap_or(true) {
@@ -172,7 +177,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"profile": profile_id, "doc": doc_type, "findings": json_findings}))
         })
         .params(
-            r#"{"id"?: string, "doc"?: string, "forExport"?: bool (run export-only checks such as textSearchablePdf), "store"?: bool (default true: show findings in Review › Proofing)} → {"profile", "doc", "findings": [{checkId, severity, message, start?, end?}]}"#,
+            r#"{"id"?: string, "doc"?: string, "forExport"?: bool (run export-only checks such as textSearchablePdf), "format"?: string (the output extension an export is writing; `textSearchablePdf` runs only for "pdf"), "store"?: bool (default true: show findings in Review › Proofing)} → {"profile", "doc", "findings": [{checkId, severity, message, start?, end?}]}"#,
         )
         .pure(),
     ]

@@ -205,7 +205,7 @@ fn word_limit_counts_included_sections_only() {
     run(&mut s, "text.insert", json!({"text": "Cover\r"}));
     run(&mut s, "styles.apply", json!({"style": "Body"}));
     run(&mut s, "text.insert", json!({"text": "one two three four five six seven eight\r"}));
-    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, None).expect("evaluate");
+    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, false, None).expect("evaluate");
     assert!(!f.iter().any(|x| x.check_id == "wordLimit"), "excluded words counted: {f:?}");
 
     // A counted heading (Argument) plus five words is exactly the limit: it passes...
@@ -214,11 +214,11 @@ fn word_limit_counts_included_sections_only() {
     run(&mut s, "text.insert", json!({"text": "Argument\r"}));
     run(&mut s, "styles.apply", json!({"style": "Body"}));
     run(&mut s, "text.insert", json!({"text": "one two three four five\r"}));
-    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, None).expect("evaluate");
+    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, false, None).expect("evaluate");
     assert!(!f.iter().any(|x| x.check_id == "wordLimit"), "exactly at the limit must pass: {f:?}");
     // ...and one more word is over it.
     run(&mut s, "text.insert", json!({"text": "six\r"}));
-    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, None).expect("evaluate");
+    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, false, None).expect("evaluate");
     assert!(f.iter().any(|x| x.check_id == "wordLimit"), "one over the limit must fail: {f:?}");
 }
 
@@ -272,6 +272,9 @@ fn export_runs_checks_and_reports_through_proofing() {
     let issues = run(&mut s, "review.issues", json!({}));
     let issues = issues.as_array().expect("issues");
     assert!(issues.iter().any(|f| f["kind"] == "lint" && f["checkId"] == "noHyperlinks"));
+    // The same findings are the document's lint findings (Review › Proofing reads both).
+    let lint = run(&mut s, "review.lintFindings", json!({}));
+    assert!(lint.as_array().expect("lint").iter().any(|f| f["checkId"] == "noHyperlinks"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -430,4 +433,72 @@ fn install_restores_export_checks_for_an_already_open_document() {
     let f = r["findings"].as_array().expect("findings");
     assert!(f.iter().any(|x| x["checkId"] == "noHyperlinks"), "install must restore export checks: {f:?}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Exporting to a non-PDF format still runs the document checks, but never the PDF-only ones; the
+/// findings flow through Review › Proofing like any other.
+#[test]
+fn non_pdf_export_runs_document_checks_not_pdf_verification() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    run(&mut s, "insert.link", json!({"url": "https://example.com", "text": "x"}));
+    let dir = super::tests::temp_dir("export-docx-checks");
+    let path = dir.join("brief.docx");
+    let r = run(&mut s, "file.save", json!({"path": path.to_string_lossy()}));
+    let f = r["findings"].as_array().expect("export findings");
+    assert!(f.iter().any(|x| x["checkId"] == "noHyperlinks"), "a non-PDF export still runs document checks: {f:?}");
+    assert!(!f.iter().any(|x| x["checkId"] == "textSearchablePdf"), "PDF verification must not run for a .docx export: {f:?}");
+    // The findings are surfaced the same way as any other lint finding.
+    let issues = run(&mut s, "review.issues", json!({}));
+    assert!(issues.as_array().expect("issues").iter().any(|x| x["kind"] == "lint" && x["checkId"] == "noHyperlinks"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `law.checks.run` runs the PDF-only check by default (an on-demand check is about a PDF copy)
+/// but skips it when the caller names a non-PDF output format.
+#[test]
+fn checks_run_honours_the_output_format() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    run(&mut s, "insert.link", json!({"url": "https://example.com", "text": "x"}));
+    // Default (PDF): the document checks run.
+    let pdf = findings(&mut s, MISSOURI, "brief", true);
+    assert!(has_check(&pdf, "noHyperlinks"), "{pdf:?}");
+    // A named `.docx` output still runs the document checks but not the PDF one.
+    let docx = run(&mut s, "law.checks.run", json!({"id": MISSOURI, "doc": "brief", "forExport": true, "format": "docx", "store": false}));
+    let docx = docx["findings"].as_array().cloned().unwrap_or_default();
+    assert!(has_check(&docx, "noHyperlinks"), "{docx:?}");
+    assert!(!has_check(&docx, "textSearchablePdf"), "a .docx output is not verified as a PDF: {docx:?}");
+}
+
+/// A federal brief over its word limit is reported, and the bundled limits are FRAP 32(a)(7)(B)'s.
+#[test]
+fn federal_word_limit_violation_is_reported() {
+    let mut profile = store().get(FEDERAL).expect("profile").clone();
+    let brief = profile.docs.get_mut("brief").expect("brief");
+    let wl = brief.checks.iter_mut().find(|c| c.kind == "wordLimit").expect("a word limit");
+    assert_eq!(wl.limit, Some(13_000), "the bundled principal brief limit");
+    wl.limit = Some(5);
+    let mut s = apply_session(FEDERAL, "brief");
+    run(&mut s, "styles.apply", json!({"style": "Heading"}));
+    run(&mut s, "text.insert", json!({"text": "Argument\r"}));
+    run(&mut s, "styles.apply", json!({"style": "Body"}));
+    run(&mut s, "text.insert", json!({"text": "one two three four five six seven\r"}));
+    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, false, None).expect("evaluate");
+    assert!(f.iter().any(|x| x.check_id == "wordLimit"), "over-limit federal principal brief: {f:?}");
+
+    // The reply brief's bundled limit, and a violation of it.
+    let reply = profile.docs.get_mut("reply").expect("reply");
+    let rl = reply.checks.iter_mut().find(|c| c.kind == "wordLimit").expect("a word limit");
+    assert_eq!(rl.limit, Some(6_500), "the bundled reply limit");
+    rl.limit = Some(5);
+    let mut s = apply_session(FEDERAL, "reply");
+    run(&mut s, "styles.apply", json!({"style": "Heading"}));
+    run(&mut s, "text.insert", json!({"text": "Argument\r"}));
+    run(&mut s, "styles.apply", json!({"style": "Body"}));
+    run(&mut s, "text.insert", json!({"text": "one two three four five six seven\r"}));
+    let f = crate::checks::evaluate(&s.doc, &profile, "reply", false, false, None).expect("evaluate");
+    assert!(f.iter().any(|x| x.check_id == "wordLimit"), "over-limit federal reply: {f:?}");
 }
