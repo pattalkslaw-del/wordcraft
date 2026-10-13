@@ -226,6 +226,9 @@ pub struct CheckSpec {
     /// `minFontSize` / `minMargins`: the smallest type size or margin in points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pt: Option<f32>,
+    /// `minFontSize`: required typeface family (`Times New Roman`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font: Option<String>,
     /// `minLineSpacing`: the smallest body line spacing as a multiple (for example 1.5).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spacing: Option<f32>,

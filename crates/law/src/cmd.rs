@@ -162,7 +162,9 @@ pub fn specs() -> Vec<CommandSpec> {
                     .to_string(),
             };
             let for_export = p::bool(v, "forExport").unwrap_or(false);
-            let findings = checks::evaluate(&s.doc, &p, &doc_type, for_export).map_err(|e| CmdError::Failed(e.to_string()))?;
+            let export_opts = if for_export { Some(wordcraft_engine::export_options(s, v)) } else { None };
+            let findings = checks::evaluate(&s.doc, &p, &doc_type, for_export, export_opts.as_ref())
+                .map_err(|e| CmdError::Failed(e.to_string()))?;
             let json_findings = checks::findings_json(&findings);
             if p::bool(v, "store").unwrap_or(true) {
                 s.set_lint_findings(findings);

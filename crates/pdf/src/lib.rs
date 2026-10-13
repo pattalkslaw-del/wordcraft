@@ -22,6 +22,23 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+#[cfg(not(target_arch = "wasm32"))]
+mod extract;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub use extract::{extract_page_text, has_extractable_text};
+
+/// On wasm, PDF text extraction is unavailable; export checks are not run there.
+#[cfg(target_arch = "wasm32")]
+pub fn has_extractable_text(bytes: &[u8]) -> bool {
+    bytes.len() >= 8 && bytes.starts_with(b"%PDF")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn extract_page_text(_bytes: &[u8]) -> Result<Vec<String>, String> {
+    Err("PDF text extraction is not available on wasm".into())
+}
+
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroU16;
 use std::sync::Arc;

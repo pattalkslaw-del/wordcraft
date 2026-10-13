@@ -1,10 +1,13 @@
 //! Court profile checks: evaluate a profile's `checks` against the open document.
 
+use std::sync::Once;
+
 use serde_json::{Value, json};
 use wordcraft_doc::props::LineSpacing;
 use wordcraft_doc::{Document, Paragraph, Path, Pos, StoryRef};
 use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 use wordcraft_engine::{Session, io};
+use wordcraft_pdf::has_extractable_text;
 
 use crate::profile::{CheckSpec, DocSpec, Profile, SectionSpec};
 use crate::store::LawError;
@@ -14,8 +17,14 @@ pub const PROP_PROFILE: &str = "LAW_PROFILE_ID";
 pub const PROP_DOC_TYPE: &str = "LAW_DOC_TYPE";
 
 /// Run every check for `doc_type` in `profile` against `doc`. `for_export` runs export-only
-/// checks such as `textSearchablePdf`.
-pub fn evaluate(doc: &Document, profile: &Profile, doc_type: &str, for_export: bool) -> Result<Vec<Finding>, LawError> {
+/// checks such as `textSearchablePdf`. `export_opts` mirrors `file.exportPdf` when present.
+pub fn evaluate(
+    doc: &Document,
+    profile: &Profile,
+    doc_type: &str,
+    for_export: bool,
+    export_opts: Option<&io::ExportOptions>,
+) -> Result<Vec<Finding>, LawError> {
     let Some(spec) = profile.docs.get(doc_type) else {
         return Err(LawError::Failed(format!(
             "profile `{}` has no document type `{doc_type}` (it has {})",
@@ -27,7 +36,7 @@ pub fn evaluate(doc: &Document, profile: &Profile, doc_type: &str, for_export: b
     let mut out = Vec::new();
     for (i, check) in spec.checks.iter().enumerate() {
         let id = check_id(check, i);
-        run_one(doc, spec, &sections, check, &id, for_export, &mut out);
+        run_one(doc, spec, &sections, check, &id, for_export, export_opts, &mut out);
         if out.len() >= MAX_FINDINGS {
             break;
         }
@@ -39,7 +48,16 @@ fn check_id(c: &CheckSpec, index: usize) -> String {
     if c.kind.is_empty() { format!("check{index}") } else { c.kind.clone() }
 }
 
-fn run_one(doc: &Document, spec: &DocSpec, sections: &[LocatedSection], check: &CheckSpec, id: &str, for_export: bool, out: &mut Vec<Finding>) {
+fn run_one(
+    doc: &Document,
+    spec: &DocSpec,
+    sections: &[LocatedSection],
+    check: &CheckSpec,
+    id: &str,
+    for_export: bool,
+    export_opts: Option<&io::ExportOptions>,
+    out: &mut Vec<Finding>,
+) {
     match check.kind.as_str() {
         "wordLimit" => word_limit(doc, spec, sections, check, id, out),
         "minFontSize" => min_font_size(doc, check, id, out),
@@ -48,7 +66,7 @@ fn run_one(doc: &Document, spec: &DocSpec, sections: &[LocatedSection], check: &
         "noHyperlinks" => no_hyperlinks(doc, id, out),
         "textSearchablePdf" => {
             if for_export {
-                text_searchable_pdf(doc, id, out);
+                text_searchable_pdf(doc, id, export_opts, out);
             }
         }
         "requiredSections" => required_sections(sections, check, id, out),
@@ -76,9 +94,6 @@ fn locate_sections(doc: &Document, spec: &DocSpec) -> Vec<LocatedSection> {
 }
 
 fn section_heading_matches(_doc: &Document, para: &Paragraph, sec: &SectionSpec) -> bool {
-    // A section starts at a paragraph whose visible text is the section heading (Word puts the
-    // title on its own line). Style is applied by the profile but headings are identified by
-    // text so agents and pasted documents still match.
     para.plain_text().trim().eq_ignore_ascii_case(sec.name.trim())
 }
 
@@ -117,30 +132,38 @@ fn word_limit(doc: &Document, spec: &DocSpec, sections: &[LocatedSection], check
 }
 
 fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], exclude: &[&str]) -> u32 {
-    let paths = doc.para_paths(StoryRef::Body);
-    if paths.is_empty() {
-        return 0;
-    }
+    let body_paths = doc.para_paths(StoryRef::Body);
     let mut total = 0u32;
-    for (pi, path) in paths.iter().enumerate() {
-        let current = section_at_paragraph(&paths, pi, sections);
-        if exclude.contains(&current.as_str()) {
+    for (pi, path) in body_paths.iter().enumerate() {
+        if let Some(sec) = section_at_paragraph(&body_paths, pi, sections)
+            && exclude.contains(&sec.as_str())
+        {
             continue;
         }
         if let Some(p) = doc.para(StoryRef::Body, path) {
             total = total.saturating_add(para_words(p) as u32);
         }
     }
+    for story in doc.counted_stories() {
+        if story == StoryRef::Body {
+            continue;
+        }
+        for path in doc.para_paths(story) {
+            if let Some(p) = doc.para(story, &path) {
+                total = total.saturating_add(para_words(p) as u32);
+            }
+        }
+    }
     total
 }
 
-fn section_at_paragraph(paths: &[Path], para_index: usize, sections: &[LocatedSection]) -> String {
-    let mut current = sections.first().map(|s| s.id.clone()).unwrap_or_default();
+fn section_at_paragraph(paths: &[Path], para_index: usize, sections: &[LocatedSection]) -> Option<String> {
+    let mut current = None;
     for loc in sections {
         if let Some(i) = paths.iter().position(|p| p == &loc.path)
             && i <= para_index
         {
-            current = loc.id.clone();
+            current = Some(loc.id.clone());
         }
     }
     current
@@ -151,24 +174,50 @@ fn para_words(p: &Paragraph) -> usize {
 }
 
 fn min_font_size(doc: &Document, check: &CheckSpec, id: &str, out: &mut Vec<Finding>) {
-    let Some(min_pt) = check.pt else { return };
-    for path in doc.para_paths(StoryRef::Body) {
-        let Some(para) = doc.para(StoryRef::Body, &path) else { continue };
-        let para_style = para.props.style.as_deref();
-        let mut off = 0usize;
-        for run in &para.runs {
-            let chr = doc.styles.resolve_char(para_style, &run.props);
-            if chr.size + 0.01 < min_pt {
-                let size = chr.size;
-                let start = Pos { story: StoryRef::Body, path: path.clone(), off };
-                let end = Pos { story: StoryRef::Body, path: path.clone(), off: off.saturating_add(run.len) };
-                let source = &check.source;
-                out.push(Finding::at(id, "error", format!("Type size {size} pt is below the minimum {min_pt} pt ({source})"), start, end));
-                if out.len() >= MAX_FINDINGS {
-                    return;
+    let min_pt = check.pt;
+    let want_font = check.font.as_deref().filter(|f| !f.is_empty());
+    if min_pt.is_none() && want_font.is_none() {
+        return;
+    }
+    for story in doc.counted_stories() {
+        for path in doc.para_paths(story) {
+            let Some(para) = doc.para(story, &path) else { continue };
+            let para_style = para.props.style.as_deref();
+            let mut off = 0usize;
+            for run in &para.runs {
+                let chr = doc.styles.resolve_char(para_style, &run.props);
+                if let Some(min_pt) = min_pt
+                    && chr.size + 0.01 < min_pt
+                {
+                    let size = chr.size;
+                    let start = Pos { story, path: path.clone(), off };
+                    let end = Pos { story, path: path.clone(), off: off.saturating_add(run.len) };
+                    let source = &check.source;
+                    out.push(Finding::at(id, "error", format!("Type size {size} pt is below the minimum {min_pt} pt ({source})"), start, end));
+                    if out.len() >= MAX_FINDINGS {
+                        return;
+                    }
                 }
+                if let Some(want) = want_font {
+                    let family = chr.font.trim();
+                    if !family.is_empty() && !family.eq_ignore_ascii_case(want) {
+                        let start = Pos { story, path: path.clone(), off };
+                        let end = Pos { story, path: path.clone(), off: off.saturating_add(run.len) };
+                        let source = &check.source;
+                        out.push(Finding::at(
+                            id,
+                            "error",
+                            format!("Typeface `{family}` does not match the required `{want}` ({source})"),
+                            start,
+                            end,
+                        ));
+                        if out.len() >= MAX_FINDINGS {
+                            return;
+                        }
+                    }
+                }
+                off = off.saturating_add(run.len);
             }
-            off = off.saturating_add(run.len);
         }
     }
 }
@@ -179,12 +228,13 @@ fn min_margins(doc: &Document, spec: &DocSpec, check: &CheckSpec, id: &str, out:
         [p.top, p.bottom, p.left, p.right].into_iter().flatten().reduce(f32::min)
     });
     let Some(min_pt) = min_pt else { return };
-    let sect = doc.sections().into_iter().next().map(|(_, s)| s);
-    let Some(sect) = sect else { return };
-    for (name, val) in [("top", sect.margin_top), ("bottom", sect.margin_bottom), ("left", sect.margin_left), ("right", sect.margin_right)] {
-        if val + 0.01 < min_pt {
-            let source = &check.source;
-            out.push(Finding::error(id, format!("{name} margin {val} pt is below the minimum {min_pt} pt ({source})")));
+    for (index, sect) in doc.sections() {
+        for (name, val) in [("top", sect.margin_top), ("bottom", sect.margin_bottom), ("left", sect.margin_left), ("right", sect.margin_right)] {
+            if val + 0.01 < min_pt {
+                let source = &check.source;
+                let where_at = if doc.sections().len() > 1 { format!(" (section {index})") } else { String::new() };
+                out.push(Finding::error(id, format!("{name} margin {val} pt is below the minimum {min_pt} pt{where_at} ({source})")));
+            }
         }
     }
 }
@@ -196,13 +246,19 @@ fn min_line_spacing(doc: &Document, spec: &DocSpec, check: &CheckSpec, id: &str,
             .find(|s| s.name.eq_ignore_ascii_case("Normal"))
             .and_then(|s| s.para.as_ref())
             .and_then(|p| p.line_spacing)
-            .and_then(line_spacing_multiple)
+            .and_then(|ls| effective_line_spacing_multiple(ls, 12.0 * 1.15))
     });
     let Some(min_mult) = min_mult else { return };
     let except: Vec<String> = if check.except_styles.is_empty() {
         spec.styles
             .iter()
-            .filter(|s| s.para.as_ref().and_then(|p| p.line_spacing).and_then(line_spacing_multiple).is_some_and(|m| m + 0.01 < min_mult))
+            .filter(|s| {
+                s.para
+                    .as_ref()
+                    .and_then(|p| p.line_spacing)
+                    .and_then(|ls| effective_line_spacing_multiple(ls, 12.0 * 1.15))
+                    .is_some_and(|m| m + 0.01 < min_mult)
+            })
             .map(|s| s.name.clone())
             .collect()
     } else {
@@ -214,69 +270,94 @@ fn min_line_spacing(doc: &Document, spec: &DocSpec, check: &CheckSpec, id: &str,
             continue;
         }
         let rp = doc.styles.resolve_para(&para.props);
-        let mult = line_spacing_multiple(rp.line_spacing);
-        if let Some(m) = mult
-            && m + 0.01 < min_mult
-        {
-            let start = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
-            let end = Pos { story: StoryRef::Body, path: path.clone(), off: para.text.len() };
-            let source = &check.source;
-            out.push(Finding::at(id, "error", format!("Line spacing {m} is below the minimum {min_mult} ({source})"), start, end));
-            if out.len() >= MAX_FINDINGS {
-                return;
+        let natural = para_natural_line_height(doc, para);
+        let mult = effective_line_spacing_multiple(rp.line_spacing, natural);
+        match mult {
+            None => {
+                let start = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
+                let end = Pos { story: StoryRef::Body, path: path.clone(), off: para.text.len() };
+                let source = &check.source;
+                out.push(Finding::at(
+                    id,
+                    "error",
+                    format!("Line spacing could not be verified against the minimum {min_mult} ({source})"),
+                    start,
+                    end,
+                ));
             }
+            Some(m) if m + 0.01 < min_mult => {
+                let start = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
+                let end = Pos { story: StoryRef::Body, path: path.clone(), off: para.text.len() };
+                let source = &check.source;
+                out.push(Finding::at(id, "error", format!("Line spacing {m} is below the minimum {min_mult} ({source})"), start, end));
+            }
+            _ => {}
+        }
+        if out.len() >= MAX_FINDINGS {
+            return;
         }
     }
 }
 
-fn line_spacing_multiple(ls: LineSpacing) -> Option<f32> {
+/// Approximate single-spaced line height (ascender + descender) from the paragraph's runs.
+fn para_natural_line_height(doc: &Document, para: &Paragraph) -> f32 {
+    let para_style = para.props.style.as_deref();
+    let mut size = 12.0f32;
+    for run in &para.runs {
+        let chr = doc.styles.resolve_char(para_style, &run.props);
+        if chr.size.is_finite() && chr.size > size {
+            size = chr.size;
+        }
+    }
+    size * 1.15
+}
+
+fn effective_line_spacing_multiple(ls: LineSpacing, natural: f32) -> Option<f32> {
+    if !natural.is_finite() || natural <= 0.01 {
+        return None;
+    }
     match ls {
-        LineSpacing::Multiple(v) if v.is_finite() => Some(v),
+        LineSpacing::Multiple(m) if m.is_finite() => Some(m),
+        LineSpacing::Exactly(v) if v.is_finite() => Some(v / natural),
+        LineSpacing::AtLeast(v) if v.is_finite() => Some(natural.max(v) / natural),
         _ => None,
     }
 }
 
 fn no_hyperlinks(doc: &Document, id: &str, out: &mut Vec<Finding>) {
-    for path in doc.para_paths(StoryRef::Body) {
-        let Some(para) = doc.para(StoryRef::Body, &path) else { continue };
-        let para_style = para.props.style.as_deref();
-        let mut off = 0usize;
-        for run in &para.runs {
-            let chr = doc.styles.resolve_char(para_style, &run.props);
-            if chr.link.is_some() {
-                let start = Pos { story: StoryRef::Body, path: path.clone(), off };
-                let end = Pos { story: StoryRef::Body, path: path.clone(), off: off.saturating_add(run.len) };
-                out.push(Finding::at(id, "error", "Active hyperlinks are not allowed in this filing", start, end));
-                if out.len() >= MAX_FINDINGS {
-                    return;
+    for story in doc.counted_stories() {
+        for path in doc.para_paths(story) {
+            let Some(para) = doc.para(story, &path) else { continue };
+            let para_style = para.props.style.as_deref();
+            let mut off = 0usize;
+            for run in &para.runs {
+                let chr = doc.styles.resolve_char(para_style, &run.props);
+                if chr.link.is_some() {
+                    let start = Pos { story, path: path.clone(), off };
+                    let end = Pos { story, path: path.clone(), off: off.saturating_add(run.len) };
+                    out.push(Finding::at(id, "error", "Active hyperlinks are not allowed in this filing", start, end));
+                    if out.len() >= MAX_FINDINGS {
+                        return;
+                    }
                 }
+                off = off.saturating_add(run.len);
             }
-            off = off.saturating_add(run.len);
         }
     }
 }
 
-fn text_searchable_pdf(doc: &Document, id: &str, out: &mut Vec<Finding>) {
-    let bytes = match io::save_bytes_opts("export.pdf", doc, &io::ExportOptions::default()) {
+fn text_searchable_pdf(doc: &Document, id: &str, export_opts: Option<&io::ExportOptions>, out: &mut Vec<Finding>) {
+    let opts = export_opts.copied().unwrap_or_default();
+    let bytes = match io::save_bytes_opts("export.pdf", doc, &opts) {
         Ok(b) => b,
         Err(e) => {
             out.push(Finding::error(id, format!("PDF export failed: {e}")));
             return;
         }
     };
-    if !pdf_bytes_have_text(&bytes) {
+    if !has_extractable_text(&bytes) {
         out.push(Finding::error(id, "PDF export is not text-searchable"));
     }
-}
-
-/// True when the PDF bytes look like they carry real text (not a pure image scan).
-fn pdf_bytes_have_text(bytes: &[u8]) -> bool {
-    if bytes.len() < 8 || !bytes.starts_with(b"%PDF") {
-        return false;
-    }
-    let sample = bytes.len().min(512 * 1024);
-    let head = &bytes[..sample];
-    head.windows(2).any(|w| w == b"BT") || head.windows(5).any(|w| w == b"/Font")
 }
 
 /// Findings as JSON for `law.checks.run`.
@@ -288,7 +369,25 @@ pub fn findings_json(findings: &[Finding]) -> Vec<Value> {
 pub fn remember_applied(session: &mut Session, profile_id: &str, doc_type: &str) {
     session.doc.set_custom_prop(PROP_PROFILE, profile_id);
     session.doc.set_custom_prop(PROP_DOC_TYPE, doc_type);
-    session.set_export_check_commands(vec![("law.checks.run".into(), json!({"id": profile_id, "doc": doc_type, "forExport": true}))]);
+    restore_export_registration(session);
+}
+
+/// Re-register export checks from document metadata (after open / `set_document`).
+pub fn restore_export_registration(session: &mut Session) {
+    let profile_id = session.doc.custom_prop(PROP_PROFILE);
+    let doc_type = session.doc.custom_prop(PROP_DOC_TYPE);
+    if let (Some(profile_id), Some(doc_type)) = (profile_id, doc_type) {
+        session.set_export_check_commands(vec![("law.checks.run".into(), json!({"id": profile_id, "doc": doc_type, "forExport": true}))]);
+    }
+}
+
+static HOOK_ONCE: Once = Once::new();
+
+/// Register the document-loaded hook once (called from [`crate::install`]).
+pub fn register_document_hook() {
+    HOOK_ONCE.call_once(|| {
+        wordcraft_engine::hooks::register_on_document_loaded(restore_export_registration);
+    });
 }
 
 #[cfg(test)]
@@ -296,8 +395,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pdf_text_sniffing() {
-        assert!(!pdf_bytes_have_text(b"not a pdf"));
-        assert!(pdf_bytes_have_text(b"%PDF-1.4\n1 0 obj<<>>endobj\nBT /F1 12 Tf (Hi) Tj ET"));
+    fn line_spacing_effective_multiple() {
+        let natural = 13.0 * 1.15;
+        assert!((effective_line_spacing_multiple(LineSpacing::Multiple(1.5), natural).unwrap() - 1.5).abs() < 0.001);
+        assert!(effective_line_spacing_multiple(LineSpacing::Exactly(12.0), natural).unwrap() + 0.01 < 1.5);
+        assert!(effective_line_spacing_multiple(LineSpacing::AtLeast(24.0), natural).unwrap() >= 1.5);
     }
 }

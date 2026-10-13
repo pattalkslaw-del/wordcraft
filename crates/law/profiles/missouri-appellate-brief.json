@@ -280,6 +280,7 @@
         {
           "kind": "minFontSize",
           "pt": 13,
+          "font": "Times New Roman",
           "source": "Mo. Sup. Ct. R. 84.03",
           "effective": "2025-01-01"
         },
@@ -447,6 +448,7 @@
         {
           "kind": "minFontSize",
           "pt": 13,
+          "font": "Times New Roman",
           "source": "Mo. Sup. Ct. R. 84.03",
           "effective": "2025-01-01"
         }
@@ -586,6 +588,7 @@
         {
           "kind": "minFontSize",
           "pt": 13,
+          "font": "Times New Roman",
           "source": "Mo. Sup. Ct. R. 84.03",
           "effective": "2025-01-01"
         },
@@ -899,6 +902,7 @@
         {
           "kind": "minFontSize",
           "pt": 13,
+          "font": "Times New Roman",
           "source": "Mo. Sup. Ct. R. 84.03",
           "effective": "2025-01-01"
         },

@@ -58,6 +58,7 @@ pub fn install(session: &mut Session) -> usize {
     if !session.module_enabled(MODULE) {
         return 0;
     }
+    checks::register_document_hook();
     session.install_commands(specs())
 }
 

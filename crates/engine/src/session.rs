@@ -690,11 +690,23 @@ impl Session {
         let cmds = self.export_check_commands.clone();
         let mut all = Vec::new();
         for (id, params) in cmds {
-            if let Ok(v) = self.run(&id, &params)
-                && let Some(arr) = v.get("findings").and_then(serde_json::Value::as_array)
-            {
-                for f in arr {
-                    all.push(f.clone());
+            match self.run(&id, &params) {
+                Ok(v) => {
+                    if let Some(arr) = v.get("findings").and_then(serde_json::Value::as_array) {
+                        for f in arr {
+                            all.push(f.clone());
+                            if all.len() >= crate::lint::MAX_FINDINGS {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    all.push(serde_json::json!({
+                        "checkId": id,
+                        "severity": "error",
+                        "message": e.to_string(),
+                    }));
                     if all.len() >= crate::lint::MAX_FINDINGS {
                         break;
                     }
@@ -1059,6 +1071,7 @@ impl Session {
         self.reset_history();
         self.lint_findings.clear();
         self.export_check_commands.clear();
+        crate::hooks::run_on_document_loaded(self);
         self.touch();
         self.dirty = false;
         self.relayout();
