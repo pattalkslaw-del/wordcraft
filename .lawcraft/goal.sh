@@ -36,6 +36,8 @@ BRANCH="goal/issue-$ISSUE"
 
 # Per-issue overrides: body lines "Coder: provider/model" / "Reviewer: provider/model".
 override() { printf '%s\n' "$BODY" | sed -nE "s/^$1:[[:space:]]*([^[:space:]]+).*/\1/p" | tail -1; }
+# "Base: <branch>" stacks a goal on another branch (default main).
+BASE=$(override Base); BASE=${BASE:-main}; export BASE_REF="origin/$BASE"
 CODER=$(override Coder); CODER=${CODER:-$(cfg coder)}
 REVIEWER=$(override Reviewer); REVIEWER=${REVIEWER:-$(cfg reviewer)}
 REVIEWERS="$REVIEWER"
@@ -121,7 +123,7 @@ git config user.email "goal-loop@agents.nemolegal.internal"; git config user.nam
 if git ls-remote --exit-code origin "refs/heads/$BRANCH" >/dev/null; then
   git fetch -q origin "$BRANCH"; git checkout -q -B "$BRANCH" "origin/$BRANCH"
 else
-  git checkout -q -B "$BRANCH" origin/main
+  git fetch -q origin "$BASE"; git checkout -q -B "$BRANCH" "origin/$BASE"
 fi
 PR=$(api GET "/pulls?state=open&per_page=100" \
   | node -e 'const p=JSON.parse(require("fs").readFileSync(0,"utf8")).find(p=>p.head.ref===process.argv[1]);console.log(p?p.number:"")' "$BRANCH")
@@ -171,7 +173,7 @@ $(tail -40 "$W/build.err"; grep -h '"type":"error"' "$W/build.jsonl" 2>/dev/null
   # The loop's own files are never part of a goal change.
   rm -rf .lawcraft; git checkout -q HEAD -- .github 2>/dev/null || true; git clean -qfd -- .github
   git add -A
-  if git diff --cached --quiet && [ "$(git rev-list --count origin/main..HEAD)" -gt 0 ] && [ -z "${reviewed_head:-}" ]; then
+  if git diff --cached --quiet && [ "$(git rev-list --count "origin/$BASE"..HEAD)" -gt 0 ] && [ -z "${reviewed_head:-}" ]; then
     # Nothing new, but the branch already carries unreviewed work (an earlier run, or a coder swap): test and review it.
     skip_commit=1
   elif git diff --cached --quiet && escalate "coder \`$CODER\` made no changes in round $round."; then
@@ -190,7 +192,7 @@ $(tail -80 "$W/build.md")"
   HEAD_SHA=$(git rev-parse HEAD); reviewed_head=$HEAD_SHA
 
   if [ -z "$PR" ]; then
-    PR=$(api POST /pulls -d "$(jobj head "$BRANCH" base main title "goal #$ISSUE: $TITLE" body "Closes #$ISSUE
+    PR=$(api POST /pulls -d "$(jobj head "$BRANCH" base "$BASE" title "goal #$ISSUE: $TITLE" body "Closes #$ISSUE
 
 Opened by the LawCraft goal loop. \`goal-ready\` means every reviewer passed the exact head with tests not failing; Patrick merges.")" | jget number)
   fi

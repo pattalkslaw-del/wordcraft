@@ -1,4 +1,4 @@
-// Independent review of origin/main...HEAD by one model; prints the review to stdout.
+// Independent review of $BASE_REF...HEAD (default origin/main) by one model; prints the review to stdout.
 // Usage: node scripts/review.mjs <provider/model> <context-file>
 // Provider endpoints and keys come from .lawcraft/opencode.json, so there is one list of models.
 // LAWCRAFT_DIR points at the .lawcraft directory of the checkout (set by goal.sh).
@@ -29,7 +29,8 @@ const env = (s) => s.replace(/\{env:(\w+)\}/g, (_, k) => process.env[k] ?? "");
 const loop = JSON.parse(readFileSync(path.join(process.env.LAWCRAFT_DIR, "loop.json"), "utf8"));
 
 const sh = (c) => execSync(c, { encoding: "utf8", maxBuffer: 1 << 28 });
-const diff = sh("git diff origin/main...HEAD");
+const BASE_REF = process.env.BASE_REF || "origin/main";
+const diff = sh(`git diff ${BASE_REF}...HEAD`);
 const context = readFileSync(contextFile, "utf8");
 // Whole repo as context, capped; the diff and task always go in full.
 // Codex (oauth/gpt-*) rejects a turn over 1,048,576 characters, so the repo shrinks to fit there.
@@ -49,7 +50,7 @@ The first line of your reply must be exactly "VERDICT: PASS" (no blocking findin
 Then: BLOCKING FINDINGS (severity, file:line, evidence, required fix), NONBLOCKING FINDINGS,
 TEST/CLAIM AUDIT (are the builder's test claims evidenced; what was not run).
 Judge against the issue, .lawcraft/LAWCRAFT.md and AGENTS.md (WordCraft's rules: clean room, no panics, every feature a CommandSpec with tests). A change that adds or edits .lawcraft/ or .github/workflows/ is a blocking finding. Do not invent requirements.`;
-const user = `${context}\n\n##### DIFF (origin/main...HEAD)\n${diff}\n\n##### REPOSITORY\n${repo}`;
+const user = `${context}\n\n##### DIFF (${BASE_REF}...HEAD)\n${diff}\n\n##### REPOSITORY\n${repo}`;
 
 if (provider === "oauth") {
   // Runs the same relay script render-1 used, locally on the runner, with the OAuth logins goal.sh wrote.
