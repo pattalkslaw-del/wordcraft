@@ -1,0 +1,58 @@
+# LawCraft goal loop. Lives only on the fork's lawcraft-loop branch; never goes upstream.
+name: lawcraft-goal
+on:
+  issues:
+    types: [labeled]
+concurrency:
+  group: goal-${{ github.event.issue.number }}
+  cancel-in-progress: false
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+jobs:
+  goal:
+    if: github.event.label.name == 'goal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_TERM_COLOR: never
+    steps:
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          sudo docker image prune -af >/dev/null 2>&1 || true
+          df -h /
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: System packages and fonts
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends pkg-config libxkbcommon-dev libwayland-dev libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgtk-3-dev libfontconfig1-dev libfreetype-dev libvulkan1 mesa-vulkan-drivers fonts-crosextra-carlito fonts-crosextra-caladea fonts-liberation fonts-dejavu-core fonts-urw-base35 fonts-texgyre
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lawcraft
+          save-if: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Reviewer CLIs
+        run: |
+          npm i -g @openai/codex@0.160.0
+          curl -fsSL https://x.ai/cli/install.sh | bash
+          echo "$HOME/.grok/bin" >> "$GITHUB_PATH"
+      - name: Goal loop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURSOR_AUTH_JSON: ${{ secrets.CURSOR_AUTH_JSON }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          GROK_AUTH_JSON: ${{ secrets.GROK_AUTH_JSON }}
+        run: bash .lawcraft/goal.sh

@@ -1,0 +1,10 @@
+{
+ "coder": "cursor/composer-2.5",
+ "escalate_to": "deepseek-api/deepseek-flash",
+ "escalate_after_rounds": 2,
+ "reviewer": "oauth/gpt-6.1-sol",
+ "second_reviewer": "oauth/grok-4.7",
+ "max_rounds": 6,
+ "review_context_chars": 900000,
+ "token_caps": {}
+}
