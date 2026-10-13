@@ -62,7 +62,11 @@
           },
           "para": {
             "keepNext": true,
-            "align": "center"
+            "align": "center",
+            "lineSpacing": {
+              "rule": "multiple",
+              "value": 1
+            }
           }
         },
         {
@@ -237,7 +241,11 @@
           },
           "para": {
             "keepNext": true,
-            "align": "center"
+            "align": "center",
+            "lineSpacing": {
+              "rule": "multiple",
+              "value": 1
+            }
           }
         },
         {

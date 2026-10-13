@@ -399,18 +399,62 @@ fn applying_missouri_reply_brief_heading_is_single_spaced() {
     );
 }
 
+/// Every heading style in every bundled profile is single spaced: the court rules allow headings
+/// (and captions, quotes and certificates) to be single spaced even where the body is 1.5 or
+/// double spaced. A heading that only inherits its parent's line spacing would come back 1.5 or
+/// double spaced here — this is the round-trip assertion for all of them, not just one.
 #[test]
-fn cover_numbered_turns_off_different_first_page() {
-    let mut s = law();
-    run(&mut s, "layout.differentFirstPage", json!({"value": true}));
-    assert!(section(&s.doc).title_page, "different first page starts on");
+fn every_bundled_heading_stays_single_spaced() {
+    let profiles: Vec<(String, Vec<(String, Vec<String>)>)> = crate::store::bundled()
+        .iter()
+        .map(|p| {
+            let docs = p.docs.iter().map(|(doc_type, spec)| (doc_type.clone(), spec.styles.iter().map(|st| st.name.clone()).collect())).collect();
+            (p.id.clone(), docs)
+        })
+        .collect();
+    for (id, docs) in profiles {
+        for (doc_type, names) in docs {
+            let headings: Vec<String> = names.into_iter().filter(|n| n.contains("Heading")).collect();
+            if headings.is_empty() {
+                continue;
+            }
+            let doc = applied(&id, &doc_type);
+            for name in headings {
+                assert_eq!(
+                    style(&doc, &name).para.line_spacing,
+                    Some(LineSpacing::Multiple(1.0)),
+                    "{id}/{doc_type}: heading `{name}` must be single spaced after a .docx round trip"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn cover_numbered_turns_different_first_page_on_and_off() {
     let id = "test-cover-numbered";
+    let mut s = law();
+    let mut p = profile_json(id);
+    p["docs"]["brief"]["pageNumbers"] = json!({"position": "bottom", "align": "center", "xOfY": false, "coverNumbered": false});
+    run(&mut s, "law.profiles.create", p);
+    // `coverNumbered: false`: the cover is its own, un-numbered first page.
+    let applied = run(&mut s, "law.profiles.apply", json!({"id": id}));
+    assert!(
+        applied["applied"].as_array().is_some_and(|a| a.iter().any(|x| x == "layout.differentFirstPage")),
+        "coverNumbered goes through WordCraft's own layout command: {applied}"
+    );
+    assert!(section(&roundtrip(&s)).title_page, "coverNumbered false turns a different first page on");
+    // Flip the setting to `coverNumbered: true` and apply again: every page is numbered now, so
+    // different-first-page is turned back off through the same command, and it survives a .docx.
     let mut p = profile_json(id);
     p["docs"]["brief"]["pageNumbers"] = json!({"position": "bottom", "align": "center", "xOfY": false, "coverNumbered": true});
-    run(&mut s, "law.profiles.create", p);
-    run(&mut s, "law.profiles.apply", json!({"id": id}));
-    let doc = roundtrip(&s);
-    assert!(!section(&doc).title_page, "coverNumbered applies numbering on page 1 too");
+    run(&mut s, "law.profiles.update", json!({"id": id, "docs": p["docs"].clone()}));
+    let applied = run(&mut s, "law.profiles.apply", json!({"id": id}));
+    assert!(
+        applied["applied"].as_array().is_some_and(|a| a.iter().any(|x| x == "layout.differentFirstPage")),
+        "coverNumbered true turns it off through the layout command: {applied}"
+    );
+    assert!(!section(&roundtrip(&s)).title_page, "coverNumbered applies numbering on page 1 too");
 }
 
 #[test]
@@ -602,10 +646,24 @@ fn proptest_any_json_either_parses_or_explains_itself() {
         text in "\\PC{0,200}",
         top in proptest::option::of(-2000f32..3000f32),
         position in proptest::option::of(0u8..5),
+        // Nested values: a character size, a paragraph line spacing, a line-number mode, a
+        // section id, a check kind and a word limit all pass through their own checkers.
+        size in proptest::option::of(-8f32..6000f32),
+        spacing in proptest::option::of(0.0f32..200.0f32),
+        spacing_rule in proptest::option::of(0u8..3),
+        line_mode in proptest::option::of(0u8..6),
+        section_id in "\\PC{0,24}",
+        check_kind in "\\PC{0,24}",
+        limit in proptest::option::of(0u32..20_000_000),
     )| {
-        if let Ok(p) = Profile::from_json(&text) {
-            proptest::prop_assert!(crate::profile::problems(&p).is_empty());
+        // Arbitrary bytes: either a profile, or a non-empty list of problems — never a panic.
+        match Profile::from_json(&text) {
+            Ok(p) => proptest::prop_assert!(crate::profile::problems(&p).is_empty()),
+            Err(msgs) => proptest::prop_assert!(!msgs.is_empty()),
         }
+        // A valid profile with one nested field at a time replaced by a random value. This drives
+        // the nested checkers (page, page numbers, character and paragraph props, line numbers,
+        // sections, checks) with hostile numbers and strings.
         let mut v = base.clone();
         if let Some(t) = top {
             v["docs"]["brief"]["page"]["top"] = json!(t);
@@ -614,13 +672,30 @@ fn proptest_any_json_either_parses_or_explains_itself() {
             let pos = ["top", "bottom", "left", "sideways", ""][i as usize % 5];
             v["docs"]["brief"]["pageNumbers"] = json!({"position": pos, "align": "center", "xOfY": false});
         }
+        if let Some(sz) = size {
+            v["docs"]["brief"]["styles"][0]["chr"]["size"] = json!(sz);
+        }
+        if let Some(sp) = spacing {
+            let rule = ["multiple", "atLeast", "exactly"][spacing_rule.unwrap_or(0) as usize % 3];
+            v["docs"]["brief"]["styles"][0]["para"]["lineSpacing"] = json!({"rule": rule, "value": sp});
+        }
+        if let Some(m) = line_mode {
+            let mode = ["none", "continuous", "restartPage", "restartSection", "bogus", ""][m as usize % 6];
+            v["docs"]["brief"]["lineNumbers"] = json!({"enabled": true, "value": mode});
+        }
+        v["docs"]["brief"]["sections"][0]["id"] = json!(section_id);
+        v["docs"]["brief"]["checks"] = match limit {
+            Some(n) => json!([{"kind": "wordLimit", "limit": n, "source": "Rule 1"}]),
+            None => json!([{"kind": check_kind, "source": "Rule 1"}]),
+        };
         match Profile::from_json(&v.to_string()) {
             Ok(p) => proptest::prop_assert!(crate::profile::problems(&p).is_empty()),
             Err(msgs) => {
-                let bad_top = top.is_some_and(|t| t < 0.0 || t > 1584.0);
-                let bad_pos = position.is_some_and(|i| i >= 2);
-                if bad_top || bad_pos {
-                    proptest::prop_assert!(!msgs.is_empty());
+                proptest::prop_assert!(!msgs.is_empty());
+                // A plainly out-of-range type size is reported by name: the mutation reached the
+                // nested character-properties checker rather than being swallowed.
+                if size.is_some_and(|s| !(1.0..=4096.0).contains(&s)) {
+                    proptest::prop_assert!(msgs.iter().any(|m| m.contains("size")), "size problem missing: {msgs:?}");
                 }
             }
         }
