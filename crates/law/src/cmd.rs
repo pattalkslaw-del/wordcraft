@@ -15,11 +15,13 @@ use serde_json::{Value, json};
 use wordcraft_engine::{CmdError, CommandSpec, p};
 
 use crate::apply;
+use crate::checks;
 use crate::profile::{Patch, Profile};
 use crate::store::{LawError, Store};
 
-/// Where the commands live in the ribbon.
+/// Where the profile commands live in the ribbon.
 const LOC: &str = "Law › Court Profiles";
+const CHECKS_LOC: &str = "Law › Court Checks";
 
 /// The profiles WordCraft knows: the ones it ships and the user's own.
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
@@ -137,6 +139,40 @@ pub fn specs() -> Vec<CommandSpec> {
             apply::apply(s, &p, &doc).map_err(|e| CmdError::Failed(e.to_string()))
         })
         .params(r#"{"id": string, "doc"?: string (a document type of the profile)} → {"profile", "doc", "applied": [command], "styles": [style id]}"#),
+        CommandSpec::new("law.checks.run", "Run Court Checks", CHECKS_LOC, |s, v| {
+            let profile_id = match p::str(v, "id") {
+                Some(id) => id.to_string(),
+                None => s
+                    .doc
+                    .custom_prop(checks::PROP_PROFILE)
+                    .ok_or_else(|| CmdError::Params("`id` (profile id) is required when no court profile is applied".into()))?
+                    .to_string(),
+            };
+            let Some(p) = store().get(&profile_id).cloned() else { return Err(not_found(&profile_id)) };
+            let doc_type = match p::str(v, "doc") {
+                Some(d) => d.to_string(),
+                None => s
+                    .doc
+                    .custom_prop(checks::PROP_DOC_TYPE)
+                    .or_else(|| {
+                        let mut types = p.doc_types();
+                        (types.len() == 1).then(|| types.remove(0))
+                    })
+                    .ok_or_else(|| CmdError::Params(format!("`doc` is required: `{}` has {}", p.name, p.doc_types().join(", "))))?
+                    .to_string(),
+            };
+            let for_export = p::bool(v, "forExport").unwrap_or(false);
+            let findings = checks::evaluate(&s.doc, &p, &doc_type, for_export).map_err(|e| CmdError::Failed(e.to_string()))?;
+            let json_findings = checks::findings_json(&findings);
+            if p::bool(v, "store").unwrap_or(true) {
+                s.set_lint_findings(findings);
+            }
+            Ok(json!({"profile": profile_id, "doc": doc_type, "findings": json_findings}))
+        })
+        .params(
+            r#"{"id"?: string, "doc"?: string, "forExport"?: bool (run export-only checks such as textSearchablePdf), "store"?: bool (default true: show findings in Review › Proofing)} → {"profile", "doc", "findings": [{checkId, severity, message, start?, end?}]}"#,
+        )
+        .pure(),
     ]
 }
 

@@ -177,6 +177,13 @@
         {
           "kind": "wordLimit",
           "limit": 13000,
+          "excludeSections": [
+            "cover",
+            "tableOfContents",
+            "tableOfAuthorities",
+            "certificateOfCompliance",
+            "certificateOfService"
+          ],
           "source": "FRAP 32(a)(7)(B)",
           "effective": "2024-12-01"
         },
@@ -184,6 +191,43 @@
           "kind": "minFontSize",
           "pt": 14,
           "source": "FRAP 32(a)(4)(A)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "FRAP 32(a)(4)(B)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "minLineSpacing",
+          "spacing": 2,
+          "exceptStyles": [
+            "Caption",
+            "Heading",
+            "Block Quote",
+            "Signature",
+            "Certificate"
+          ],
+          "source": "FRAP 32(a)(4)(A)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "requiredSections",
+          "ids": [
+            "cover",
+            "tableOfContents",
+            "tableOfAuthorities",
+            "jurisdictionalStatement",
+            "statementOfIssues",
+            "statementOfFacts",
+            "summaryOfArgument",
+            "argument",
+            "conclusion",
+            "certificateOfCompliance",
+            "certificateOfService"
+          ],
+          "source": "FRAP 32(a)(1)",
           "effective": "2024-12-01"
         },
         {

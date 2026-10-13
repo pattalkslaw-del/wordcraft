@@ -267,6 +267,13 @@
         {
           "kind": "wordLimit",
           "limit": 31000,
+          "excludeSections": [
+            "cover",
+            "tableOfContents",
+            "tableOfAuthorities",
+            "certificateOfCompliance",
+            "certificateOfService"
+          ],
           "source": "Mo. Sup. Ct. R. 84.04(b)(1)",
           "effective": "2025-01-01"
         },
@@ -274,6 +281,42 @@
           "kind": "minFontSize",
           "pt": 13,
           "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minLineSpacing",
+          "spacing": 1.5,
+          "exceptStyles": [
+            "Caption",
+            "Heading",
+            "Block Quote",
+            "Signature",
+            "Certificate"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "requiredSections",
+          "ids": [
+            "cover",
+            "tableOfContents",
+            "tableOfAuthorities",
+            "jurisdictionalStatement",
+            "statementOfFacts",
+            "pointsReliedOn",
+            "argument",
+            "conclusion",
+            "certificateOfCompliance",
+            "certificateOfService"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.04(a)",
           "effective": "2025-01-01"
         },
         {

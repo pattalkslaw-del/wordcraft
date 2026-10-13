@@ -36,6 +36,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod apply;
+pub mod checks;
 pub mod cmd;
 pub mod profile;
 pub mod store;
@@ -62,3 +63,6 @@ pub fn install(session: &mut Session) -> usize {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_checks;

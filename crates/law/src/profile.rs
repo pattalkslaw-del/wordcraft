@@ -217,14 +217,24 @@ pub struct SectionSpec {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct CheckSpec {
-    /// `wordLimit`, `minFontSize`, `noHyperlinks`, `textSearchablePdf` or `requiredSections`.
+    /// `wordLimit`, `minFontSize`, `minMargins`, `minLineSpacing`, `noHyperlinks`,
+    /// `textSearchablePdf` or `requiredSections`.
     pub kind: String,
     /// `wordLimit`: the most words the document may have.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
-    /// `minFontSize`: the smallest type size in points.
+    /// `minFontSize` / `minMargins`: the smallest type size or margin in points.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pt: Option<f32>,
+    /// `minLineSpacing`: the smallest body line spacing as a multiple (for example 1.5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spacing: Option<f32>,
+    /// `wordLimit`: section ids left out of the count (cover, tables, certificates…).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude_sections: Vec<String>,
+    /// `minLineSpacing`: named styles that may be single-spaced (caption, headings…).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub except_styles: Vec<String>,
     /// `requiredSections`: the section ids that must be present.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ids: Vec<String>,
@@ -533,6 +543,15 @@ fn check_check(out: &mut Vec<String>, at: &str, c: &CheckSpec, section_ids: &[&s
                 return;
             };
             check_count(out, &format!("{at}.limit"), limit, 1, 10_000_000);
+            if c.exclude_sections.len() > MAX_LISTED {
+                out.push(format!("{at}.excludeSections has {} sections (at most {MAX_LISTED})", c.exclude_sections.len()));
+            }
+            for id in &c.exclude_sections {
+                check_id(out, &format!("{at}.excludeSections"), id);
+                if !id.is_empty() && !section_ids.contains(&id.as_str()) {
+                    out.push(format!("{at}.excludeSections `{id}` is not a section of this document type"));
+                }
+            }
         }
         "minFontSize" => {
             let Some(pt) = c.pt else {
@@ -542,6 +561,24 @@ fn check_check(out: &mut Vec<String>, at: &str, c: &CheckSpec, section_ids: &[&s
             check_points(out, &format!("{at}.pt"), pt, 1.0, MAX_TYPE);
         }
         "noHyperlinks" | "textSearchablePdf" => {}
+        "minMargins" => {
+            if let Some(pt) = c.pt {
+                check_points(out, &format!("{at}.pt"), pt, 0.0, MAX_PT);
+            }
+        }
+        "minLineSpacing" => {
+            let Some(sp) = c.spacing else {
+                out.push(format!("{at}: a minLineSpacing check needs `spacing`"));
+                return;
+            };
+            check_points(out, &format!("{at}.spacing"), sp, 0.05, 132.0);
+            if c.except_styles.len() > MAX_LISTED {
+                out.push(format!("{at}.exceptStyles has {} styles (at most {MAX_LISTED})", c.except_styles.len()));
+            }
+            for name in &c.except_styles {
+                check_text(out, &format!("{at}.exceptStyles"), name);
+            }
+        }
         "requiredSections" => {
             if c.ids.is_empty() {
                 out.push(format!("{at}: a requiredSections check needs `ids`"));
@@ -558,7 +595,7 @@ fn check_check(out: &mut Vec<String>, at: &str, c: &CheckSpec, section_ids: &[&s
         }
         other => {
             out.push(format!(
-                "{at}.kind `{other}` is not a check this WordCraft knows (wordLimit, minFontSize, noHyperlinks, textSearchablePdf, requiredSections)"
+                "{at}.kind `{other}` is not a check this WordCraft knows (wordLimit, minFontSize, minMargins, minLineSpacing, noHyperlinks, textSearchablePdf, requiredSections)"
             ));
         }
     }
