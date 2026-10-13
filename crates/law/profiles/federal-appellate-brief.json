@@ -341,6 +341,10 @@
         {
           "kind": "wordLimit",
           "limit": 6500,
+          "excludeSections": [
+            "cover",
+            "certificateOfCompliance"
+          ],
           "source": "FRAP 32(a)(7)(B)",
           "effective": "2024-12-01"
         },
@@ -348,6 +352,39 @@
           "kind": "minFontSize",
           "pt": 14,
           "source": "FRAP 32(a)(4)(A)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "FRAP 32(a)(4)(B)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "minLineSpacing",
+          "spacing": 2,
+          "exceptStyles": [
+            "Heading",
+            "Signature",
+            "Certificate"
+          ],
+          "source": "FRAP 32(a)(4)(A)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "requiredSections",
+          "ids": [
+            "cover",
+            "argument",
+            "conclusion",
+            "certificateOfCompliance"
+          ],
+          "source": "FRAP 32(a)(1)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "textSearchablePdf",
+          "source": "FRAP 32(a)(2)",
           "effective": "2024-12-01"
         }
       ],

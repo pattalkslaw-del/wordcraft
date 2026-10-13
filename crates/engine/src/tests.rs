@@ -67,6 +67,34 @@ fn a_module_installs_its_commands_and_never_shadows_core() {
 }
 
 #[test]
+fn export_checks_see_the_export_options_and_serialise_like_lint() {
+    let mut s = s();
+    let echo = crate::CommandSpec::new("test.exportEcho", "Echo Export Options", "Test", |_, v| {
+        let markup = v.get("markup").and_then(serde_json::Value::as_bool).unwrap_or(false);
+        Ok(json!({"findings": [{"kind": "lint", "checkId": "echo", "severity": "error", "message": format!("markup={markup}")}]}))
+    });
+    let boom = crate::CommandSpec::new("test.exportBoom", "Failing Export Check", "Test", |_, _| Err(crate::CmdError::Failed("boom".into())));
+    assert_eq!(s.install_commands(vec![echo, boom]), 2);
+
+    s.set_export_check_commands(vec![("test.exportEcho".into(), json!({"forExport": true}))]);
+    // The `markup` override reaches the check: the same stored command sees the current export.
+    let marked = crate::io::ExportOptions { markup: true, comments: false };
+    let findings = s.run_export_checks(&marked);
+    assert!(findings.iter().any(|f| f["message"] == "markup=true"), "{findings:?}");
+    let plain = crate::io::ExportOptions { markup: false, comments: false };
+    let findings = s.run_export_checks(&plain);
+    assert!(findings.iter().any(|f| f["message"] == "markup=false"), "the option is per export, not baked in: {findings:?}");
+
+    // A check that fails still produces a finding of the same shape as any other lint finding.
+    s.set_export_check_commands(vec![("test.exportBoom".into(), json!({}))]);
+    let findings = s.run_export_checks(&plain);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0]["kind"], "lint", "{findings:?}");
+    assert_eq!(findings[0]["checkId"], "test.exportBoom");
+    assert_eq!(findings[0]["severity"], "error");
+}
+
+#[test]
 fn module_settings_round_trip_and_default_off() {
     let mut p = crate::Prefs::default();
     assert!(!p.module_enabled("law"));

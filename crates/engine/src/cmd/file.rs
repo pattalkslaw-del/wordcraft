@@ -47,7 +47,7 @@ pub fn specs() -> Vec<CommandSpec> {
             let path = p::req_str(v, "path")?;
             let path = if path.to_ascii_lowercase().ends_with(".pdf") { path.to_string() } else { format!("{path}.pdf") };
             let opts = export_options(s, v);
-            let findings = s.run_export_checks();
+            let findings = s.run_export_checks(&opts);
             crate::io::save_path_with(std::path::Path::new(&path), &s.doc, None, &opts).map_err(CmdError::Failed)?;
             Ok(json!({"path": path, "markup": opts.markup, "findings": findings}))
         })
@@ -201,11 +201,12 @@ fn save(s: &mut Session, v: &Value) -> CmdResult {
         s.password = Some(crate::io::Password::new(pw));
     }
     s.stamp_save();
+    let opts = export_options(s, v);
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
-        s.run_export_checks();
+        s.run_export_checks(&opts);
     }
     let password = s.password.as_ref().map(crate::io::Password::as_str);
-    crate::io::save_path_with(&path, &s.doc, password, &export_options(s, v)).map_err(CmdError::Failed)?;
+    crate::io::save_path_with(&path, &s.doc, password, &opts).map_err(CmdError::Failed)?;
     let encrypted = password.is_some() && crate::io::can_encrypt(&path.to_string_lossy());
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     if ["docx", "docm", "dotx", "dotm", "odt", "rtf", "json", "xml"].contains(&ext.as_str()) {

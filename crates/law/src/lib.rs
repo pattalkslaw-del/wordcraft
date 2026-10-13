@@ -59,6 +59,10 @@ pub fn install(session: &mut Session) -> usize {
         return 0;
     }
     checks::register_document_hook();
+    // A host may open the file *before* it installs LawCraft (`Session::new(doc)`), so the
+    // document-loaded hook never runs for it. Restore the applied profile's export checks from
+    // the document's own metadata at installation, the same way `set_document` would.
+    checks::restore_export_registration(session);
     session.install_commands(specs())
 }
 

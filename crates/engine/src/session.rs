@@ -685,11 +685,17 @@ impl Session {
         self.export_check_commands = commands;
     }
 
-    /// Run [`export_check_commands`] and store merged findings in [`lint_findings`].
-    pub fn run_export_checks(&mut self) -> Vec<serde_json::Value> {
+    /// Run [`export_check_commands`] with the export's own options and store merged findings in
+    /// [`lint_findings`]. Each command's parameters carry the actual `markup` option, so a check
+    /// that re-exports the document (such as `textSearchablePdf`) verifies what is being written.
+    pub fn run_export_checks(&mut self, opts: &crate::io::ExportOptions) -> Vec<serde_json::Value> {
         let cmds = self.export_check_commands.clone();
         let mut all = Vec::new();
         for (id, params) in cmds {
+            let mut params = params;
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("markup".into(), serde_json::json!(opts.markup));
+            }
             match self.run(&id, &params) {
                 Ok(v) => {
                     if let Some(arr) = v.get("findings").and_then(serde_json::Value::as_array) {
@@ -702,11 +708,10 @@ impl Session {
                     }
                 }
                 Err(e) => {
-                    all.push(serde_json::json!({
-                        "checkId": id,
-                        "severity": "error",
-                        "message": e.to_string(),
-                    }));
+                    // The same shape as any other lint finding, so Review › Proofing and
+                    // `review.issues` can show a failed check beside the rest.
+                    let finding = crate::lint::Finding::error(id, e.to_string());
+                    all.push(crate::lint::finding_json(&finding, crate::cmd::pos_json));
                     if all.len() >= crate::lint::MAX_FINDINGS {
                         break;
                     }

@@ -7,7 +7,7 @@ use wordcraft_doc::props::LineSpacing;
 use wordcraft_doc::{Document, Paragraph, Path, Pos, StoryRef};
 use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 use wordcraft_engine::{Session, io};
-use wordcraft_pdf::has_extractable_text;
+use wordcraft_pdf::{TextSearchability, text_searchability};
 
 use crate::profile::{CheckSpec, DocSpec, Profile, SectionSpec};
 use crate::store::LawError;
@@ -348,15 +348,30 @@ fn no_hyperlinks(doc: &Document, id: &str, out: &mut Vec<Finding>) {
 
 fn text_searchable_pdf(doc: &Document, id: &str, export_opts: Option<&io::ExportOptions>, out: &mut Vec<Finding>) {
     let opts = export_opts.copied().unwrap_or_default();
-    let bytes = match io::save_bytes_opts("export.pdf", doc, &opts) {
-        Ok(b) => b,
-        Err(e) => {
-            out.push(Finding::error(id, format!("PDF export failed: {e}")));
-            return;
+    match io::save_bytes_opts("export.pdf", doc, &opts) {
+        Ok(bytes) => {
+            if let Some(finding) = searchability_finding(&bytes, id) {
+                out.push(finding);
+            }
         }
-    };
-    if !has_extractable_text(&bytes) {
-        out.push(Finding::error(id, "PDF export is not text-searchable"));
+        Err(e) => out.push(Finding::error(id, format!("PDF export failed: {e}"))),
+    }
+}
+
+/// The finding for exported PDF `bytes` against `checkId`, or `None` when the PDF is
+/// text-searchable. Split out so tests can hand it bytes no exporter would produce (a font-only
+/// PDF, say) and see the matching finding.
+pub(crate) fn searchability_finding(bytes: &[u8], check_id: &str) -> Option<Finding> {
+    match text_searchability(bytes) {
+        TextSearchability::Searchable => None,
+        TextSearchability::NotSearchable => Some(Finding::error(check_id, "PDF export is not text-searchable")),
+        TextSearchability::Unavailable => Some(Finding {
+            check_id: check_id.into(),
+            severity: "warning".into(),
+            message: "Text-searchability could not be verified on this build (no PDF text extractor available)".into(),
+            start: None,
+            end: None,
+        }),
     }
 }
 

@@ -25,18 +25,61 @@
 #[cfg(not(target_arch = "wasm32"))]
 mod extract;
 
+/// The Unicode text of every page, or an error when this build cannot read PDFs.
 #[cfg(not(target_arch = "wasm32"))]
-pub use extract::{extract_page_text, has_extractable_text};
-
-/// On wasm, PDF text extraction is unavailable; export checks are not run there.
-#[cfg(target_arch = "wasm32")]
-pub fn has_extractable_text(bytes: &[u8]) -> bool {
-    bytes.len() >= 8 && bytes.starts_with(b"%PDF")
-}
+pub use extract::extract_page_text;
 
 #[cfg(target_arch = "wasm32")]
 pub fn extract_page_text(_bytes: &[u8]) -> Result<Vec<String>, String> {
     Err("PDF text extraction is not available on wasm".into())
+}
+
+/// What a build could learn about a PDF's text layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextSearchability {
+    /// The bytes carry extractable document text.
+    Searchable,
+    /// The bytes are a PDF with no extractable text (for example, a scan of images).
+    NotSearchable,
+    /// This build cannot inspect PDF text at all (wasm has no PDF interpreter); verification is
+    /// unavailable, which is **not** the same as success.
+    Unavailable,
+}
+
+impl TextSearchability {
+    /// `Some(true)`/`Some(false)` when the PDF was actually inspected, `None` when it could not be.
+    pub fn is_searchable(self) -> Option<bool> {
+        match self {
+            TextSearchability::Searchable => Some(true),
+            TextSearchability::NotSearchable => Some(false),
+            TextSearchability::Unavailable => None,
+        }
+    }
+}
+
+/// Judge a PDF from the result of an extraction attempt: `None` is a build with no extractor.
+///
+/// Kept separate from the `cfg`-gated extraction so the "no extractor" arm is covered off wasm
+/// too, and so a bare `%PDF` signature can never be mistaken for extracted text.
+pub fn searchability_verdict(extracted_text: Option<bool>) -> TextSearchability {
+    match extracted_text {
+        Some(true) => TextSearchability::Searchable,
+        Some(false) => TextSearchability::NotSearchable,
+        None => TextSearchability::Unavailable,
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn text_searchability(bytes: &[u8]) -> TextSearchability {
+    if bytes.len() < 8 || !bytes.starts_with(b"%PDF") {
+        return TextSearchability::NotSearchable;
+    }
+    searchability_verdict(Some(extract::has_extractable_text(bytes)))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn text_searchability(_bytes: &[u8]) -> TextSearchability {
+    searchability_verdict(None)
 }
 
 use std::collections::{HashMap, HashSet};

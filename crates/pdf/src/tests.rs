@@ -81,6 +81,28 @@ fn extract_text(bytes: &[u8]) -> Vec<String> {
     extract_page_text(bytes).expect("parse")
 }
 
+/// The wasm build has no PDF interpreter and passes `None` here; that must never read as a
+/// searchable PDF (a bare `%PDF` signature is not text).
+#[test]
+fn a_build_without_an_extractor_never_claims_a_pdf_is_searchable() {
+    assert_eq!(searchability_verdict(None), TextSearchability::Unavailable);
+    assert_eq!(searchability_verdict(None).is_searchable(), None);
+    assert_eq!(searchability_verdict(Some(false)), TextSearchability::NotSearchable);
+    assert_eq!(searchability_verdict(Some(false)).is_searchable(), Some(false));
+    assert_eq!(searchability_verdict(Some(true)), TextSearchability::Searchable);
+    assert_eq!(searchability_verdict(Some(true)).is_searchable(), Some(true));
+}
+
+/// A non-PDF byte string is confidently not searchable (this is what the wasm signature check
+/// used to get wrong); a real exported PDF with text is searchable.
+#[test]
+fn text_searchability_inspects_real_bytes() {
+    assert_eq!(text_searchability(b"%PDF-not-really"), TextSearchability::NotSearchable);
+    assert_eq!(text_searchability(b"hello"), TextSearchability::NotSearchable);
+    let bytes = export(&sample(), &PdfOptions::default()).unwrap();
+    assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
+}
+
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
