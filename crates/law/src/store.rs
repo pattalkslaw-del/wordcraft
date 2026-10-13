@@ -279,6 +279,21 @@ mod tests {
     }
 
     #[test]
+    fn approving_is_refused_when_confined_to_automation_roots() {
+        let base = std::env::temp_dir().join(format!("wordcraft-law-approve-roots-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("in")).expect("dir");
+        let roots = AutomationRoots::new(Some(base.join("in").as_path()), None).expect("roots").expect("roots");
+        let mut store = Store::new(None);
+        let mut p = profile("mine");
+        store.save(&mut p).expect("save");
+        let err = wordcraft_engine::file_access::confine(Some(&roots), || store.approve("mine")).expect_err("confined");
+        assert!(matches!(err, LawError::HumanOnly(_)), "{err}");
+        assert!(!store.get("mine").map(|p| p.verified).unwrap_or(true), "approval must not stick");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn a_user_profile_wins_over_a_bundled_one() {
         let mut store = Store::new(None);
         let mut own = bundled().first().expect("a bundled profile").clone();

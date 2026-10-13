@@ -209,9 +209,10 @@ pub fn invoke_automation<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-/// Refuse when automation invoked the command: the action is for the person at the keyboard only.
+/// Refuse when automation invoked the command or filesystem roots confine this thread: the action is
+/// for the person at the keyboard only.
 pub fn require_human(what: &str) -> Result<(), String> {
-    if automation_invoked() {
+    if automation_invoked() || automation_confined() {
         return Err(format!("{what} is only available outside automation (not from MCP or a confined agent session)"));
     }
     Ok(())
@@ -472,6 +473,23 @@ mod tests {
             assert!(e.contains("outside automation"), "{e}");
         });
         assert!(!automation_invoked());
+    }
+
+    #[test]
+    fn human_only_actions_are_refused_when_filesystem_roots_confine_the_thread() {
+        let base = std::env::temp_dir().join(format!("wordcraft-human-only-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("in")).expect("dir");
+        let roots = AutomationRoots::new(Some(base.join("in").as_path()), None).expect("roots").expect("roots");
+        assert!(!automation_invoked());
+        confine(Some(&roots), || {
+            assert!(automation_confined());
+            assert!(!automation_invoked(), "roots alone are enough to confine agents");
+            let e = require_human("approving a court profile").unwrap_err();
+            assert!(e.contains("outside automation"), "{e}");
+        });
+        assert!(!automation_confined());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
