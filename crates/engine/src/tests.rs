@@ -5078,3 +5078,17 @@ fn page_number_prefix_with_multibyte_unicode_inserts_after_the_prefix() {
     let text = reopened.plain_text(StoryRef::Part(footer));
     assert_eq!(text, "éA1", "round-trip: {text:?}");
 }
+
+#[test]
+fn page_number_prefix_with_x_of_y_keeps_the_prefix() {
+    let mut s = s();
+    run(&mut s, "insert.pageNumber", json!({"position": "bottom", "format": "x of y", "prefix": "A-"}));
+    let footer = s.doc.sections().into_iter().next().and_then(|(_, sect)| sect.footers.default).expect("footer");
+    let text = s.doc.plain_text(StoryRef::Part(footer));
+    assert_eq!(text, "A-1 of 1", "prefixed x of y footer: {text:?}");
+    let bytes = crate::io::save_bytes("prefix-x-of-y.docx", &s.doc).expect("save");
+    let reopened = crate::io::open_bytes("prefix-x-of-y.docx", &bytes).expect("reopen");
+    let footer = reopened.sections().into_iter().next().and_then(|(_, sect)| sect.footers.default).expect("footer");
+    let text = reopened.plain_text(StoryRef::Part(footer));
+    assert_eq!(text, "A-1 of 1", "round-trip: {text:?}");
+}

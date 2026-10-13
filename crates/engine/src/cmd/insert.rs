@@ -478,8 +478,17 @@ fn page_number(s: &mut Session, v: &Value) -> CmdResult {
     para.props.align = Some(align);
     para.props.tabs = Some(vec![TabStop { pos: 0.0, align: TabAlign::Clear, leader: Default::default() }]);
     if x_of_y {
-        para.insert_text(0, "Page  of ", &CharProps::default())?;
-        para.insert_object(5, field, &CharProps { bold: Some(true), ..Default::default() })?;
+        let page_pos = if prefix.is_empty() {
+            para.insert_text(0, "Page  of ", &CharProps::default())?;
+            5
+        } else {
+            para.insert_text(0, prefix, &CharProps::default())?;
+            prefix.len()
+        };
+        para.insert_object(page_pos, field, &CharProps { bold: Some(true), ..Default::default() })?;
+        if !prefix.is_empty() {
+            para.insert_text(para.len(), " of ", &CharProps::default())?;
+        }
         let end = para.len();
         para.insert_object(
             end,
