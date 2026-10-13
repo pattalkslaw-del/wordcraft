@@ -19,4 +19,7 @@ wordcraft-engine = { workspace = true }
 wordcraft-render = { workspace = true }
 wordcraft-mcp = { workspace = true }
 wordcraft-zotero = { workspace = true }
+wordcraft-law = { workspace = true }
+# Where the saved preferences live, for the module settings a headless run reads.
+wordcraft-control-key = { workspace = true }
 serde_json = { workspace = true }

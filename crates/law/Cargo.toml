@@ -1,0 +1,21 @@
+[package]
+name = "wordcraft-law"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "LawCraft: court profiles (court rules as data) applied to documents through WordCraft's own style and layout commands"
+
+[lints]
+workspace = true
+
+[dependencies]
+wordcraft-doc = { workspace = true }
+wordcraft-engine = { workspace = true }
+wordcraft-control-key = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

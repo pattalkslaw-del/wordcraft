@@ -46,7 +46,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("insert.bookmark", "Bookmark", "Insert › Links", bookmark).params(r#"{"name": string}"#).key("Mod+Shift+F5"),
         CommandSpec::new("insert.header", "Header", "Insert › Header & Footer", |s, v| header_footer(s, v, true)).params(r#"{"text"?: string, "preset"?: "blank|blankThree|title"}"#),
         CommandSpec::new("insert.footer", "Footer", "Insert › Header & Footer", |s, v| header_footer(s, v, false)).params(r#"{"text"?: string, "preset"?: "blank|blankThree|pageNumber"}"#),
-        CommandSpec::new("insert.pageNumber", "Page Number", "Insert › Header & Footer", page_number).params(r#"{"position"?: "top|bottom|current", "align"?: "left|center|right", "format"?: "x of y"}"#),
+        CommandSpec::new("insert.pageNumber", "Page Number", "Insert › Header & Footer", page_number).params(r#"{"position"?: "top|bottom|current", "align"?: "left|center|right", "format"?: "x of y", "prefix"?: string (text before the page number, e.g. appendix "A")}"#),
         CommandSpec::new("insert.editHeader", "Edit Header", "Insert › Header & Footer › Header", |s, _| edit_hf(s, true)).pure(),
         CommandSpec::new("insert.editFooter", "Edit Footer", "Insert › Header & Footer › Footer", |s, _| edit_hf(s, false)).pure(),
         CommandSpec::new("insert.closeHeader", "Close Header and Footer", "Header & Footer", |s, _| {
@@ -460,6 +460,10 @@ fn page_number(s: &mut Session, v: &Value) -> CmdResult {
         _ => Align::Center,
     };
     let x_of_y = p::str(v, "format").is_some_and(|f| f.contains("of"));
+    let prefix = p::str(v, "prefix").unwrap_or("");
+    if prefix.chars().count() > 16 {
+        return Err(CmdError::Params("`prefix` is at most 16 characters".into()));
+    }
     let field = InlineObject::Field { instr: "PAGE".into(), result: "1".into(), locked: false, code: false };
     if position == "current" {
         let props = s.typing_props();
@@ -482,8 +486,11 @@ fn page_number(s: &mut Session, v: &Value) -> CmdResult {
             InlineObject::Field { instr: "NUMPAGES".into(), result: "1".into(), locked: false, code: false },
             &CharProps { bold: Some(true), ..Default::default() },
         )?;
-    } else {
+    } else if prefix.is_empty() {
         para.insert_object(0, field, &CharProps::default())?;
+    } else {
+        para.insert_text(0, prefix, &CharProps::default())?;
+        para.insert_object(prefix.len(), field, &CharProps::default())?;
     }
     s.doc.set_story(StoryRef::Part(id), vec![para_block(para)])?;
     Ok(json!({"story": id}))
