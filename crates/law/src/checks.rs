@@ -228,16 +228,24 @@ fn min_margins(doc: &Document, spec: &DocSpec, check: &CheckSpec, id: &str, out:
         [p.top, p.bottom, p.left, p.right].into_iter().flatten().reduce(f32::min)
     });
     let Some(min_pt) = min_pt else { return };
+    let multi = doc.sections().len() > 1;
     for (index, sect) in doc.sections() {
         for (name, val) in [("top", sect.margin_top), ("bottom", sect.margin_bottom), ("left", sect.margin_left), ("right", sect.margin_right)] {
             if val + 0.01 < min_pt {
                 let source = &check.source;
-                let where_at = if doc.sections().len() > 1 { format!(" (section {index})") } else { String::new() };
+                let where_at = if multi { format!(" (section {index})") } else { String::new() };
                 out.push(Finding::error(id, format!("{name} margin {val} pt is below the minimum {min_pt} pt{where_at} ({source})")));
+                if out.len() >= MAX_FINDINGS {
+                    return;
+                }
             }
         }
     }
 }
+
+/// The tightest a single-spaced exception (caption, heading, block quote, signature, certificate)
+/// may be. Exceptions may be single-spaced, but not tighter than single spacing.
+const SINGLE_SPACING: f32 = 1.0;
 
 fn min_line_spacing(doc: &Document, spec: &DocSpec, check: &CheckSpec, id: &str, out: &mut Vec<Finding>) {
     let min_mult = check.spacing.or_else(|| {
@@ -266,9 +274,10 @@ fn min_line_spacing(doc: &Document, spec: &DocSpec, check: &CheckSpec, id: &str,
     };
     for path in doc.para_paths(StoryRef::Body) {
         let Some(para) = doc.para(StoryRef::Body, &path) else { continue };
-        if except.iter().any(|n| para_style_name(doc, para).is_some_and(|s| s.eq_ignore_ascii_case(n))) {
-            continue;
-        }
+        // A single-spaced exception may be tighter than the body's minimum, but it still may not
+        // go below single spacing: a Heading at 0.5 is reported, one at 1.0 is not.
+        let is_exception = except.iter().any(|n| para_style_name(doc, para).is_some_and(|s| s.eq_ignore_ascii_case(n)));
+        let floor = if is_exception { SINGLE_SPACING } else { min_mult };
         let rp = doc.styles.resolve_para(&para.props);
         let natural = para_natural_line_height(doc, para);
         let mult = effective_line_spacing_multiple(rp.line_spacing, natural);
@@ -277,19 +286,13 @@ fn min_line_spacing(doc: &Document, spec: &DocSpec, check: &CheckSpec, id: &str,
                 let start = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
                 let end = Pos { story: StoryRef::Body, path: path.clone(), off: para.text.len() };
                 let source = &check.source;
-                out.push(Finding::at(
-                    id,
-                    "error",
-                    format!("Line spacing could not be verified against the minimum {min_mult} ({source})"),
-                    start,
-                    end,
-                ));
+                out.push(Finding::at(id, "error", format!("Line spacing could not be verified against the minimum {floor} ({source})"), start, end));
             }
-            Some(m) if m + 0.01 < min_mult => {
+            Some(m) if m + 0.01 < floor => {
                 let start = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
                 let end = Pos { story: StoryRef::Body, path: path.clone(), off: para.text.len() };
                 let source = &check.source;
-                out.push(Finding::at(id, "error", format!("Line spacing {m} is below the minimum {min_mult} ({source})"), start, end));
+                out.push(Finding::at(id, "error", format!("Line spacing {m} is below the minimum {floor} ({source})"), start, end));
             }
             _ => {}
         }

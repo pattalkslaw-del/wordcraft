@@ -103,6 +103,48 @@ fn text_searchability_inspects_real_bytes() {
     assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
 }
 
+/// A scanned filing with a searchable page number is still not text-searchable: the page number
+/// extracts, but it is incidental furniture, not the document's substantive text.
+#[test]
+fn a_scanned_page_with_a_searchable_page_number_is_not_searchable() {
+    let mut d = Document::new();
+    // The "scan": a full-page picture with no text of its own.
+    let media = d.add_media(png(), "png");
+    let mut p = Paragraph::with_text("", CharProps::default());
+    p.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    d.body = vec![para_block(p)];
+    // A page number in the footer: real, extractable text.
+    let mut f = Paragraph::with_text("", CharProps::default());
+    f.insert_object(0, InlineObject::Field { instr: "PAGE".into(), result: String::new(), locked: false, code: false }, &CharProps::default())
+        .unwrap();
+    let id = d.add_part(wordcraft_doc::PartKind::Footer, vec![para_block(f)]);
+    d.last_section.footers.default = Some(id);
+
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    assert!(squash(&extract_text(&bytes).concat()).contains('1'), "the page number is extractable");
+    assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable);
+}
+
+/// Incidental text alone (a lone page number, untagged) does not certify a text layer: a filing
+/// needs a substantive amount of its own text before it counts as searchable.
+#[test]
+fn incidental_text_alone_does_not_certify_a_text_layer() {
+    let mut d = Document::new();
+    d.body = vec![para_block(Paragraph::with_text("1", CharProps::default()))];
+    let bytes = export(&d, &PdfOptions { tagged: false, ..Default::default() }).unwrap();
+    assert!(squash(&extract_text(&bytes).concat()).contains('1'));
+    assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable);
+    // A paragraph of real text does certify it.
+    d.body = vec![para_block(Paragraph::with_text("The quick brown fox jumps over the lazy dog.", CharProps::default()))];
+    let bytes = export(&d, &PdfOptions { tagged: false, ..Default::default() }).unwrap();
+    assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
+}
+
 fn squash(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }

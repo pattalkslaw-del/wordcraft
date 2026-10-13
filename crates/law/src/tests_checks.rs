@@ -59,7 +59,8 @@ fn federal_principal_brief_skeleton_passes_checks() {
     assert!(f.is_empty(), "expected no findings: {f:?}");
 }
 
-/// Every document type of every bundled profile: a compliant skeleton reports nothing.
+/// Every document type of every bundled profile: a compliant skeleton reports nothing, on demand
+/// and on export (so the export-only checks such as `textSearchablePdf` are covered too).
 #[test]
 fn every_bundled_document_type_compliant_skeleton_has_no_findings() {
     for id in [MISSOURI, FEDERAL] {
@@ -69,8 +70,10 @@ fn every_bundled_document_type_compliant_skeleton_has_no_findings() {
         for doc_type in doc_types {
             let mut s = apply_session(id, &doc_type);
             write_skeleton(&mut s, &profile, &doc_type);
-            let f = findings(&mut s, id, &doc_type, false);
-            assert!(f.is_empty(), "{id}/{doc_type}: expected no findings: {f:?}");
+            for for_export in [false, true] {
+                let f = findings(&mut s, id, &doc_type, for_export);
+                assert!(f.is_empty(), "{id}/{doc_type} (export {for_export}): expected no findings: {f:?}");
+            }
         }
     }
 }
@@ -139,17 +142,50 @@ fn federal_checks_fire_beyond_font_size() {
     assert!(has_check(&findings(&mut s, FEDERAL, "brief", false), "requiredSections"));
 }
 
-/// Required sections must be present *and in order*: two sections in the wrong order are reported.
+/// Required sections must be present *and in order*: every section is written, but two are
+/// swapped, so the order check is what reports them — not a missing section.
 #[test]
 fn sections_out_of_order_are_reported() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let spec = profile.docs.get("brief").expect("brief");
     let mut s = apply_session(MISSOURI, "brief");
-    // Conclusion before Argument: both are present, but the order is wrong.
-    for name in ["Conclusion", "Argument"] {
-        run(&mut s, "styles.apply", json!({"style": "Heading"}));
-        run(&mut s, "text.insert", json!({"text": format!("{name}\n")}));
+    // All of the profile's sections, in order, with Argument and Conclusion swapped.
+    let mut sections: Vec<&crate::profile::SectionSpec> = spec.sections.iter().collect();
+    let (a, c) = (
+        sections.iter().position(|x| x.id == "argument").expect("Argument"),
+        sections.iter().position(|x| x.id == "conclusion").expect("Conclusion"),
+    );
+    sections.swap(a, c);
+    for sec in sections {
+        run(&mut s, "styles.apply", json!({"style": sec.style.clone().unwrap_or_else(|| "Heading".into())}));
+        run(&mut s, "text.insert", json!({"text": format!("{}\n", sec.name)}));
     }
     let f = findings(&mut s, MISSOURI, "brief", false);
     assert!(has_check(&f, "requiredSections"), "{f:?}");
+}
+
+/// Single-spaced exceptions (caption, heading, block quote, signature, certificate) may be
+/// tighter than the body's minimum, but they still may not go below single spacing.
+#[test]
+fn single_spaced_exceptions_must_still_be_at_least_single_spaced() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    // Compliant: a Heading at single spacing is allowed.
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    run(&mut s, "styles.apply", json!({"style": "Heading"}));
+    run(&mut s, "para.lineSpacing", json!({"value": 1}));
+    run(&mut s, "text.insert", json!({"text": "Heading"}));
+    let f = findings(&mut s, MISSOURI, "brief", false);
+    assert!(!has_check(&f, "minLineSpacing"), "single spacing is allowed for an exception: {f:?}");
+
+    // Underspaced: a Heading tighter than single spacing is reported.
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    run(&mut s, "styles.apply", json!({"style": "Heading"}));
+    run(&mut s, "para.lineSpacing", json!({"value": 0.5}));
+    run(&mut s, "text.insert", json!({"text": "Heading"}));
+    let f = findings(&mut s, MISSOURI, "brief", false);
+    assert!(has_check(&f, "minLineSpacing"), "an exception below single spacing is reported: {f:?}");
 }
 
 /// The word limit counts the profile's included sections and skips the excluded ones; the
