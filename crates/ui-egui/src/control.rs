@@ -17,6 +17,8 @@ use std::sync::mpsc::Sender;
 
 use serde_json::{Value, json};
 
+use wordcraft_engine::file_access;
+
 use crate::WordApp;
 
 pub struct ControlRequest {
@@ -116,10 +118,10 @@ pub fn handle(app: &mut WordApp, ctx: &egui::Context, req: &ControlRequest) -> O
         "engine.execute" | "command" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
-            match app.execute(id, params) {
+            file_access::invoke_automation(|| match app.execute(id, params) {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
-            }
+            })
         }
         "engine.commands" => {
             let reg = app.session.registry.clone();
@@ -267,10 +269,10 @@ pub fn handle(app: &mut WordApp, ctx: &egui::Context, req: &ControlRequest) -> O
         }
         other => {
             // Anything else: a command id.
-            match app.execute(other, p.clone()) {
+            file_access::invoke_automation(|| match app.execute(other, p.clone()) {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
-            }
+            })
         }
     }
 }

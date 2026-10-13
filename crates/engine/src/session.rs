@@ -23,7 +23,7 @@ use wordcraft_doc::props::CharProps;
 use wordcraft_doc::{Document, Path, Pos, StoryRef, Table};
 use wordcraft_layout::{DocLayout, LayoutCache, LayoutOptions, NumeralMode, ViewMode};
 
-use crate::{CmdError, Registry};
+use crate::{CmdError, CommandSpec, Registry};
 
 /// A selection: anchor (where it started) and focus (where the caret is).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -525,6 +525,11 @@ pub struct Prefs {
     /// in Word). A damaged saved value reads as the defaults.
     #[serde(deserialize_with = "crate::cmd::tools::lenient_autocorrect")]
     pub autocorrect: crate::cmd::tools::AutoCorrectPrefs,
+    /// Optional modules the user turned on, by module id: off until the user switches one on
+    /// (File › Options › Add-ins). The core ships none of its own: a module brings its commands
+    /// and data (`wordcraft-law` is `law`), and the engine only reads this switch.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub modules: std::collections::BTreeMap<String, bool>,
 }
 
 impl Default for Prefs {
@@ -546,11 +551,18 @@ impl Default for Prefs {
             ignore_internet: true,
             detect_language: true,
             autocorrect: Default::default(),
+            modules: Default::default(),
         }
     }
 }
 
 impl Prefs {
+    /// Whether an optional module is turned on ([`Prefs::modules`]): a module is off until the
+    /// user switches it on (File › Options › Add-ins).
+    pub fn module_enabled(&self, id: &str) -> bool {
+        self.modules.get(id).copied().unwrap_or(false)
+    }
+
     /// What the spelling check skips.
     pub fn spelling(&self) -> wordcraft_proof::Options {
         wordcraft_proof::Options {
@@ -585,6 +597,36 @@ impl Session {
         {
             log::warn!("custom dictionary: save failed: {e}");
         }
+    }
+
+    /// Whether an optional module is turned on ([`Prefs::modules`], `law` for LawCraft): a
+    /// module is off until the user switches it on, and a host installs its commands only then.
+    pub fn module_enabled(&self, id: &str) -> bool {
+        self.prefs.module_enabled(id)
+    }
+
+    /// Install commands an optional module supplies (`law.profiles.apply` from LawCraft, say).
+    /// The host calls this once at start-up, when the module is turned on, and every way in
+    /// reaches them from then on: the ribbon, the command palette, shortcuts, the CLI, the JSON
+    /// control channel and the MCP server all dispatch by id. A command whose id the core
+    /// already has is skipped, so a module can never shadow core behaviour. Returns how many
+    /// commands were added.
+    ///
+    /// Nothing here knows what any module does: the engine holds the specs and the switch, the
+    /// module brings the behaviour.
+    pub fn install_commands(&mut self, specs: Vec<CommandSpec>) -> usize {
+        let mut all = self.registry.all().to_vec();
+        let mut added = 0;
+        for spec in specs {
+            if self.registry.get(spec.id).is_some() {
+                log::warn!("command `{}` is already registered; the module's is ignored", spec.id);
+                continue;
+            }
+            all.push(spec);
+            added += 1;
+        }
+        self.registry = Arc::new(crate::Registry::new(all));
+        added
     }
 
     pub fn new(doc: Document) -> Self {

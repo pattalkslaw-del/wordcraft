@@ -74,6 +74,54 @@ fn txt_save_writes_list_labels() {
 }
 
 #[test]
+fn a_module_installs_its_commands_and_never_shadows_core() {
+    let mut s = s();
+    assert!(!s.module_enabled("law"), "a module is off until the user turns it on");
+    assert!(s.run("mod.ping", &json!({})).is_err(), "unknown command");
+    let spec = crate::CommandSpec::new("mod.ping", "Ping", "Test", |_, _| Ok(json!({"pong": true})));
+    assert_eq!(s.install_commands(vec![spec]), 1);
+    assert_eq!(run(&mut s, "mod.ping", json!({})), json!({"pong": true}));
+    // The core's command wins, and nothing is installed twice.
+    let again = crate::CommandSpec::new("mod.ping", "Other", "Test", |_, _| Ok(json!({})));
+    assert_eq!(s.install_commands(vec![again]), 0);
+    let core = crate::CommandSpec::new("format.bold", "Not Bold", "Test", |_, _| Ok(json!({})));
+    assert_eq!(s.install_commands(vec![core]), 0);
+    assert_eq!(s.registry.get("format.bold").map(|c| c.label), Some("Bold"));
+    // A second session starts from the core registry again.
+    let mut fresh = Session::new(wordcraft_doc::Document::new());
+    assert!(fresh.run("mod.ping", &json!({})).is_err());
+}
+
+#[test]
+fn module_settings_round_trip_and_default_off() {
+    let mut p = crate::Prefs::default();
+    assert!(!p.module_enabled("law"));
+    p.modules.insert("law".into(), true);
+    let json = serde_json::to_string(&p).expect("prefs serialize");
+    assert!(json.contains(r#""modules":{"law":true}"#), "{json}");
+    let back: crate::Prefs = serde_json::from_str(&json).expect("prefs deserialize");
+    assert!(back.module_enabled("law"));
+    // A saved value without the setting (an older file) reads as off, never as on.
+    let old: crate::Prefs = serde_json::from_str(r#"{"countNotes": false}"#).expect("older prefs deserialize");
+    assert!(!old.module_enabled("law"));
+    assert!(!old.count_notes);
+}
+
+#[test]
+fn styles_create_can_leave_the_selection_alone() {
+    let mut s = s();
+    run(&mut s, "text.insert", json!({"text": "Hello"}));
+    assert_eq!(s.doc.para_at(&s.sel.focus).and_then(|p| p.props.style.clone()), None);
+    let r = run(&mut s, "styles.create", json!({"name": "Quotation", "fromSelection": false, "apply": false}));
+    let id = r["id"].as_str().expect("style id").to_string();
+    assert!(s.doc.styles.get(&id).is_some(), "the style was created");
+    assert_eq!(s.doc.para_at(&s.sel.focus).and_then(|p| p.props.style.clone()), None, "`apply: false` leaves the caret's paragraph in its own style");
+    // The default is Word's: a new style is applied to the selection.
+    run(&mut s, "styles.create", json!({"name": "Other", "fromSelection": false}));
+    assert_eq!(s.doc.para_at(&s.sel.focus).and_then(|p| p.props.style.clone()).as_deref(), Some("Other"));
+}
+
+#[test]
 fn every_command_has_unique_id() {
     let reg = cmd::registry();
     let mut ids: Vec<&str> = reg.all().iter().map(|c| c.id).collect();
@@ -4002,6 +4050,16 @@ fn manage_styles_lists_paragraph_character_linked_and_table_styles() {
 }
 
 #[test]
+fn modify_style_can_change_based_on() {
+    let mut s = s();
+    run(&mut s, "styles.create", json!({"name": "Mine", "basedOn": "Normal", "fromSelection": false, "apply": false}));
+    run(&mut s, "styles.create", json!({"name": "Base", "basedOn": "Normal", "fromSelection": false, "apply": false}));
+    assert_eq!(s.doc.styles.find("Mine").unwrap().based_on.as_deref(), Some("Normal"));
+    run(&mut s, "styles.modify", json!({"style": "Mine", "basedOn": "Base"}));
+    assert_eq!(s.doc.styles.find("Mine").unwrap().based_on.as_deref(), Some("Base"));
+}
+
+#[test]
 fn deleting_a_style_falls_back_to_its_base_and_undoes() {
     let mut s = s();
     run(&mut s, "text.insert", json!({"text": "Styled"}));
@@ -6310,4 +6368,32 @@ fn odt_deleted_mark_inside_an_insertion_survives_reject_all() {
         run(&mut s, "review.rejectAll", json!({}));
         assert_eq!(text(&s), "One \n two");
     }
+}
+
+#[test]
+fn page_number_prefix_with_multibyte_unicode_inserts_after_the_prefix() {
+    let mut s = s();
+    run(&mut s, "insert.pageNumber", json!({"position": "bottom", "prefix": "éA"}));
+    let footer = s.doc.sections().into_iter().next().and_then(|(_, sect)| sect.footers.default).expect("footer");
+    let text = s.doc.plain_text(StoryRef::Part(footer));
+    assert_eq!(text, "éA1", "the field goes after the whole prefix, not after one UTF-8 code unit: {text:?}");
+    let bytes = crate::io::save_bytes("prefix.docx", &s.doc).expect("save");
+    let reopened = crate::io::open_bytes("prefix.docx", &bytes).expect("reopen");
+    let footer = reopened.sections().into_iter().next().and_then(|(_, sect)| sect.footers.default).expect("footer");
+    let text = reopened.plain_text(StoryRef::Part(footer));
+    assert_eq!(text, "éA1", "round-trip: {text:?}");
+}
+
+#[test]
+fn page_number_prefix_with_x_of_y_keeps_the_prefix() {
+    let mut s = s();
+    run(&mut s, "insert.pageNumber", json!({"position": "bottom", "format": "x of y", "prefix": "A-"}));
+    let footer = s.doc.sections().into_iter().next().and_then(|(_, sect)| sect.footers.default).expect("footer");
+    let text = s.doc.plain_text(StoryRef::Part(footer));
+    assert_eq!(text, "A-1 of 1", "prefixed x of y footer: {text:?}");
+    let bytes = crate::io::save_bytes("prefix-x-of-y.docx", &s.doc).expect("save");
+    let reopened = crate::io::open_bytes("prefix-x-of-y.docx", &bytes).expect("reopen");
+    let footer = reopened.sections().into_iter().next().and_then(|(_, sect)| sect.footers.default).expect("footer");
+    let text = reopened.plain_text(StoryRef::Part(footer));
+    assert_eq!(text, "A-1 of 1", "round-trip: {text:?}");
 }

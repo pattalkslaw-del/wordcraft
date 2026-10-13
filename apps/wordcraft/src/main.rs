@@ -355,6 +355,10 @@ fn main() -> eframe::Result {
             let mut app = WordApp::new(session, services(file_dialog, &cc.egui_ctx));
             load_prefs(&mut app);
             load_user_dictionary(&mut app);
+            // LawCraft, off until the user turns it on in the options (law.enabled): its
+            // profiles live in the settings folder and its commands are installed with them.
+            wordcraft_law::set_profiles_dir(wordcraft_law::settings_dir());
+            wordcraft_law::install(&mut app.session);
             // A region chosen in File › Options replaces the system's for the first blank
             // document too (#838).
             if !sample && app.session.prefs.region.is_some() {
