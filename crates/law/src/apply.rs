@@ -106,9 +106,16 @@ fn page_numbers(s: &mut Session, pn: &PageNumbersSpec, applied: &mut Vec<String>
         run(s, "layout.pageNumberFormat", fmt)?;
         applied.push("layout.pageNumberFormat".into());
     }
-    if pn.cover_numbered == Some(false) {
-        run(s, "layout.differentFirstPage", json!({"value": true}))?;
-        applied.push("layout.differentFirstPage".into());
+    match pn.cover_numbered {
+        Some(false) => {
+            run(s, "layout.differentFirstPage", json!({"value": true}))?;
+            applied.push("layout.differentFirstPage".into());
+        }
+        Some(true) => {
+            run(s, "layout.differentFirstPage", json!({"value": false}))?;
+            applied.push("layout.differentFirstPage".into());
+        }
+        None => {}
     }
     Ok(())
 }

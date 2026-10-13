@@ -390,6 +390,30 @@ fn applying_the_missouri_brief_gives_a_missouri_brief() {
 }
 
 #[test]
+fn applying_missouri_reply_brief_heading_is_single_spaced() {
+    let doc = applied(MISSOURI, "reply");
+    assert_eq!(
+        style(&doc, "Heading").para.line_spacing,
+        Some(LineSpacing::Multiple(1.0)),
+        "reply brief headings are single spaced like the initial brief"
+    );
+}
+
+#[test]
+fn cover_numbered_turns_off_different_first_page() {
+    let mut s = law();
+    run(&mut s, "layout.differentFirstPage", json!({"value": true}));
+    assert!(section(&s.doc).title_page, "different first page starts on");
+    let id = "test-cover-numbered";
+    let mut p = profile_json(id);
+    p["docs"]["brief"]["pageNumbers"] = json!({"position": "bottom", "align": "center", "xOfY": false, "coverNumbered": true});
+    run(&mut s, "law.profiles.create", p);
+    run(&mut s, "law.profiles.apply", json!({"id": id}));
+    let doc = roundtrip(&s);
+    assert!(!section(&doc).title_page, "coverNumbered applies numbering on page 1 too");
+}
+
+#[test]
 fn applying_the_federal_brief_gives_a_federal_brief() {
     let doc = applied(FEDERAL, "brief");
     let sect = section(&doc);
@@ -573,9 +597,32 @@ fn hostile_profile_json_is_refused_not_fatal() {
 #[test]
 fn proptest_any_json_either_parses_or_explains_itself() {
     use proptest::prelude::*;
-    proptest!(|(text in "\\PC{0,200}")| {
+    let base = profile_json("proptest-base");
+    proptest!(|(
+        text in "\\PC{0,200}",
+        top in proptest::option::of(-2000f32..3000f32),
+        position in proptest::option::of(0u8..5),
+    )| {
         if let Ok(p) = Profile::from_json(&text) {
             proptest::prop_assert!(crate::profile::problems(&p).is_empty());
+        }
+        let mut v = base.clone();
+        if let Some(t) = top {
+            v["docs"]["brief"]["page"]["top"] = json!(t);
+        }
+        if let Some(i) = position {
+            let pos = ["top", "bottom", "left", "sideways", ""][i as usize % 5];
+            v["docs"]["brief"]["pageNumbers"] = json!({"position": pos, "align": "center", "xOfY": false});
+        }
+        match Profile::from_json(&v.to_string()) {
+            Ok(p) => proptest::prop_assert!(crate::profile::problems(&p).is_empty()),
+            Err(msgs) => {
+                let bad_top = top.is_some_and(|t| t < 0.0 || t > 1584.0);
+                let bad_pos = position.is_some_and(|i| i >= 2);
+                if bad_top || bad_pos {
+                    proptest::prop_assert!(!msgs.is_empty());
+                }
+            }
         }
     });
 }
