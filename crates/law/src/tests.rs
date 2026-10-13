@@ -221,6 +221,39 @@ fn automation_cannot_approve_or_import_verified_profiles() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A confined agent session (filesystem roots in force, without the automation marker) must not
+/// turn an import into verification — neither from the file's own flag nor from an explicit
+/// override — and the store must hold the profile unverified.
+#[test]
+fn a_confined_agent_cannot_import_a_verified_profile() {
+    let mut s = law();
+    let dir = temp_dir("confined-import");
+    let read_root = dir.join("in");
+    std::fs::create_dir_all(&read_root).expect("the read root");
+    let file = read_root.join("verified.json");
+    // A verified profile written by a person, inside what will become the read root.
+    run(&mut s, "law.profiles.create", profile_json("test-confined-court"));
+    run(&mut s, "law.profiles.approve", json!({"id": "test-confined-court"}));
+    run(&mut s, "law.profiles.export", json!({"id": "test-confined-court", "path": file.to_string_lossy()}));
+    let text = std::fs::read_to_string(&file).expect("the exported file");
+    assert!(text.contains("\"verified\": true"), "the file carries the verified flag: {text}");
+
+    let roots = wordcraft_engine::file_access::AutomationRoots::new(Some(read_root.as_path()), None).expect("roots").expect("roots");
+    wordcraft_engine::file_access::confine(Some(&roots), || {
+        assert!(wordcraft_engine::file_access::automation_confined());
+        assert!(!wordcraft_engine::file_access::automation_invoked(), "roots alone confine the agent");
+        // The file's own `verified: true` does not survive...
+        let imported = run(&mut s, "law.profiles.import", json!({"path": file.to_string_lossy()}));
+        assert_eq!(imported["verified"], json!(false), "a confined agent cannot import a verified profile");
+        // ...and the explicit override does not grant it either...
+        let imported = run(&mut s, "law.profiles.import", json!({"path": file.to_string_lossy(), "verified": true}));
+        assert_eq!(imported["verified"], json!(false), "an explicit override is refused under confinement");
+        // ...and what the store holds is unverified.
+        assert_eq!(store().get("test-confined-court").map(|p| p.verified), Some(false));
+    });
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn missouri_appendix_pages_are_numbered_from_a1() {
     let s = apply_session(MISSOURI, "appendix");

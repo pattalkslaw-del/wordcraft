@@ -5267,6 +5267,7 @@ dependencies = [
  "wordcraft-control-key",
  "wordcraft-doc",
  "wordcraft-engine",
+ "wordcraft-geom",
 ]
 
 [[package]]

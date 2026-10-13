@@ -96,9 +96,11 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("law.profiles.import", "Import Court Profile", LOC, |_, v| {
             let path = p::req_str(v, "path")?;
             let mut p = Store::read_file(std::path::Path::new(path)).map_err(invalid)?;
-            // Automation never grants verification: only a person importing outside MCP may keep or
-            // set the verified flag from the file.
-            if wordcraft_engine::file_access::automation_invoked() {
+            // Automation never grants verification: only a person importing outside MCP or a
+            // confined agent session may keep or set the verified flag from the file. A confined
+            // agent may reach a file that says `"verified": true` (or pass the override) without
+            // the automation marker, so confinement counts too.
+            if wordcraft_engine::file_access::automation_invoked() || wordcraft_engine::file_access::automation_confined() {
                 p.verified = false;
             } else if let Some(verified) = p::bool(v, "verified") {
                 p.verified = verified;
@@ -106,7 +108,7 @@ pub fn specs() -> Vec<CommandSpec> {
             store().insert(p.clone()).map_err(invalid)?;
             Ok(p.to_value())
         })
-        .params(r#"{"path": string, "verified"?: bool (outside automation only: override the file's flag)} → the profile as it is now in the store"#)
+        .params(r#"{"path": string, "verified"?: bool (outside automation only: override the file's flag)} → the profile as it is now in the store; importing under MCP or a confined agent session always saves it unverified"#)
         .pure(),
         CommandSpec::new("law.profiles.export", "Export Court Profile", LOC, |_, v| {
             let id = p::req_str(v, "id")?;

@@ -467,6 +467,11 @@ fn check_page(out: &mut Vec<String>, at: &str, p: &PageSpec) {
         (Some(name), (None, None)) => {
             if name.trim().is_empty() {
                 out.push(format!("{at}.size is empty"));
+            } else if !wordcraft_geom::PAPER_SIZES.iter().any(|(n, _, _)| n.eq_ignore_ascii_case(name)) {
+                // A name WordCraft doesn't know would only fail later in `layout.size`, so it is
+                // reported here, where an agent can still fix the profile.
+                let known: Vec<&str> = wordcraft_geom::PAPER_SIZES.iter().map(|(n, _, _)| *n).collect();
+                out.push(format!("{at}.size `{name}` is not a paper WordCraft knows ({})", known.join(", ")));
             }
         }
     }
@@ -698,6 +703,19 @@ mod tests {
         assert!(errs.contains("basedOn `Nowhere` is not a style"), "{errs}");
         assert!(errs.contains("style `Missing` is not a style"), "{errs}");
         assert!(errs.contains("ids `gone` is not a section"), "{errs}");
+    }
+
+    #[test]
+    fn unknown_paper_sizes_are_reported_at_validation_time() {
+        let mut p = minimal();
+        p.docs.get_mut("brief").expect("brief").page.size = Some("Letterr".into());
+        let errs = problems(&p).join("; ");
+        assert!(errs.contains("Letterr"), "{errs}");
+        assert!(errs.contains("not a paper WordCraft knows"), "{errs}");
+        // A name WordCraft does know, whatever its case, is accepted.
+        let mut p = minimal();
+        p.docs.get_mut("brief").expect("brief").page.size = Some("legal".into());
+        assert!(problems(&p).is_empty(), "{:?}", problems(&p));
     }
 
     #[test]
