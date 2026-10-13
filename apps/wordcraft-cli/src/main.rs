@@ -41,6 +41,9 @@ USAGE:
                                               addNote, refresh, removeCodes, setDocPrefs
                                               (--cmd runs first, e.g. --cmd caret.docEnd)
   wordcraft-cli --version
+
+LawCraft (court profiles, `law.profiles.*`) is an opt-in module: its commands are there when the
+app's options turn it on (law.enabled), or with WORDCRAFT_LAW=1 for one run. See docs/law.md.
 ";
 
 fn open(path: &str) -> Result<Session, String> {
@@ -48,6 +51,38 @@ fn open(path: &str) -> Result<Session, String> {
     let mut s = Session::new(doc);
     s.path = Some(path.into());
     Ok(s)
+}
+
+/// Whether the LawCraft module (`law.*` commands) is on: the user's setting (`law.enabled` in the
+/// saved preferences, the same one the app writes), or `WORDCRAFT_LAW=1` for one headless run.
+/// Off by default; a run that saves no preferences (`WORDCRAFT_NO_PREFS`) only takes the flag.
+fn law_enabled() -> bool {
+    if std::env::var_os("WORDCRAFT_LAW").is_some_and(|v| !v.is_empty() && v != "0") {
+        return true;
+    }
+    if std::env::var_os("WORDCRAFT_NO_PREFS").is_some() {
+        return false;
+    }
+    let Some(dir) = wordcraft_control_key::settings_dir() else { return false };
+    let Ok(bytes) = std::fs::read(dir.join("ui.json")) else { return false };
+    let Ok(saved) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return false };
+    saved.pointer("/editing/modules/law").and_then(serde_json::Value::as_bool) == Some(true)
+}
+
+/// Turn the LawCraft module on for a headless session, when it is on.
+fn with_law(mut s: Session) -> Session {
+    enable_law(&mut s);
+    s
+}
+
+/// [`with_law`] for a session that already exists (the MCP bridge's headless backend).
+fn enable_law(s: &mut Session) {
+    if law_enabled() {
+        wordcraft_law::set_profiles_dir(wordcraft_law::settings_dir());
+        // A headless session keeps no saved preferences, so the flag or the setting decides here.
+        s.prefs.modules.insert(wordcraft_law::MODULE.into(), true);
+        wordcraft_law::install(s);
+    }
 }
 
 /// `--author NAME`: the author recorded on tracked changes and comments (`file.setAuthor`).
@@ -221,13 +256,13 @@ fn run(args: &[String]) -> Result<(), Failure> {
         "run" => {
             validate_options("run", &rest, RUN_OPTIONS)?;
             let mut s = match (arg_value(&rest, "--file"), arg_value(&rest, "--template")) {
-                (Some(f), _) => open(&f)?,
+                (Some(f), _) => with_law(open(&f)?),
                 (None, Some(t)) => {
-                    let mut s = Session::new(wordcraft_doc::Document::new());
+                    let mut s = with_law(Session::new(wordcraft_doc::Document::new()));
                     s.run("file.new", &json!({"template": t})).map_err(|e| e.to_string())?;
                     s
                 }
-                _ => Session::new(wordcraft_doc::Document::new()),
+                _ => with_law(Session::new(wordcraft_doc::Document::new())),
             };
             if let Some(name) = arg_value(&rest, "--author") {
                 set_author(&mut s, &name)?;
@@ -269,7 +304,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
         }
         "commands" => {
             validate_options("commands", &rest, COMMANDS_OPTIONS)?;
-            let s = Session::new(wordcraft_doc::Document::new());
+            let s = with_law(Session::new(wordcraft_doc::Document::new()));
             if rest.iter().any(|a| a == "--json") {
                 let list = serde_json::to_string_pretty(&s.registry.describe()).unwrap_or_default();
                 write_stdout(|o| writeln!(o, "{list}"))
@@ -317,6 +352,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
                 }
                 None => {
                     let mut headless = wordcraft_mcp::Headless::default();
+                    enable_law(&mut headless.session);
                     if let Some(roots) = roots {
                         // Every thread of this process, not only the server's: nothing reaches past the roots.
                         wordcraft_engine::file_access::confine_process(roots.clone());

@@ -5123,6 +5123,7 @@ dependencies = [
  "wordcraft-doc",
  "wordcraft-engine",
  "wordcraft-fonts",
+ "wordcraft-law",
  "wordcraft-proof",
  "wordcraft-ui-egui",
  "zbus",
@@ -5133,8 +5134,10 @@ name = "wordcraft-cli"
 version = "0.6.1"
 dependencies = [
  "serde_json",
+ "wordcraft-control-key",
  "wordcraft-doc",
  "wordcraft-engine",
+ "wordcraft-law",
  "wordcraft-mcp",
  "wordcraft-render",
  "wordcraft-zotero",
@@ -5253,6 +5256,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wordcraft-law"
+version = "0.6.1"
+dependencies = [
+ "log",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "wordcraft-control-key",
+ "wordcraft-doc",
+ "wordcraft-engine",
+ "wordcraft-geom",
+]
+
+[[package]]
 name = "wordcraft-layout"
 version = "0.6.1"
 dependencies = [
@@ -5352,6 +5370,7 @@ dependencies = [
  "wordcraft-engine",
  "wordcraft-fonts",
  "wordcraft-geom",
+ "wordcraft-law",
  "wordcraft-layout",
  "wordcraft-render",
  "wordcraft-zotero",
