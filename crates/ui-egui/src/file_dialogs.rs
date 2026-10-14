@@ -42,6 +42,7 @@ pub fn open_filters(purpose: &str) -> &'static [(&'static str, &'static [&'stati
         "picture" => &[("Pictures", PICTURES)],
         "font" => &[("Fonts", wordcraft_fonts::FONT_FILE_EXTS)],
         "recipients" => &[("Recipient lists", &["csv", "tsv", "txt", "xlsx", "xlsm", "ods"]), ("All files", &["*"])],
+        "lawProfile" => &[("Court profile", &["json"]), ("All files", &["*"])],
         _ => &[("Documents", DOCUMENTS), ("Word document", &["docx"]), ("All files", &["*"])],
     }
 }
@@ -67,6 +68,10 @@ pub(crate) enum AfterPick {
     ForDialog,
     /// Put the picked document into the Compare dialog (original or revised, #412).
     ComparePath { revised: bool },
+    /// Import a LawCraft court profile JSON file.
+    LawImport,
+    /// Export the selected court profile to a JSON file.
+    LawExport,
 }
 
 /// What to do once Save As has written the document.
@@ -213,6 +218,8 @@ impl WordApp {
                 crate::dialogs_review::set_compare_path(self, revised, path);
                 Ok(json!({"picked": true}))
             }
+            AfterPick::LawImport => crate::law::finish_pick(self, AfterPick::LawImport, picked),
+            AfterPick::LawExport => crate::law::finish_pick(self, AfterPick::LawExport, picked),
             AfterPick::Export { ext } => {
                 let Some(path) = picked else { return Ok(json!({"cancelled": true})) };
                 let r = if ext == "png" { self.run("file.exportPng", json!({"path": path})) } else { self.run("file.saveAs", json!({"path": path})) };
