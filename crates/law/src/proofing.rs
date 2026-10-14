@@ -142,12 +142,6 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
     },
     ConfusionPhrase {
-        words: &["council", "for", "the", "defendant"],
-        wrong_index: 0,
-        right: "counsel",
-        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
-    },
-    ConfusionPhrase {
         words: &["council", "for", "the", "appellant"],
         wrong_index: 0,
         right: "counsel",

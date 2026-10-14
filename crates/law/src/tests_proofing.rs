@@ -199,13 +199,6 @@ confusion_pair!(
     "counsel"
 );
 confusion_pair!(
-    counsel_council_defendant,
-    "The council for the defendant objected.",
-    "The city council for the district met yesterday.",
-    "council",
-    "counsel"
-);
-confusion_pair!(
     counsel_council_appellant,
     "The council for the appellant argued first.",
     "The city council for the district met yesterday.",
@@ -250,6 +243,7 @@ fn removed_confusion_phrases_stay_quiet() {
         "There are three discreet issues before us.",
         "We assessed the effect the outcome had on the parties.",
         "The physician testified that the regulation will proscribe medication advertising to minors.",
+        "The city council for the defendant municipality approved the settlement.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
