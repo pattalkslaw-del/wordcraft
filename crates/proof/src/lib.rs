@@ -134,6 +134,45 @@ pub fn user_dictionary() -> Vec<String> {
     v
 }
 
+/// Optional English base forms an installed module adds (for example LawCraft's legal word list).
+/// Cleared with [`set_module_en_spelling`]`(None)`; bumps [`dictionary_generation`] when changed.
+fn module_en_words() -> &'static RwLock<HashSet<String>> {
+    static M: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
+    M.get_or_init(|| RwLock::new(HashSet::new()))
+}
+
+/// Replace or clear the module English spelling supplement. Each word is normalized like the user
+/// dictionary ([`custom_word`]); invalid lines are skipped.
+pub fn set_module_en_spelling(words: Option<&[&str]>) {
+    let mut set = module_en_words().write().unwrap_or_else(|e| e.into_inner());
+    set.clear();
+    if let Some(words) = words {
+        for w in words {
+            if let Some(w) = custom_word(w) {
+                set.insert(w);
+            }
+        }
+    }
+    DICTIONARY_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+fn in_module_en_dictionary(lower: &str) -> bool {
+    module_en_words().read().unwrap_or_else(|e| e.into_inner()).contains(lower)
+}
+
+/// Extra English grammar or style checks from an installed module (LawCraft confusion pairs).
+type EnParagraphCheck = fn(&str) -> Vec<Issue>;
+
+fn module_en_grammar() -> &'static RwLock<Option<EnParagraphCheck>> {
+    static G: OnceLock<RwLock<Option<EnParagraphCheck>>> = OnceLock::new();
+    G.get_or_init(|| RwLock::new(None))
+}
+
+/// Register or clear module English checks run after the built-in grammar rules in [`check_text_with`].
+pub fn set_module_en_grammar(check: Option<EnParagraphCheck>) {
+    *module_en_grammar().write().unwrap_or_else(|e| e.into_inner()) = check;
+}
+
 /// Longest custom-dictionary word kept, in characters (mirrors `file.options` validation).
 pub const MAX_CUSTOM_WORD_CHARS: usize = 64;
 /// Most custom-dictionary words read from one file (caps a hostile file).
@@ -259,7 +298,10 @@ fn known_core(w: &str) -> bool {
     if base_known(d, w) || COMMON.split(' ').any(|c| c == w) {
         return true;
     }
-    if user_words().read().unwrap_or_else(|e| e.into_inner()).contains(w) || ignored_words().read().unwrap_or_else(|e| e.into_inner()).contains(w) {
+    if user_words().read().unwrap_or_else(|e| e.into_inner()).contains(w)
+        || in_module_en_dictionary(w)
+        || ignored_words().read().unwrap_or_else(|e| e.into_inner()).contains(w)
+    {
         return true;
     }
     // Inflections.
@@ -589,6 +631,9 @@ pub fn check_text_with(text: &str, spans: &[(Range<usize>, ProofLang)], opts: &O
     for lang in langs {
         v.extend(check_grammar_in(text, lang).into_iter().filter(|i| lang_at(i.start) == lang));
     }
+    if let Some(f) = *module_en_grammar().read().unwrap_or_else(|e| e.into_inner()) {
+        v.extend(f(text).into_iter().filter(|i| lang_at(i.start) == ProofLang::En));
+    }
     v.sort_by_key(|i| (i.start, i.end));
     v
 }
@@ -829,6 +874,15 @@ mod tests {
         assert!(!is_correct("zxqwordcrafty"));
         add_word("zxqwordcrafty");
         assert!(is_correct("zxqwordcrafty"));
+    }
+
+    #[test]
+    fn module_en_spelling_supplement() {
+        assert!(!is_correct("zxqmoduleword"));
+        set_module_en_spelling(Some(&["zxqmoduleword"]));
+        assert!(is_correct("zxqmoduleword"));
+        set_module_en_spelling(None);
+        assert!(!is_correct("zxqmoduleword"));
     }
 
     /// #40: the user dictionary survives a save and a fresh load.

@@ -17,11 +17,13 @@ use wordcraft_engine::{CmdError, CommandSpec, p};
 use crate::apply;
 use crate::checks;
 use crate::profile::{Patch, Profile};
+use crate::proofing;
 use crate::store::{LawError, Store};
 
 /// Where the profile commands live in the ribbon.
 const LOC: &str = "Law › Court Profiles";
 const CHECKS_LOC: &str = "Law › Court Checks";
+const PROOF_LOC: &str = "Law › Proofing";
 
 /// The profiles WordCraft knows: the ones it ships and the user's own.
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
@@ -179,6 +181,17 @@ pub fn specs() -> Vec<CommandSpec> {
         .params(
             r#"{"id"?: string, "doc"?: string, "forExport"?: bool (run export-only checks such as textSearchablePdf), "format"?: string (the output extension an export is writing; `textSearchablePdf` runs only for "pdf"), "store"?: bool (default true: show findings in Review › Proofing)} → {"profile", "doc", "findings": [{checkId, severity, message, start?, end?}]}"#,
         )
+        .pure(),
+        CommandSpec::new("law.words.list", "Legal Word List", PROOF_LOC, |_, _| {
+            Ok(Value::Array(proofing::legal_words().iter().map(|w| json!(w)).collect()))
+        })
+        .params(r#"{} → [string] (legal terms added to English spelling when LawCraft is on)"#)
+        .pure(),
+        CommandSpec::new("law.proof.confusions", "Legal Confusion Check", PROOF_LOC, |s, v| {
+            let store = p::bool(v, "store").unwrap_or(true);
+            Ok(proofing::run_confusion_checks(s, store))
+        })
+        .params(r#"{"store"?: bool (default true: show findings in Review › Proofing)} → {"findings": [{checkId, severity, message, start?, end?}]}"#)
         .pure(),
     ]
 }
