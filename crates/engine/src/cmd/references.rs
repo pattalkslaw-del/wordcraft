@@ -1059,22 +1059,19 @@ mod tests {
     #[test]
     fn passim_pageref_fields_are_hidden() {
         let mut s = Session::new(wordcraft_doc::Document::new());
-        let name = "_Index000000001".to_string();
-        let line = paragraph_pageref_line(
-            "Thummel v. King, 570 S.W.2d 679",
-            std::slice::from_ref(&name),
-            true,
-            5,
-            &["1".into(), "2".into(), "3".into(), "4".into(), "5".into()],
-            400.0,
-            "Normal",
-        )
-        .expect("line");
-        assert!(
-            line.objects.iter().all(|o| matches!(o, InlineObject::Field { instr, .. } if instr.starts_with("PAGEREF "))),
-            "every object is a PAGEREF field: {:?}",
-            line.objects
-        );
+        let names: Vec<String> = (1..=5).map(|i| format!("_Index{i:09}")).collect();
+        let results: Vec<String> = (1..=5).map(|i| i.to_string()).collect();
+        let line = paragraph_pageref_line("Thummel v. King, 570 S.W.2d 679", &names, true, 5, &results, 400.0, "Normal").expect("line");
+        let pageref_instrs = |p: &wordcraft_doc::Paragraph| -> Vec<String> {
+            p.objects
+                .iter()
+                .filter_map(|o| match o {
+                    InlineObject::Field { instr, .. } if instr.starts_with("PAGEREF ") => Some(instr.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(pageref_instrs(&line).len(), 5, "one PAGEREF per occurrence is kept: {:?}", line.objects);
         for off in line.object_offsets() {
             let hidden = line.run_ranges().find(|(r, _)| r.contains(&off)).map(|(_, p)| p.hidden);
             assert_eq!(hidden, Some(Some(true)), "the page-number field at {off} must be hidden");
@@ -1085,10 +1082,7 @@ mod tests {
         let bytes = crate::io::save_bytes("passim.docx", &s.doc).expect("save");
         let doc = crate::io::open_bytes("passim.docx", &bytes).expect("open");
         let para = doc.body.iter().find_map(|b| b.as_para()).expect("paragraph");
-        assert!(
-            para.objects.iter().any(|o| matches!(o, InlineObject::Field { instr, .. } if instr.starts_with("PAGEREF "))),
-            "the hidden references survive a round trip"
-        );
+        assert_eq!(pageref_instrs(para).len(), 5, "all five hidden references survive a round trip: {:?}", para.objects);
         for off in para.object_offsets() {
             let hidden = para.run_ranges().find(|(r, _)| r.contains(&off)).map(|(_, p)| p.hidden);
             assert_eq!(hidden, Some(Some(true)), "round trip keeps the hidden formatting at {off}");

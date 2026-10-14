@@ -4,9 +4,9 @@ use serde_json::json;
 use wordcraft_doc::para::{InlineObject, OBJ};
 use wordcraft_doc::{Block, Path, StoryRef};
 
-use crate::citations::{find_entries, group_heading};
+use crate::citations::{find_entries, find_entries_limited, group_heading};
 use crate::cmd::pack_by_id;
-use crate::tests::{MISSOURI, law, roundtrip, run};
+use crate::tests::{MISSOURI, err, law, roundtrip, run};
 use crate::toa::{PROP_TOA_PASSIM, PROP_TOA_PASSIM_AT};
 use crate::{MODULE, install};
 use wordcraft_engine::Session;
@@ -279,7 +279,7 @@ fn repeated_full_citations_keep_the_first_occurrence_label() {
     // The same reporter with a pin cite is a distinct finding text here.
     run(&mut s, "text.insert", json!({"text": "Thummel v. King, 570 S.W.2d 679, 680 (Mo. banc 1978). "}));
     let pack = pack_by_id("missouri").expect("missouri pack");
-    let entries = find_entries(&s.doc, pack, None);
+    let entries = find_entries(&s.doc, pack, None).expect("entries");
     let first = entries.iter().find(|e| !e.occurrences.is_empty() && e.label.contains("S.W.2d 679")).expect("first case");
     assert!(first.label.starts_with("570 S.W.2d 679"), "the label is the first occurrence: {}", first.label);
     for e in &entries {
@@ -288,18 +288,52 @@ fn repeated_full_citations_keep_the_first_occurrence_label() {
     }
 }
 
-/// Regression: a citation in a sentence with multi-word party names (`Bank of America v. Smith`)
-/// is kept whole. The finder reports the citation exactly as its rule matched it at first
-/// occurrence — never a truncated middle of the party names — and the label is that citation.
+/// The finder's label is the citation exactly as its rule matched it at first occurrence — the
+/// reporter and parenthetical — not a substring of the surrounding sentence. Case-name extraction
+/// is not part of this issue; the finder reports what it matched.
 #[test]
-fn finder_keeps_the_whole_citation_for_multi_word_party_names() {
+fn finder_keeps_the_matched_reporter_citation() {
     let mut s = law();
     run(&mut s, "text.insert", json!({"text": "Bank of America v. Smith, 570 S.W.2d 679 (Mo. banc 1978)."}));
     let pack = pack_by_id("missouri").expect("missouri pack");
-    let entries = find_entries(&s.doc, pack, None);
+    let entries = find_entries(&s.doc, pack, None).expect("entries");
     let e = entries.iter().find(|e| e.label.contains("S.W.2d 679")).expect("the citation is found");
-    assert_eq!(e.label, "570 S.W.2d 679 (Mo. banc 1978)", "the whole citation is kept, not a truncated middle");
+    assert_eq!(e.label, "570 S.W.2d 679 (Mo. banc 1978)", "the label is the finder's matched citation");
     assert_eq!(e.sort_key, e.label, "the sort key is the full first-occurrence citation");
+}
+
+/// Regression: the finder's scan is input-derived, so its results are bounded. More occurrences
+/// than a scan may collect, or more authorities than a table may hold, is a clear error — never an
+/// unbounded allocation.
+#[test]
+fn finder_bounds_excessive_citation_occurrences() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": format!("{CASE_A} {CASE_B}")}));
+    let pack = pack_by_id("missouri").expect("missouri pack");
+
+    let over_occurrences = find_entries_limited(&s.doc, pack, None, 1, 500).expect_err("more occurrences than the cap");
+    assert!(over_occurrences.to_string().contains("too many citation occurrences"), "{over_occurrences}");
+    let over_entries = find_entries_limited(&s.doc, pack, None, 500, 1).expect_err("more authorities than the cap");
+    assert!(over_entries.to_string().contains("too many authorities"), "{over_entries}");
+
+    // The production caps are far above a real brief, so the same document scans cleanly.
+    let entries = find_entries(&s.doc, pack, None).expect("under the production caps");
+    assert_eq!(entries.len(), 2, "both authorities are found: {entries:?}");
+}
+
+/// Regression: a document with more citation occurrences than the finder's production cap makes
+/// `law.toa.build` fail with a clear message and leaves the document without a table, rather than
+/// allocating for every occurrence.
+#[test]
+fn toa_build_refuses_a_document_with_too_many_citation_occurrences() {
+    let mut s = law();
+    let count = crate::citations::MAX_CITATION_OCCURRENCES + 1;
+    run(&mut s, "text.insert", json!({"text": "§ 537.080 RSMo ".repeat(count)}));
+    let before = s.doc.plain_text(StoryRef::Body);
+    let e = err(&mut s, "law.toa.build", json!({"pack": "missouri"})).to_string();
+    assert!(e.contains("too many citation occurrences"), "{e}");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), before, "the refused build leaves the document untouched");
+    assert!(s.doc.bookmarks().is_empty(), "no table or source bookmarks were written");
 }
 
 /// Citations in separate table cells are distinct paragraphs: neither suppresses the other.
@@ -311,7 +345,7 @@ fn citations_in_separate_cells_are_distinct() {
     run(&mut s, "text.tab", json!({}));
     run(&mut s, "text.insert", json!({"text": "Smith v. Jones, 600 S.W.3d 100 (Mo. App. E.D. 2020)"}));
     let pack = pack_by_id("missouri").expect("missouri pack");
-    let entries = find_entries(&s.doc, pack, None);
+    let entries = find_entries(&s.doc, pack, None).expect("entries");
     assert!(entries.iter().any(|e| e.label.contains("S.W.2d 679")), "first cell's citation is found: {entries:?}");
     assert!(entries.iter().any(|e| e.label.contains("S.W.3d 100")), "second cell's citation is found: {entries:?}");
 }
@@ -391,7 +425,7 @@ fn toa_renders_group_headings_in_order() {
 
     let mut s = law();
     run(&mut s, "text.insert", json!({"text": "1 Test Rep 2 and Test Const. art. I and Section 3 and Rule 4.5 and 6 Test Treatise 7"}));
-    let entries = find_entries(&s.doc, &pack, None);
+    let entries = find_entries(&s.doc, &pack, None).expect("entries");
     let groups: Vec<&str> = entries.iter().map(|e| group_heading(&e.kind)).collect();
     for want in ["Cases", "Constitutional Provisions", "Statutes", "Rules", "Other Authorities"] {
         assert!(groups.contains(&want), "the finder reports a `{want}` kind: {entries:?}");
@@ -512,7 +546,7 @@ fn table_exclusion_uses_the_top_level_block() {
     run(&mut s, "text.insert", json!({"text": "Smith v. Jones, 600 S.W.3d 100 (Mo. App. E.D. 2020)."}));
     let pack = pack_by_id("missouri").expect("missouri pack");
     // Exclude body block 0 only: the table (a later block) must still be scanned.
-    let entries = find_entries(&s.doc, pack, Some((0, 0)));
+    let entries = find_entries(&s.doc, pack, Some((0, 0))).expect("entries");
     assert!(entries.iter().all(|e| !e.label.contains("S.W.2d 679")), "the excluded paragraph is skipped: {entries:?}");
     assert!(entries.iter().any(|e| e.label.contains("S.W.3d 100")), "the table cell is kept: {entries:?}");
 }

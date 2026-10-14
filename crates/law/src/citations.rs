@@ -3,9 +3,18 @@
 use std::collections::HashMap;
 
 use wordcraft_doc::{Document, Pos, StoryRef};
+use wordcraft_engine::CmdError;
 use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 
 use crate::citation_pack::CompiledPack;
+
+/// Most citation occurrences a single finder scan may collect. The scan reads the document, which
+/// is input-derived and therefore hostile: it is bounded so a runaway or crafted document cannot
+/// make the table of authorities allocate without limit. Far above any real brief.
+pub const MAX_CITATION_OCCURRENCES: usize = 5_000;
+/// Most distinct authorities a single table may hold. Together with [`MAX_CITATION_OCCURRENCES`]
+/// this bounds the generated table: its lines, bookmarks and `PAGEREF` fields.
+pub const MAX_CITATION_ENTRIES: usize = 2_000;
 
 /// One logical authority in the document (first full cite + linked short forms).
 #[derive(Clone, Debug, PartialEq)]
@@ -43,13 +52,29 @@ pub fn group_heading(kind: &str) -> &'static str {
     }
 }
 
-/// Scan `doc` with `pack` and return authority entries. Paragraphs in `exclude_blocks` (inclusive
-/// top-level body block indices) are skipped — used to omit a generated table of authorities.
+/// Scan `doc` with `pack` and return authority entries, bounded by the production limits. The
+/// document is input-derived, so the result count is capped; see [`find_entries_limited`].
 ///
 /// Every match the pack's existing finder rules report is used as-is: a hit is one authority, and
 /// hits whose text and kind are identical collapse into one entry (its first hit supplies the
 /// label). No new detection or linking happens here.
-pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usize, usize)>) -> Vec<CitationEntry> {
+pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usize, usize)>) -> Result<Vec<CitationEntry>, CmdError> {
+    find_entries_limited(doc, pack, exclude_blocks, MAX_CITATION_OCCURRENCES, MAX_CITATION_ENTRIES)
+}
+
+/// [`find_entries`] with explicit caps, so the bounds can be exercised without a huge document.
+///
+/// Paragraphs in `exclude_blocks` (inclusive top-level body block indices) are skipped — used to
+/// omit a generated table of authorities. When the scan collects more than `max_occurrences`
+/// matches, or the collapse leaves more than `max_entries` authorities, it stops with a clear
+/// error rather than allocating without limit. Nothing is written to the document.
+pub(crate) fn find_entries_limited(
+    doc: &Document,
+    pack: &CompiledPack,
+    exclude_blocks: Option<(usize, usize)>,
+    max_occurrences: usize,
+    max_entries: usize,
+) -> Result<Vec<CitationEntry>, CmdError> {
     let mut raw = Vec::new();
     for story in doc.counted_stories() {
         for path in doc.para_paths(story) {
@@ -77,6 +102,9 @@ pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<
                     let start = Pos { story, path: path.clone(), off: m.start() };
                     let end_pos = Pos { story, path: path.clone(), off: end };
                     raw.push(RawHit { kind: rule.kind.clone(), text: slice.to_string(), start, end: end_pos });
+                    if raw.len() > max_occurrences {
+                        return Err(too_many("citation occurrences", raw.len(), max_occurrences));
+                    }
                 }
             }
         }
@@ -103,9 +131,16 @@ pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<
         });
         entry.occurrences.push(CitationOccurrence { start: h.start, end: h.end });
     }
+    if map.len() > max_entries {
+        return Err(too_many("authorities", map.len(), max_entries));
+    }
     let mut out: Vec<CitationEntry> = map.into_values().collect();
     out.sort_by_key(|e| e.id);
-    out
+    Ok(out)
+}
+
+fn too_many(what: &str, got: usize, max: usize) -> CmdError {
+    CmdError::Failed(format!("too many {what} in the document ({got}, at most {max}); narrow the document or turn off the table of authorities"))
 }
 
 fn pos_order(start: &Pos) -> (i64, Vec<u32>, usize) {

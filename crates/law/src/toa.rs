@@ -41,7 +41,7 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
     {
         return Err(CmdError::Failed("stored table of authorities bounds are invalid".into()));
     }
-    let entries = find_entries(&s.doc, pack, replace);
+    let entries = find_entries(&s.doc, pack, replace)?;
 
     // Source bookmarks are created while the old table is still in the document, so every
     // occurrence path is current; they then move with their text when its blocks are removed.
