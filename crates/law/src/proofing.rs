@@ -113,14 +113,9 @@ struct ConfusionPhrase {
 
 /// Fixed wrong phrases only — no single-token guesses or lookahead (original wording; no manual copied).
 ///
-/// Every entry must be unambiguous: it fires only when the highlighted word cannot be right. Only
-/// that wrong word may take a plural or possessive ending; every other word of the phrase matches
-/// exactly, so an inflected context word that is really a verb (`the principle issues from natural
-/// law`) never fires. Where no exact phrase is unambiguous the pair is omitted rather than guessed
-/// at — `prescribe`/`proscribe`, because a subject that can forbid can also legitimately `proscribe`
-/// medication ("Doctors proscribe medication that is contraindicated"); `controlling precedence`,
-/// because `precedence` correctly means priority; and `complement`/`compliment`, because a "full
-/// compliment of the judge" is correct praise, so no `compliment` phrase fires.
+/// Every entry must be unambiguous: wrong in every grammatical English sentence that contains the
+/// exact phrase verbatim. Only the highlighted word may take a plural or possessive ending; every
+/// other word of the phrase matches exactly. All other confusion pairs are omitted rather than guessed.
 const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
     ConfusionPhrase {
         words: &["statue", "of", "limitations"],
@@ -135,28 +130,10 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of frauds?",
     },
     ConfusionPhrase {
-        words: &["principle", "claim"],
-        wrong_index: 0,
-        right: "principal",
-        message: "The primary relief sought is the \"principal\" claim, not \"principle\".",
-    },
-    ConfusionPhrase {
-        words: &["principle", "amount"],
-        wrong_index: 0,
-        right: "principal",
-        message: "The sum at stake is the \"principal\" amount, not \"principle\".",
-    },
-    ConfusionPhrase {
         words: &["principle", "place", "of", "business"],
         wrong_index: 0,
         right: "principal",
         message: "The main place of business is the \"principal\" place, not \"principle\".",
-    },
-    ConfusionPhrase {
-        words: &["principal", "of", "law"],
-        wrong_index: 0,
-        right: "principle",
-        message: "A rule of law is a \"principle\", not \"principal\".",
     },
     ConfusionPhrase {
         words: &["council", "for", "the", "plaintiff"],
@@ -183,70 +160,22 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
     },
     ConfusionPhrase {
-        words: &["council", "of", "record"],
+        words: &["council", "for", "the", "petitioner"],
         wrong_index: 0,
         right: "counsel",
         message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
     },
     ConfusionPhrase {
-        words: &["opposing", "council"],
-        wrong_index: 1,
-        right: "counsel",
-        message: "The other side's lawyer is \"counsel\", not \"council\".",
-    },
-    ConfusionPhrase {
-        words: &["the", "affect", "of"],
-        wrong_index: 1,
-        right: "effect",
-        message: "A result or outcome is an \"effect\"; \"affect\" is usually the verb.",
-    },
-    ConfusionPhrase {
-        words: &["affect", "a", "change"],
+        words: &["council", "for", "the", "movant"],
         wrong_index: 0,
-        right: "effect",
-        message: "To bring about change is usually to \"effect\" it, not \"affect\".",
-    },
-    ConfusionPhrase {
-        words: &["binding", "precedence"],
-        wrong_index: 1,
-        right: "precedent",
-        message: "A prior appellate decision is \"precedent\", not \"precedence\" (priority).",
+        right: "counsel",
+        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
     },
     ConfusionPhrase {
         words: &["averse", "possession"],
         wrong_index: 0,
         right: "adverse",
         message: "An opposing party or interest is \"adverse\", not \"averse\" (unwilling).",
-    },
-    ConfusionPhrase {
-        words: &["adverse", "to", "risk"],
-        wrong_index: 0,
-        right: "averse",
-        message: "Being unwilling is \"averse\"; \"adverse\" describes harm or opposition.",
-    },
-    ConfusionPhrase {
-        words: &["adverse", "to", "doing"],
-        wrong_index: 0,
-        right: "averse",
-        message: "Being unwilling is \"averse\"; \"adverse\" describes harm or opposition.",
-    },
-    ConfusionPhrase {
-        words: &["illicit", "testimony"],
-        wrong_index: 0,
-        right: "elicit",
-        message: "To draw out testimony is to \"elicit\" it, not \"illicit\" (unlawful).",
-    },
-    ConfusionPhrase {
-        words: &["illicit", "a", "response"],
-        wrong_index: 0,
-        right: "elicit",
-        message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
-    },
-    ConfusionPhrase {
-        words: &["discreet", "issues"],
-        wrong_index: 0,
-        right: "discrete",
-        message: "Separate or distinct issues are \"discrete\", not \"discreet\" (tactful).",
     },
 ];
 

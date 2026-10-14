@@ -168,38 +168,7 @@ fn text_slice(text: &str, start: usize, end: usize) -> &str {
     text.get(start..end).unwrap_or("")
 }
 confusion_pair!(statute_frauds, "The statue of frauds bars oral agreements.", "A bronze statue stands in the plaza.", "statue", "statute");
-/// #5 review: an inflected *context* word must not match. The removed `principle issue` entry
-/// fired on "The principle issues from natural law." because the old matcher accepted `issues` as
-/// a plural of `issue`, suggesting `principal` for a correct noun. Every phrase now requires its
-/// context words exactly, so a following verb (`issues`, `claims`, `amounts`, `places`) stays
-/// quiet; this is that regression.
-#[test]
-fn principle_as_noun_before_a_verb_is_quiet() {
-    for text in [
-        "The principle issues from natural law.",
-        "A legal principle issues from the cases.",
-        "The principle claims our attention.",
-        "The principle amounts to nothing more than fairness.",
-        "The principle places the burden on the movant.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-confusion_pair!(
-    principal_principle_claim,
-    "The principle claim for damages was dismissed.",
-    "A basic principle guides the analysis.",
-    "principle",
-    "principal"
-);
-confusion_pair!(
-    principal_principle_amount,
-    "The principle amount remains unpaid.",
-    "A basic principle guides the analysis.",
-    "principle",
-    "principal"
-);
+
 confusion_pair!(
     principal_place_of_business,
     "The principle place of business is in St. Louis.",
@@ -207,7 +176,21 @@ confusion_pair!(
     "principle",
     "principal"
 );
-confusion_pair!(principal_of_law, "The principal of law is settled.", "The principal amount is unpaid.", "principal", "principle");
+
+/// Correct noun `principle` before a verb must stay quiet (no `principle claim` / `principle amount` entries).
+#[test]
+fn principle_as_noun_before_a_verb_is_quiet() {
+    for text in [
+        "The principle issues from natural law.",
+        "Does the principle claim our attention?",
+        "Does the principle amount to a defense?",
+        "The principle places the burden on the movant.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
 confusion_pair!(
     counsel_council_plaintiff,
     "The council for the plaintiff filed a motion.",
@@ -237,169 +220,36 @@ confusion_pair!(
     "counsel"
 );
 confusion_pair!(
-    counsel_council,
-    "Attorney council of record filed a brief.",
+    counsel_council_petitioner,
+    "The council for the petitioner filed the petition.",
     "The city council for the district met yesterday.",
     "council",
     "counsel"
 );
 confusion_pair!(
-    opposing_council,
-    "We conferred with opposing council before trial.",
-    "The city council voted for the ordinance.",
+    counsel_council_movant,
+    "The council for the movant argued the motion.",
+    "The city council for the district met yesterday.",
     "council",
     "counsel"
 );
-confusion_pair!(affect_effect, "The affect of the ruling was clear.", "The new rule will affect the outcome.", "affect", "effect");
-confusion_pair!(
-    affect_a_change,
-    "The order will affect a change in procedure.",
-    "The parties hope to effect a change in procedure.",
-    "affect",
-    "effect"
-);
-confusion_pair!(
-    precedent_precedence,
-    "This is binding precedence in our circuit.",
-    "Federal law takes precedence over state law.",
-    "precedence",
-    "precedent"
-);
-/// #5 review: `precedence` correctly means priority, so a phrase like `controlling precedence`
-/// is ambiguous and must stay quiet; only the fixed idiom `binding precedence` (which suggests
-/// `precedent`) is an entry. This is the regression for the removed `controlling precedence` rule.
-#[test]
-fn controlling_precedence_is_quiet() {
-    for text in [
-        "The scheduling order contains rules controlling precedence among competing motions.",
-        "The court explained the rules controlling precedence among competing motions.",
-        "The statute takes precedence over the rule.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-
-/// #5 review: `proscribe` correctly means to forbid, and a subject that can forbid medication
-/// (`Doctors proscribe medication that is contraindicated`) makes any `doctor proscribe
-/// medication` phrase ambiguous, so that entry was removed. `proscribe` in these correct
-/// sentences must stay quiet.
-#[test]
-fn proscribe_medication_usage_is_quiet() {
-    for text in [
-        "Doctors proscribe medication that is contraindicated.",
-        "The physician testified that the regulation will proscribe medication advertising to minors.",
-        "The regulation will proscribe medication advertising to minors.",
-        "The statute will proscribe medication by unlicensed sellers.",
-        "The statute will proscribe medication for nonmedical use.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
 
 confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
-confusion_pair!(adverse_to_risk, "The clause is adverse to risk.", "The investor was averse to risk.", "adverse", "averse");
-confusion_pair!(adverse_to_doing, "She is adverse to doing business there.", "The investor was averse to risk.", "adverse", "averse");
-confusion_pair!(
-    elicit_illicit,
-    "Counsel tried to illicit testimony on redirect.",
-    "Counsel tried to elicit testimony on redirect.",
-    "illicit",
-    "elicit"
-);
-confusion_pair!(
-    elicit_illicit_response,
-    "The witness could illicit a response on cross-examination.",
-    "The cross-examiner sought a candid response.",
-    "illicit",
-    "elicit"
-);
-/// #5 review: a "full compliment of the judge" is correct praise, so the old `full compliment of`
-/// entry was ambiguous and was removed. `compliment` (praise) and `complement` (a complete set)
-/// used correctly must all stay quiet: there is no unambiguous `compliment` phrase.
+
+/// Removed phrases must stay quiet (regression guard).
 #[test]
-fn full_compliment_and_complement_are_quiet() {
+fn removed_confusion_phrases_stay_quiet() {
     for text in [
-        "The witness recalled the full compliment of the judge: 'Your work was excellent.'",
-        "The court now has a full complement of judges.",
-        "The court paid the witness a compliment after the hearing.",
-        "Her closing remarks were a fitting complement to the evidence.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-
-/// #5 review: praising a person is `compliment`; the old `compliment the record` entry fired on
-/// this correct sentence and had to be replaced with an unambiguous phrase.
-#[test]
-fn compliment_the_record_keeper_is_quiet() {
-    for text in [
-        "Counsel will compliment the record keeper after the hearing.",
-        "The judge may compliment counsel on the argument.",
-        "The panel will compliment the clerk for prompt service.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-confusion_pair!(
-    discrete_discreet,
-    "There are three discreet issues before us.",
-    "The agency opened a discrete investigation into each transaction.",
-    "discreet",
-    "discrete"
-);
-
-/// `effect` as a verb is legitimate ("bring about"), so a bare `effect the outcome` is ambiguous
-/// and must stay quiet rather than guess at `affect`.
-#[test]
-fn effect_the_outcome_is_quiet() {
-    for text in ["The new rule will effect the outcome the parties sought.", "The court's order will effect the outcome of the settlement."] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-
-/// `effect` as a noun before another noun must not suggest `affect`.
-#[test]
-fn effect_as_noun_before_outcome_is_quiet() {
-    let text = "We assessed the effect the outcome had on the parties.";
-    let issues = confusion_issues(text);
-    assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-}
-
-/// Correct governing-body `council` and affirmative `prescribe` must stay quiet.
-#[test]
-fn correct_council_and_prescribe_contexts_are_quiet() {
-    for text in [
-        "The city council for the district met yesterday.",
-        "The county council for the region approved the plan.",
-        "The rules prescribe such conduct by counsel.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-
-/// Correct verb `complement` must stay quiet.
-#[test]
-fn correct_complement_contexts_are_quiet() {
-    for text in ["The new tribunal will complement the court.", "These judges complement the court well."] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-
-/// `discrete inquiry` and `discrete investigation` are correct and must not suggest `discreet`.
-#[test]
-fn discrete_inquiry_and_investigation_are_quiet() {
-    for text in [
-        "The court made a discrete inquiry into venue.",
-        "The agency opened a discrete investigation into each transaction.",
-        "The court ran a discrete investigation of each charge.",
-        "The firm conducted a discreet investigation.",
+        "The principle claim for damages was dismissed.",
+        "The principle amount remains unpaid.",
+        "The affect of the ruling was clear.",
+        "The order will affect a change in procedure.",
+        "This is binding precedence in our circuit.",
+        "We conferred with opposing council before trial.",
+        "Counsel tried to illicit testimony on redirect.",
+        "There are three discreet issues before us.",
+        "We assessed the effect the outcome had on the parties.",
+        "The physician testified that the regulation will proscribe medication advertising to minors.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
