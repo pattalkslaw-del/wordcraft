@@ -118,12 +118,6 @@ struct ConfusionPhrase {
 /// other word of the phrase matches exactly. All other confusion pairs are omitted rather than guessed.
 const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
     ConfusionPhrase {
-        words: &["statue", "of", "limitations"],
-        wrong_index: 0,
-        right: "statute",
-        message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of limitations?",
-    },
-    ConfusionPhrase {
         words: &["principle", "place", "of", "business"],
         wrong_index: 0,
         right: "principal",
@@ -193,7 +187,7 @@ fn inflected_replacement(surface: &str, wrong_base: &str, right_base: &str) -> S
     capitalize_like(surface, &combined)
 }
 
-/// Suffix on `surface` after the inflected form of `base` (e.g. `statues` → `"s"`).
+/// Suffix on `surface` after the inflected form of `base` (e.g. `principles` → `"s"`).
 fn inflection_suffix(surface: &str, base: &str) -> Option<String> {
     let lower = surface.to_lowercase();
     let base_lower = base.to_lowercase();

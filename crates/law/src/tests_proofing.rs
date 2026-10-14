@@ -55,9 +55,9 @@ fn law_proofing_does_not_leak_between_sessions() {
     assert_eq!(install(&mut disabled), 0);
     assert!(is_correct_with_module("rsmo", &opts, enabled.module_en));
     assert!(!is_correct_with_module("rsmo", &opts, disabled.module_en));
-    let text = "The statue of limitations has run.";
+    let text = "The principle place of business is in St. Louis.";
     let on = check_text_with(text, &[(0..text.len(), ProofLang::En)], &opts, true, enabled.module_en);
-    assert!(on.iter().any(|i| i.message.contains("statute")));
+    assert!(on.iter().any(|i| i.message.contains("principal")));
     let off = check_text_with(text, &[(0..text.len(), ProofLang::En)], &opts, true, disabled.module_en);
     assert!(off.is_empty());
 }
@@ -72,12 +72,12 @@ fn law_words_list_command() {
 }
 
 #[test]
-fn confusion_check_command_finds_statute_statue() {
+fn confusion_check_command_finds_principle_principal() {
     let mut s = law();
-    run(&mut s, "text.insert", json!({"text": "The statue of limitations has run."}));
+    run(&mut s, "text.insert", json!({"text": "The principle place of business is in St. Louis."}));
     let r = run(&mut s, "law.proof.confusions", json!({"store": false}));
     let findings = r["findings"].as_array().expect("findings");
-    assert!(findings.iter().any(|f| f["message"].as_str().is_some_and(|m| m.contains("statute"))));
+    assert!(findings.iter().any(|f| f["message"].as_str().is_some_and(|m| m.contains("principal"))));
 }
 
 /// The confusion check reaches the real Review › Proofing path: an enabled session's module hook
@@ -85,12 +85,12 @@ fn confusion_check_command_finds_statute_statue() {
 /// pane and F7 read) reports it — and an uninstalled session does not.
 #[test]
 fn confusion_issues_hook_into_review_proofing() {
-    let text = "The statue of limitations has run.";
+    let text = "The principle place of business is in St. Louis.";
     let mut s = law();
     run(&mut s, "text.insert", json!({"text": text}));
     let issues = run(&mut s, "review.issues", json!({}));
     assert!(
-        issues.as_array().is_some_and(|a| a.iter().any(|i| i["message"].as_str().is_some_and(|m| m.contains("statute")))),
+        issues.as_array().is_some_and(|a| a.iter().any(|i| i["message"].as_str().is_some_and(|m| m.contains("principal")))),
         "review.issues should report the confusion: {issues}"
     );
 
@@ -118,50 +118,49 @@ macro_rules! confusion_pair {
     };
 }
 
-confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.", "statue", "statute");
-
 /// Phrase matching must not join tokens across a sentence-ending period.
 #[test]
 fn confusion_phrase_does_not_cross_sentence_boundary() {
-    let quiet = "We admired the statue. Of limitations, none applied.";
+    let quiet = "We admired the principle. Place of business, none applied.";
     assert!(confusion_issues(quiet).is_empty(), "cross-sentence match: {quiet}");
-    let fired = confusion_issues("The statue of limitations has run.");
+    let fired = confusion_issues("The principle place of business is in St. Louis.");
     assert_eq!(fired.len(), 1);
-    assert_eq!(fired[0].suggestions, vec!["statute".to_string()]);
+    assert_eq!(fired[0].suggestions, vec!["principal".to_string()]);
 }
 
 /// #5 review: only plain whitespace may join the words of a confusion phrase. Intervening
 /// punctuation (semicolon, colon, comma, parentheses, dash, quotes) must break the match, so
-/// `statue; of limitations` never fires even though the words are adjacent in token order.
+/// `principle; place of business` never fires even though the words are adjacent in token order.
 #[test]
 fn confusion_phrase_requires_plain_whitespace_between_words() {
     for text in [
-        "We admired the statue; of limitations, none applied.",
-        "We admired the statue: of limitations, none applied.",
-        "We admired the statue, of limitations, none applied.",
-        "We admired the statue (of limitations) at the park.",
-        "We admired the statue - of limitations none applied.",
-        "We admired the statue \"of limitations\" at the park.",
-        "The statue of-limitations defense failed.",
+        "We admired the principle; place of business, none applied.",
+        "We admired the principle: place of business, none applied.",
+        "We admired the principle, place of business, none applied.",
+        "We admired the principle (place of business) at the park.",
+        "We admired the principle - place of business none applied.",
+        "We admired the principle \"place of business\" at the park.",
+        "The principle place-of-business defense failed.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "punctuation joined a phrase in: {text} → {issues:?}");
     }
-    let fired = confusion_issues("The statute of limitations has run.");
+    let fired = confusion_issues("The principal place of business is in St. Louis.");
     assert!(fired.is_empty(), "correct usage must stay quiet: {fired:?}");
 }
 
 /// Plural/possessive endings on the wrong word are preserved in the suggestion.
 #[test]
 fn confusion_suggestion_preserves_inflection() {
-    let fired = confusion_issues("The statues of limitations have run.");
+    let plural = "The principles place of business are in St. Louis and Kansas City.";
+    let fired = confusion_issues(plural);
     assert_eq!(fired.len(), 1);
-    assert_eq!(fired[0].start..fired[0].end, 4..11);
-    assert_eq!(text_slice("The statues of limitations have run.", fired[0].start, fired[0].end), "statues");
-    assert_eq!(fired[0].suggestions, vec!["statutes".to_string()]);
-    let possessive = confusion_issues("The statue's of limitations defense failed.");
-    assert_eq!(possessive.len(), 1);
-    assert_eq!(possessive[0].suggestions, vec!["statute's".to_string()]);
+    assert_eq!(text_slice(plural, fired[0].start, fired[0].end), "principles");
+    assert_eq!(fired[0].suggestions, vec!["principals".to_string()]);
+    let possessive = "The principle's place of business is in St. Louis.";
+    let fired = confusion_issues(possessive);
+    assert_eq!(fired.len(), 1);
+    assert_eq!(fired[0].suggestions, vec!["principal's".to_string()]);
 }
 
 fn text_slice(text: &str, start: usize, end: usize) -> &str {
@@ -196,6 +195,9 @@ confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The in
 #[test]
 fn removed_confusion_phrases_stay_quiet() {
     for text in [
+        // `statue of limitations` is ambiguous: a statue may depict limitations, so the phrase is
+        // removed even though the legal usage is far more common.
+        "The sculptor carved a statue of limitations, depicting the constraints imposed on human freedom.",
         // `statue of frauds` is ambiguous (`frauds` = impostors), so the phrase is removed.
         "The sculptor carved a statue of frauds who had posed as philanthropists.",
         "The principle claim for damages was dismissed.",
