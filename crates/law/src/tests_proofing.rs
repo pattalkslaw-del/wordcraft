@@ -130,6 +130,27 @@ fn confusion_phrase_does_not_cross_sentence_boundary() {
     assert_eq!(fired[0].suggestions, vec!["statute".to_string()]);
 }
 
+/// #5 review: only plain whitespace may join the words of a confusion phrase. Intervening
+/// punctuation (semicolon, colon, comma, parentheses, dash, quotes) must break the match, so
+/// `statue; of limitations` never fires even though the words are adjacent in token order.
+#[test]
+fn confusion_phrase_requires_plain_whitespace_between_words() {
+    for text in [
+        "We admired the statue; of limitations, none applied.",
+        "We admired the statue: of limitations, none applied.",
+        "We admired the statue, of limitations, none applied.",
+        "We admired the statue (of limitations) at the park.",
+        "We admired the statue - of limitations none applied.",
+        "We admired the statue \"of limitations\" at the park.",
+        "The statue of-limitations defense failed.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "punctuation joined a phrase in: {text} → {issues:?}");
+    }
+    let fired = confusion_issues("The statute of limitations has run.");
+    assert!(fired.is_empty(), "correct usage must stay quiet: {fired:?}");
+}
+
 /// Plural/possessive endings on the wrong word are preserved in the suggestion.
 #[test]
 fn confusion_suggestion_preserves_inflection() {
@@ -273,7 +294,27 @@ confusion_pair!(
     "illicit",
     "elicit"
 );
-confusion_pair!(complement_compliment, "The exhibit compliment the record.", "She compliment the judge after argument.", "compliment", "complement");
+confusion_pair!(
+    complement_compliment,
+    "The court now has a full compliment of judges.",
+    "The court now has a full complement of judges.",
+    "compliment",
+    "complement"
+);
+
+/// #5 review: praising a person is `compliment`; the old `compliment the record` entry fired on
+/// this correct sentence and had to be replaced with an unambiguous phrase.
+#[test]
+fn compliment_the_record_keeper_is_quiet() {
+    for text in [
+        "Counsel will compliment the record keeper after the hearing.",
+        "The judge may compliment counsel on the argument.",
+        "The panel will compliment the clerk for prompt service.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
 confusion_pair!(
     discrete_discreet,
     "There are three discreet issues before us.",
@@ -281,7 +322,16 @@ confusion_pair!(
     "discreet",
     "discrete"
 );
-confusion_pair!(effect_affect_outcome, "The new rule will effect the outcome.", "The new rule will affect the outcome.", "effect", "affect");
+
+/// `effect` as a verb is legitimate ("bring about"), so a bare `effect the outcome` is ambiguous
+/// and must stay quiet rather than guess at `affect`.
+#[test]
+fn effect_the_outcome_is_quiet() {
+    for text in ["The new rule will effect the outcome the parties sought.", "The court's order will effect the outcome of the settlement."] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
 
 /// `effect` as a noun before another noun must not suggest `affect`.
 #[test]

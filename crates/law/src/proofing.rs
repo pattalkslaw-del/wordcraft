@@ -196,12 +196,6 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "To bring about change is usually to \"effect\" it, not \"affect\".",
     },
     ConfusionPhrase {
-        words: &["will", "effect", "the", "outcome"],
-        wrong_index: 1,
-        right: "affect",
-        message: "To influence a ruling is to \"affect\" it, not \"effect\" (except \"effect change\").",
-    },
-    ConfusionPhrase {
         words: &["binding", "precedence"],
         wrong_index: 1,
         right: "precedent",
@@ -256,10 +250,10 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
     },
     ConfusionPhrase {
-        words: &["compliment", "the", "record"],
-        wrong_index: 0,
+        words: &["full", "compliment", "of"],
+        wrong_index: 1,
         right: "complement",
-        message: "To complete or supplement the record is to \"complement\" it, not \"compliment\".",
+        message: "A complete set is a \"full complement\"; to praise is to \"compliment\".",
     },
     ConfusionPhrase {
         words: &["discreet", "issues"],
@@ -269,15 +263,14 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
     },
 ];
 
-/// Gaps between phrase tokens must not cross sentence boundaries (e.g. `statue.` … `Of`).
+/// Only plain whitespace may join the words of an exact confusion phrase. Any punctuation
+/// (periods, semicolons, colons, commas, parentheses, quotes, line breaks) ends the phrase, so
+/// unrelated clauses can never be stitched into a false positive.
 fn gap_allows_phrase_join(text: &str, end_a: usize, start_b: usize) -> bool {
     let Some(gap) = text.get(end_a..start_b) else {
         return false;
     };
-    if gap.contains(['\n', '\r']) {
-        return false;
-    }
-    gap.chars().all(|c| !matches!(c, '.' | '!' | '?'))
+    !gap.is_empty() && gap.chars().all(|c| c.is_whitespace() && !matches!(c, '\n' | '\r'))
 }
 
 /// Whether token `actual` matches the expected dictionary word (case-insensitive, plural/possessive).
