@@ -108,8 +108,9 @@ struct ConfusionPhrase {
 /// Every entry must be unambiguous: it fires only when the highlighted word cannot be right. Where
 /// no exact phrase is unambiguous the pair is omitted rather than guessed at — for example
 /// `prescribe`/`proscribe`, because a subject that can forbid can also legitimately `proscribe`
-/// medication ("Doctors proscribe medication that is contraindicated") and `controlling
-/// precedence` because `precedence` correctly means priority.
+/// medication ("Doctors proscribe medication that is contraindicated"); `controlling precedence`,
+/// because `precedence` correctly means priority; and `complement`/`compliment`, because a "full
+/// compliment of the judge" is correct praise, so no `compliment` phrase fires.
 const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
     ConfusionPhrase {
         words: &["statue", "of", "limitations"],
@@ -242,12 +243,6 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         wrong_index: 1,
         right: "elicit",
         message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
-    },
-    ConfusionPhrase {
-        words: &["full", "compliment", "of"],
-        wrong_index: 1,
-        right: "complement",
-        message: "A complete set is a \"full complement\"; to praise is to \"compliment\".",
     },
     ConfusionPhrase {
         words: &["discreet", "issues"],

@@ -298,13 +298,21 @@ confusion_pair!(
     "illicit",
     "elicit"
 );
-confusion_pair!(
-    complement_compliment,
-    "The court now has a full compliment of judges.",
-    "The court now has a full complement of judges.",
-    "compliment",
-    "complement"
-);
+/// #5 review: a "full compliment of the judge" is correct praise, so the old `full compliment of`
+/// entry was ambiguous and was removed. `compliment` (praise) and `complement` (a complete set)
+/// used correctly must all stay quiet: there is no unambiguous `compliment` phrase.
+#[test]
+fn full_compliment_and_complement_are_quiet() {
+    for text in [
+        "The witness recalled the full compliment of the judge: 'Your work was excellent.'",
+        "The court now has a full complement of judges.",
+        "The court paid the witness a compliment after the hearing.",
+        "Her closing remarks were a fitting complement to the evidence.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
 
 /// #5 review: praising a person is `compliment`; the old `compliment the record` entry fired on
 /// this correct sentence and had to be replaced with an unambiguous phrase.
