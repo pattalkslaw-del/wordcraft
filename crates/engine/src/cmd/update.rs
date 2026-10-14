@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn every_supported_install_kind_hands_off() {
-        for kind in [InstallKind::WindowsMsi, InstallKind::WindowsPortableZip, InstallKind::MacDmg, InstallKind::MacApp, InstallKind::LinuxDeb] {
+        for kind in [InstallKind::WindowsMsi, InstallKind::MacApp, InstallKind::LinuxDeb] {
             let (r, got) = apply_for(kind);
             assert_eq!(r["status"], "available", "{kind:?}");
             let h = got.unwrap_or_else(|| panic!("no handoff for {kind:?}"));

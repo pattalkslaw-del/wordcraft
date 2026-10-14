@@ -235,11 +235,6 @@ fn build_sha() -> &'static str {
 }
 
 fn main() -> eframe::Result {
-    // Started by the portable-update launcher? Then swap the staged build in and relaunch instead
-    // of opening the interface (#15). It never reads or writes user documents.
-    if let Some(code) = update_install::run_portable_helper_from_args() {
-        std::process::exit(code);
-    }
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     logging::install_panic_hook();

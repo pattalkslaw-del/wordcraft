@@ -122,8 +122,12 @@ pub(crate) fn run_from_ribbon(app: &mut WordApp, id: &str, params: Value) {
     if id == "file.checkForUpdates" {
         // A manual check must answer every outcome: the notice bar covers a newer release, and the
         // status bar says "up to date" or why the check could not reach GitHub (#15 review P3).
-        let result = app.run(id, params);
-        crate::backstage::report_update_check(app, result);
+        if let Some(ctx) = app.ctx.clone() {
+            crate::update::queue_check(app, params, true, &ctx);
+        } else {
+            let result = app.run(id, params);
+            crate::backstage::report_update_check(app, result);
+        }
     } else {
         let _ = app.run(id, params);
     }

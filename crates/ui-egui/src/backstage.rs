@@ -109,8 +109,12 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                         if id == "discord" {
                             let _ = app.run("ui.discord", json!({}));
                         } else if id == "checkUpdates" {
-                            let result = app.run("file.checkForUpdates", json!({"force": true}));
-                            report_update_check(app, result);
+                            if let Some(ctx) = app.ctx.clone() {
+                                crate::update::queue_check(app, json!({"force": true}), true, &ctx);
+                            } else {
+                                let result = app.run("file.checkForUpdates", json!({"force": true}));
+                                report_update_check(app, result);
+                            }
                         } else {
                             app.dialog = crate::dialogs::Dialog::open("about", app);
                         }

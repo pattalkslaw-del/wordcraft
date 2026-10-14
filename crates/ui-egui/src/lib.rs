@@ -891,6 +891,13 @@ impl WordApp {
         }
     }
 
+    /// UI requests produced off the UI thread (for example the update-check worker).
+    pub(crate) fn apply_ui_requests(&mut self, requests: Vec<Value>) {
+        for req in requests {
+            self.handle_request(&req);
+        }
+    }
+
     /// Requests commands make of the UI (open a dialog…).
     fn handle_request(&mut self, req: &Value) {
         // Ctrl+F: type straight into the Navigation pane's search box (#712).

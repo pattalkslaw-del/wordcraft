@@ -84,9 +84,9 @@ impl InstallKind {
         matches!(self, InstallKind::Flatpak | InstallKind::AppImage)
     }
 
-    /// One-click install is implemented for these kinds.
+    /// One-click install is implemented for these kinds (portable zip and unknown paths use the release page).
     pub fn supports_one_click(self) -> bool {
-        matches!(self, InstallKind::WindowsMsi | InstallKind::WindowsPortableZip | InstallKind::MacDmg | InstallKind::MacApp | InstallKind::LinuxDeb)
+        matches!(self, InstallKind::WindowsMsi | InstallKind::MacApp | InstallKind::LinuxDeb)
     }
 }
 
@@ -104,12 +104,6 @@ pub fn detect_install_kind(exe: &str, env: &dyn EnvRead) -> InstallKind {
     let normalized = exe.replace('\\', "/");
     let lower = normalized.to_ascii_lowercase();
     if env.windows() {
-        // A portable zip extracts into a folder named `wordcraft-…-portable`; that stays portable
-        // wherever it is unpacked, including under Program Files. Check it before the Program Files
-        // rule, or a portable copy there would be mistaken for an MSI install.
-        if lower.contains("portable") {
-            return InstallKind::WindowsPortableZip;
-        }
         // A bare `wordcraft.exe` under Program Files is only an MSI install when the installer's own
         // evidence says so (the `App Paths` registry entry the MSI writes). A folder that merely
         // happens to live there has no such evidence: guessing MSI would download and run the wrong
@@ -120,7 +114,7 @@ pub fn detect_install_kind(exe: &str, env: &dyn EnvRead) -> InstallKind {
         return InstallKind::Unknown;
     }
     if env.macos() {
-        if lower.contains(".app/contents/macos/") {
+        if lower.contains("/applications/") && lower.contains(".app/contents/macos/") {
             return InstallKind::MacApp;
         }
         return InstallKind::Unknown;
@@ -235,7 +229,7 @@ impl EnvRead for SystemEnv {
     fn install_override(&self) -> Option<InstallKind> {
         match std::env::var("WORDCRAFT_INSTALL").ok().as_deref() {
             Some("msi") => Some(InstallKind::WindowsMsi),
-            Some("portable") => Some(InstallKind::WindowsPortableZip),
+            Some("portable") => Some(InstallKind::Unknown),
             Some("dmg") | Some("mac") => Some(InstallKind::MacDmg),
             Some("app") => Some(InstallKind::MacApp),
             Some("deb") => Some(InstallKind::LinuxDeb),
@@ -592,37 +586,38 @@ mod tests {
         assert_eq!(detect_install_kind("/usr/bin/wordcraft", &e), InstallKind::Unknown);
         let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "macos", windows_msi: false };
         assert_eq!(detect_install_kind("/Applications/WordCraft.app/Contents/MacOS/wordcraft", &e), InstallKind::MacApp);
+        assert_eq!(detect_install_kind("/Users/me/WordCraft.app/Contents/MacOS/wordcraft", &e), InstallKind::Unknown);
         let e =
             FakeEnv { flatpak: false, appimage: None, override_kind: Some(InstallKind::Unknown), linux_deb: false, os: "linux", windows_msi: false };
         assert_eq!(detect_install_kind("/build/wordcraft", &e), InstallKind::Unknown);
     }
 
-    /// #15 review: the Program Files rule must not swallow a portable copy there. Portable is
-    /// recognised by its folder name; a bare copy under Program Files only counts as MSI with the
-    /// installer's own registry evidence, and is otherwise left ambiguous (release page).
+    /// MSI detection uses registry evidence, not path shape alone; portable paths fall back to the release page.
     #[test]
     fn windows_install_detection_uses_evidence_not_just_the_folder() {
         let e = win_env(true);
         assert_eq!(detect_install_kind(r"C:\Program Files\WordCraft\wordcraft.exe", &e), InstallKind::WindowsMsi);
-        // A portable copy under Program Files is still portable, whatever the registry says.
-        assert_eq!(detect_install_kind(r"C:\Program Files\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &e), InstallKind::WindowsPortableZip);
-        assert_eq!(
-            detect_install_kind(r"C:\Program Files (x86)\wordcraft-0.6.0-windows-x86-portable\wordcraft.exe", &e),
-            InstallKind::WindowsPortableZip
-        );
-        // Without the App Paths entry, a folder under Program Files is not assumed to be an MSI.
         let no_evidence = win_env(false);
+        // A folder name containing "portable" is not evidence of a dedicated portable install.
+        assert_eq!(detect_install_kind(r"C:\Program Files\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &no_evidence), InstallKind::Unknown);
         assert_eq!(detect_install_kind(r"C:\Program Files\WordCraft\wordcraft.exe", &no_evidence), InstallKind::Unknown);
-        // A portable extraction outside Program Files is recognised too.
-        assert_eq!(detect_install_kind(r"D:\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &e), InstallKind::WindowsPortableZip);
+        assert_eq!(
+            detect_install_kind(r"C:\Users\portable_user\Downloads\wordcraft.exe", &e),
+            InstallKind::Unknown,
+            "portable in a username must not classify as a portable zip install"
+        );
+        assert_eq!(detect_install_kind(r"D:\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &e), InstallKind::Unknown);
     }
 
     #[test]
     fn asset_names_per_kind() {
         let v = (0, 6, 1);
-        assert_eq!(pick_asset_name(v, InstallKind::LinuxDeb).as_deref(), Some("wordcraft-0.6.1-linux-x86_64.deb"));
+        assert_eq!(asset_name(v, InstallKind::LinuxDeb, "x86_64").as_deref(), Some("wordcraft-0.6.1-linux-x86_64.deb"));
+        assert_eq!(asset_name(v, InstallKind::LinuxDeb, "aarch64").as_deref(), Some("wordcraft-0.6.1-linux-aarch64.deb"));
         assert_eq!(asset_name(v, InstallKind::WindowsMsi, "x64").as_deref(), Some("wordcraft-0.6.1-windows-x64.msi"));
         assert!(asset_name(v, InstallKind::Unknown, "x86_64").is_none());
+        let host_arch = if cfg!(target_os = "windows") { windows_arch() } else { target_arch() };
+        assert_eq!(pick_asset_name(v, InstallKind::LinuxDeb).as_deref(), asset_name(v, InstallKind::LinuxDeb, host_arch).as_deref());
     }
 
     #[test]
