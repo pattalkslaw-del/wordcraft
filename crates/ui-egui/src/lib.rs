@@ -1921,6 +1921,12 @@ impl WordApp {
             chrome::title_bar(self, ui);
             if !self.session.view.focus_mode {
                 ribbon::show(self, ui);
+            }
+            // Help ▸ Check for updates and startup checks run in the editor; the release notice and
+            // restart banner must show here too, not only over Backstage or with no document open
+            // (#15 review).
+            update::bar(self, ui);
+            if !self.session.view.focus_mode {
                 chrome::status_bar(self, ui);
                 panes::show(self, ui);
             }

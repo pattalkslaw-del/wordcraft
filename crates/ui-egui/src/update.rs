@@ -774,4 +774,66 @@ mod tests {
         h.run_steps(4);
         assert!(h.state().update.notice.is_none(), "Skip dismisses the notice");
     }
+
+    /// Help ▸ Check for updates runs in the editor with a document open; the release notice and
+    /// restart banner must render there, not only over Backstage (#15 review).
+    #[test]
+    fn restart_banner_is_visible_and_acknowledgeable_with_open_document() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        assert!(app.has_document() && !app.ui.backstage);
+        app.update.reboot_notice = true;
+        app.update.quit_pending = true;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut crate::WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        assert!(
+            h.query_by_label("WordCraft was updated. Restart the computer to finish the update.").is_some(),
+            "the restart instruction is shown in the editor"
+        );
+        assert!(h.query_by_label("OK").is_some(), "the restart banner's OK button is reachable in the editor");
+        h.get_by_label("OK").click();
+        h.run_steps(4);
+        assert!(!h.state().update.reboot_notice, "OK acknowledges the restart banner");
+    }
+
+    #[test]
+    fn release_notice_is_visible_and_actionable_with_open_document() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.run("file.new", json!({})).unwrap();
+        assert!(app.has_document() && !app.ui.backstage);
+        app.update.notice = Some(Notice {
+            version: "9.0.0".into(),
+            notes: "Fixes and improvements".into(),
+            page_url: "https://github.com/storytold/wordcraft/releases/tag/v9.0.0".into(),
+            one_click: true,
+            verified_update: false,
+            external_updater: false,
+        });
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut crate::WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        assert!(h.query_by_label("WordCraft 9.0.0 is available.").is_some(), "the version is shown in the editor");
+        assert!(h.query_by_label("Fixes and improvements").is_some(), "the release notes are shown in the editor");
+        assert!(h.query_by_label("Update").is_some(), "the Update action is available in the editor");
+        assert!(h.query_by_label("Skip this version").is_some(), "Skip is available in the editor");
+        assert!(h.query_by_label("Later").is_some(), "Later is available in the editor");
+        h.get_by_label("Skip this version").click();
+        h.run_steps(4);
+        assert!(h.state().update.notice.is_none(), "Skip dismisses the notice");
+    }
 }
