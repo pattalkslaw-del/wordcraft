@@ -33,7 +33,11 @@ impl ControlRequest {
 
 pub enum Outcome {
     Done(Value),
-    Screenshot { path: Option<String> },
+    /// Reply is sent when a background worker finishes (for example `file.checkForUpdates`).
+    Deferred,
+    Screenshot {
+        path: Option<String>,
+    },
 }
 
 fn ok(v: Value) -> Outcome {
@@ -112,6 +116,12 @@ pub fn handle(app: &mut WordApp, ctx: &egui::Context, req: &ControlRequest) -> O
         "engine.execute" | "command" => {
             let Some(id) = s("command").or(s("id")) else { return err("missing `command`") };
             let params = p.get("params").cloned().filter(|v| !v.is_null()).unwrap_or(json!({}));
+            if id == "file.checkForUpdates" && crate::update::can_run_off_thread(app) {
+                if crate::update::queue_check_control(app, params, ctx, req.reply.clone()) {
+                    return Outcome::Deferred;
+                }
+                return err("update check could not start");
+            }
             match app.execute(id, params) {
                 Ok(v) => ok(v),
                 Err(e) => err(e),
