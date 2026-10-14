@@ -128,11 +128,35 @@ fn needs_nbsp_after_signs(text: &str) -> bool {
 
 fn maybe_append_sign_nbsp(s: &mut Session) -> Result<(), CmdError> {
     let f = s.sel.focus.clone();
-    let Some(para) = s.doc.para_at(&f) else { return Ok(()) };
-    let rest = para.text.get(f.off..).unwrap_or("");
-    if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+    // What sits at the caret right after the sign: a digit (no space yet), or an ordinary space
+    // with a digit after it (the text already had " 1.010" and the sign was inserted before it).
+    let (digit_after, space_before_digit) = {
+        let Some(para) = s.doc.para_at(&f) else { return Ok(()) };
+        let rest = para.text.get(f.off..).unwrap_or("");
+        let mut it = rest.chars();
+        match it.next() {
+            Some(c) if c.is_ascii_digit() => (true, false),
+            Some(' ') if it.next().is_some_and(|c| c.is_ascii_digit()) => (false, true),
+            _ => (false, false),
+        }
+    };
+    if digit_after {
         let mut b = [0u8; 4];
         type_text(s, NBSP.encode_utf8(&mut b))?;
+    } else if space_before_digit {
+        // Replace the existing ordinary space with an NBSP, keeping its character formatting so
+        // the sign and number still read as one unbreakable unit. The command's checkpoint makes
+        // the whole insertion one undo step.
+        let space_start = f.off;
+        let space_end = space_start + 1;
+        let para = s.doc.para_mut(f.story, &f.path)?;
+        let props = para.props_of_char(space_start).clone();
+        para.delete(space_start, space_end)?;
+        let mut b = [0u8; 4];
+        para.insert_text(space_start, NBSP.encode_utf8(&mut b), &props)?;
+        para.touch();
+        // Leave the caret after the wider NBSP, not inside it.
+        s.sel = Selection::caret(Pos { off: space_start + NBSP.len_utf8(), ..f });
     }
     Ok(())
 }

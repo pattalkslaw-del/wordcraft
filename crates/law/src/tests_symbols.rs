@@ -83,6 +83,50 @@ fn section_sign_inserts_with_nonbreaking_space_before_a_digit() {
     assert_eq!(text, format!("RSMo §{NBSP}1.010"), "{text}");
 }
 
+/// Inserting a sign at the caret when the text already begins with " 1.010" must turn that
+/// ordinary space into an NBSP instead of leaving a breakable space between sign and number.
+#[test]
+fn inserting_signs_before_existing_space_and_number_uses_nbsp() {
+    for (command, glyph) in
+        [("law.symbols.section", "§"), ("law.symbols.sections", "§§"), ("law.symbols.paragraph", "¶"), ("law.symbols.paragraphs", "¶¶")]
+    {
+        let mut s = law();
+        run(&mut s, "text.insert", json!({"text": " 1.010"}));
+        s.sel = Selection::caret(Pos::body(0, 0));
+        run(&mut s, command, json!({}));
+        let text = s.doc.para_at(&Pos::body(0, 0)).unwrap().text.clone();
+        assert_eq!(text, format!("{glyph}{NBSP}1.010"), "{command}: {text}");
+        // The caret sits after the wider NBSP, so the next keystroke continues after it.
+        run(&mut s, "text.insert", json!({"text": "X"}));
+        assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, format!("{glyph}{NBSP}X1.010"), "{command} caret placement");
+        // The whole insertion is one undo step and restores exactly what the user had.
+        assert!(s.undo(), "{command} typing is undoable");
+        assert!(s.undo(), "{command} is undoable");
+        assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, " 1.010", "{command} undo restores what the user typed");
+
+        let mut s = law();
+        run(&mut s, "text.insert", json!({"text": " 1.010"}));
+        s.sel = Selection::caret(Pos::body(0, 0));
+        run(&mut s, command, json!({}));
+        let doc = roundtrip(&s);
+        let text = doc.para_at(&Pos::body(0, 0)).unwrap().text.clone();
+        assert_eq!(text, format!("{glyph}{NBSP}1.010"), "{command} NBSP survives DOCX: {text}");
+    }
+}
+
+#[test]
+fn inserting_sign_before_space_and_number_keeps_the_space_formatting() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": " 1"}));
+    run(&mut s, "select.all", json!({}));
+    run(&mut s, "format.bold", json!({}));
+    s.sel = Selection::caret(Pos::body(0, 0));
+    run(&mut s, "law.symbols.section", json!({}));
+    let para = s.doc.para_at(&Pos::body(0, 0)).unwrap();
+    assert_eq!(para.text, format!("§{NBSP}1"));
+    assert!(para.runs.iter().any(|r| r.props.bold.is_some_and(|b| b)), "the replaced space keeps its formatting");
+}
+
 #[test]
 fn fix_spacing_command_and_docx_roundtrip() {
     let mut s = law();
