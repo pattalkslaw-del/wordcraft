@@ -93,7 +93,7 @@ fn wait_child(mut child: std::process::Child, secs: u64) -> Result<std::process:
             Ok(Some(status)) => return Ok(status),
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
+                    terminate_child(&mut child);
                     return Err("the installer took too long".into());
                 }
                 std::thread::sleep(std::time::Duration::from_millis(250));
@@ -101,6 +101,28 @@ fn wait_child(mut child: std::process::Child, secs: u64) -> Result<std::process:
             Err(e) => return Err(e.to_string()),
         }
     }
+}
+
+/// Stop a child that overran its deadline. On Unix, ask it to stop with `SIGTERM` first and wait a
+/// short grace period: the authorized macOS swap installs a recovery trap, so a plain `SIGKILL`
+/// (what `Child::kill` sends) would deny a privileged shell the chance to put the old bundle back.
+/// Only after the grace period is it killed outright.
+fn terminate_child(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(id) = i32::try_from(child.id()) {
+            let _ = Command::new("/bin/kill").args(["-TERM", &id.to_string()]).status();
+            let grace = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < grace {
+                match child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    let _ = child.kill();
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -368,28 +390,70 @@ pub fn apple_quote(script: &str) -> String {
     out
 }
 
-/// The shell script that runs as root (through `do shell script`) to swap the bundle. It stages
-/// the new bundle beside the old one, moves the old aside, swaps the new in and only then removes
-/// the old; if the swap fails the old bundle is put back, so the install is never left missing.
+/// The copy command used by the real root script (`ditto` preserves a macOS bundle's metadata).
+#[cfg(any(target_os = "macos", test))]
+pub const MAC_COPY_CMD: &str = "/usr/bin/ditto";
+
+/// The bundle swap as an ordered list of self-contained `sh` steps. Each step repeats the fixed
+/// `.wordcraft-previous` backup and `.wordcraft-update` staging paths beside `dest`, so the steps can
+/// be run one at a time (as tests do) as well as in sequence.
+///
+/// The steps are idempotent and interruption-safe: a step never deletes the backup while the install
+/// is missing, the install is moved aside (never deleted) before the new bundle takes its place, and
+/// the first step puts a backup left by an interrupted run back. A transaction killed between any
+/// two steps therefore leaves either the old or the new install in place, and the next attempt
+/// recovers the old one before retrying.
+#[cfg(any(target_os = "macos", test))]
+pub fn authorized_swap_steps(staged: &Path, dest: &Path, copy_cmd: &str) -> Vec<String> {
+    let dest_text = dest.to_string_lossy();
+    let stage = sh_quote(&staged.to_string_lossy());
+    let dest_q = sh_quote(&dest_text);
+    let old = sh_quote(&format!("{dest_text}.wordcraft-previous"));
+    let tmp = sh_quote(&format!("{dest_text}.wordcraft-update"));
+    vec![
+        // Recover a previous interrupted swap first: the install is gone but its backup survived,
+        // so put the backup back. Nothing may delete the backup before this runs.
+        format!("if [ ! -e {dest_q} ] && [ -e {old} ]; then /bin/mv {old} {dest_q}; fi"),
+        // A staging copy left by a previous attempt is incomplete and safe to discard.
+        format!("/bin/rm -rf {tmp}"),
+        // With the install present, a leftover backup is stale; while the install is missing it is
+        // the only copy, so it is kept for the recovery above.
+        format!("if [ -e {dest_q} ]; then /bin/rm -rf {old}; fi"),
+        // Stage the new bundle beside the destination. A failed copy leaves the install untouched.
+        format!("{copy_cmd} {stage} {tmp}"),
+        // Move the current install aside; it is never deleted.
+        format!("if [ -e {dest_q} ]; then /bin/mv {dest_q} {old}; fi"),
+        // Move the new bundle in; if that fails, restore the install moved aside and stop.
+        format!("if ! /bin/mv {tmp} {dest_q}; then if [ -e {old} ]; then /bin/mv {old} {dest_q}; fi; exit 1; fi"),
+        // Only once the new install is in place is the backup removed.
+        format!("if [ -e {old} ]; then /bin/rm -rf {old}; fi"),
+    ]
+}
+
+/// The full root script (through `do shell script`): install a `trap` so that a signalled or
+/// interrupted privileged shell puts the old bundle back before it exits, then run the swap steps
+/// under `set -e`. A completed swap leaves the destination present, so the trap is a no-op then.
+#[cfg(any(target_os = "macos", test))]
+pub fn authorized_replace_script_with(staged: &Path, dest: &Path, copy_cmd: &str) -> String {
+    let dest_text = dest.to_string_lossy();
+    let dest_q = sh_quote(&dest_text);
+    let old = sh_quote(&format!("{dest_text}.wordcraft-previous"));
+    // The trap action is itself a command string the shell parses when it fires, so quote it with
+    // `sh_quote` as a whole: the path tokens inside stay single-quoted for that later parse.
+    let recover = format!("if [ ! -e {dest_q} ] && [ -e {old} ]; then /bin/mv {old} {dest_q}; fi");
+    let mut script = String::from("set -e\n");
+    script.push_str(&format!("trap {} EXIT HUP INT TERM\n", sh_quote(&recover)));
+    for step in authorized_swap_steps(staged, dest, copy_cmd) {
+        script.push_str(&step);
+        script.push('\n');
+    }
+    script
+}
+
+/// The real root script, copying the staged bundle with `/usr/bin/ditto`.
 #[cfg(any(target_os = "macos", test))]
 pub fn authorized_replace_script(staged: &Path, dest: &Path) -> String {
-    let staged = sh_quote(&staged.to_string_lossy());
-    let dest = sh_quote(&dest.to_string_lossy());
-    format!(
-        "set -e\n\
-         stage={staged}\n\
-         dest={dest}\n\
-         old=\"$dest.wordcraft-previous\"\n\
-         tmp=\"$dest.wordcraft-update\"\n\
-         rm -rf \"$old\" \"$tmp\"\n\
-         /usr/bin/ditto \"$stage\" \"$tmp\"\n\
-         if [ -e \"$dest\" ]; then\n\
-           mv \"$dest\" \"$old\"\n\
-           if mv \"$tmp\" \"$dest\"; then rm -rf \"$old\"; else mv \"$old\" \"$dest\"; exit 1; fi\n\
-         else\n\
-           mv \"$tmp\" \"$dest\"\n\
-         fi\n"
-    )
+    authorized_replace_script_with(staged, dest, MAC_COPY_CMD)
 }
 
 #[cfg(target_os = "macos")]
@@ -874,13 +938,138 @@ mod tests {
     #[test]
     fn authorized_script_quotes_paths_and_swaps_transactionally() {
         let script = authorized_replace_script(Path::new("/dmg dir/WordCraft.app"), Path::new("/Applications/WordCraft's.app"));
-        assert!(script.contains("stage='/dmg dir/WordCraft.app'"), "a path with a space stays one shell word: {script}");
+        assert!(script.starts_with("set -e\n"), "the script stops on the first failure: {script}");
+        assert!(script.contains("'/dmg dir/WordCraft.app'"), "a path with a space stays one shell word: {script}");
         assert!(script.contains(r"'/Applications/WordCraft'\''s.app'"), "a single quote is escaped, not ended: {script}");
         assert!(script.contains("ditto"), "the bundle is copied with ditto: {script}");
         assert!(
-            script.contains("mv \"$dest\" \"$old\"") && script.contains("mv \"$old\" \"$dest\""),
-            "the old bundle is restored on failure: {script}"
+            script.contains("wordcraft-previous") && script.contains("wordcraft-update"),
+            "the swap keeps a recoverable backup and a staging copy: {script}"
         );
+        assert!(script.contains("trap "), "an interrupted root shell restores the install: {script}");
+        // The backup is restored (or left alone) before any cleanup can delete it.
+        let restore = script.lines().position(|l| l.contains("/bin/mv") && l.contains("wordcraft-previous"));
+        let cleanup = script.lines().position(|l| l.contains("/bin/rm -rf") && l.contains("wordcraft-previous"));
+        assert!(restore.is_some() && cleanup.is_some(), "both a restore and a cleanup step exist: {script}");
+        assert!(restore.unwrap_or(usize::MAX) < cleanup.unwrap_or(0), "the backup is restored before any cleanup can delete it:\n{script}");
+    }
+
+    /// Run a shell snippet with `/bin/sh`; the snippets are the swap steps or the full script.
+    #[cfg(unix)]
+    fn run_shell(script: &str) -> std::process::ExitStatus {
+        std::process::Command::new("/bin/sh").args(["-c", script]).status().expect("sh runs")
+    }
+
+    /// A minimal application bundle at `root`, tagged so tests tell the old install from the new.
+    #[cfg(unix)]
+    fn make_bundle(root: &Path, tag: &str) {
+        std::fs::create_dir_all(root.join("Contents/MacOS")).expect("bundle dirs");
+        std::fs::write(root.join("Contents/Info.plist"), tag).expect("plist");
+        std::fs::write(root.join("Contents/MacOS/wordcraft"), tag).expect("exe");
+    }
+
+    #[cfg(unix)]
+    fn tag_of(path: &Path) -> String {
+        std::fs::read_to_string(path.join("Contents/Info.plist")).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    fn backup_of(dest: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.wordcraft-previous", dest.display()))
+    }
+
+    #[cfg(unix)]
+    fn staging_of(dest: &Path) -> PathBuf {
+        PathBuf::from(format!("{}.wordcraft-update", dest.display()))
+    }
+
+    /// #15 review: execute the authorized swap one step at a time and "crash" after every step, then
+    /// prove the next attempt recovers. This covers the dangerous window between moving the install
+    /// aside and moving the new bundle in, where an interrupted `mv` would otherwise lose the
+    /// install or a retry would delete the only backup.
+    #[cfg(unix)]
+    #[test]
+    fn authorized_swap_recovers_from_interruption_between_any_two_steps() {
+        let base = private_staging_dir().unwrap();
+        let stage = base.join("stage");
+        let dest = base.join("WordCraft.app");
+        make_bundle(&stage, "new");
+        let steps = authorized_swap_steps(&stage, &dest, "cp -R");
+        assert!(steps.len() > 4, "the swap really has separate moves: {steps:?}");
+
+        for interrupted_after in 1..=steps.len() {
+            // A clean installed state before each interruption.
+            let _ = std::fs::remove_dir_all(&dest);
+            let _ = std::fs::remove_dir_all(backup_of(&dest));
+            let _ = std::fs::remove_dir_all(staging_of(&dest));
+            make_bundle(&dest, "old");
+
+            // Run the first `interrupted_after` steps and then stop (a killed transaction runs
+            // nothing more).
+            for step in steps.iter().take(interrupted_after) {
+                let _ = run_shell(step);
+            }
+
+            // The next attempt runs the whole script; it must recover and install the new bundle.
+            let script = authorized_replace_script_with(&stage, &dest, "cp -R");
+            assert!(run_shell(&script).success(), "recovery after {interrupted_after} steps");
+            assert_eq!(tag_of(&dest), "new", "the new bundle is installed after interruption at step {interrupted_after}");
+            assert!(!backup_of(&dest).exists(), "the backup is cleared after a successful swap (step {interrupted_after})");
+            assert!(!staging_of(&dest).exists(), "the staging copy is cleared (step {interrupted_after})");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The specific interrupted state the review named: the install is gone and only the fixed
+    /// backup survives (interrupted between "move aside" and "move in"). The leftover backup must
+    /// put the install back and never be deleted on the retry before a replacement is installed.
+    #[cfg(unix)]
+    #[test]
+    fn authorized_swap_recovers_an_install_left_at_the_backup_path() {
+        let base = private_staging_dir().unwrap();
+        let stage = base.join("stage");
+        let dest = base.join("WordCraft.app");
+        make_bundle(&stage, "new");
+        let old = backup_of(&dest);
+        make_bundle(&old, "old");
+        std::fs::create_dir_all(staging_of(&dest)).expect("leftover staging copy");
+
+        let script = authorized_replace_script_with(&stage, &dest, "cp -R");
+        assert!(run_shell(&script).success(), "the retry recovers and replaces the install");
+
+        assert_eq!(tag_of(&dest), "new", "the new bundle is installed");
+        assert!(!old.exists(), "the backup is removed only after the new install is in place");
+        assert!(!staging_of(&dest).exists(), "the stale staging copy is discarded");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// Staging happens before the install is touched, so a failed copy leaves the current install
+    /// exactly as it was and leaves no partial staging copy behind.
+    #[cfg(unix)]
+    #[test]
+    fn authorized_swap_keeps_the_install_when_staging_fails() {
+        let base = private_staging_dir().unwrap();
+        let stage = base.join("stage");
+        let dest = base.join("WordCraft.app");
+        make_bundle(&stage, "new");
+        make_bundle(&dest, "old");
+
+        // `false` stands in for a copy that fails.
+        let script = authorized_replace_script_with(&stage, &dest, "false");
+        assert!(!run_shell(&script).success(), "a failed staging copy fails the transaction");
+        assert_eq!(tag_of(&dest), "old", "the installed bundle is untouched");
+        assert!(!staging_of(&dest).exists(), "no staging copy is left behind");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A timed-out installer is asked to stop before it is killed, so a recovery trap can run.
+    #[cfg(unix)]
+    #[test]
+    fn deadline_terminates_the_child_promptly() {
+        let child = Command::new("/bin/sh").args(["-c", "sleep 30"]).spawn().expect("spawn sleep");
+        let start = std::time::Instant::now();
+        assert!(wait_child(child, 1).is_err(), "the deadline is enforced");
+        assert!(start.elapsed() < std::time::Duration::from_secs(20), "termination does not wait for the sleep");
     }
 
     #[test]
