@@ -21,6 +21,9 @@ pub struct UpdateCheck {
     /// A successful update asked to quit. The host runs the usual close path for it, so a
     /// document edited after the worker finished still gets the save prompt (#15).
     pub quit_pending: bool,
+    /// A finished install needs a restart to complete (Windows MSI 3010/1641). Kept visible until
+    /// acknowledged, so the instruction is not lost when the app quits to let the restart happen.
+    pub reboot_notice: bool,
 }
 
 struct PendingWorker {
@@ -283,7 +286,33 @@ pub fn apply_command_result(app: &mut WordApp, value: &Value) {
     }
 }
 
+/// The restart instruction after a finished install: a durable bar, not a status message that
+/// vanishes before the app quits. Dismissed only when the user acknowledges it.
+fn reboot_bar(app: &mut WordApp, ui: &mut Ui) {
+    if !app.update.reboot_notice {
+        return;
+    }
+    let t = Tokens::get(ui.ctx());
+    let mut acknowledged = false;
+    egui::Panel::top("update_reboot_notice")
+        .frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(12, 6)).stroke(Stroke::new(1.0, t.border)))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+                let text = tl!("WordCraft was updated. Restart the computer to finish the update.");
+                ui.label(egui::RichText::new(text).font(TypeRung::Control.medium()).color(t.text));
+                if ui.button(tl!("OK")).clicked() {
+                    acknowledged = true;
+                }
+            });
+        });
+    if acknowledged {
+        app.update.reboot_notice = false;
+    }
+}
+
 pub fn bar(app: &mut WordApp, ui: &mut Ui) {
+    reboot_bar(app, ui);
     let Some(notice) = app.update.notice.clone() else { return };
     let t = Tokens::get(ui.ctx());
     let mut close = false;
@@ -468,5 +497,17 @@ mod tests {
         let n = notice_from_payload(&r).unwrap();
         assert_eq!(n.version, "8.0.0");
         assert!(n.external_updater);
+    }
+
+    /// The restart instruction survives the quit request (a status message would vanish first), and
+    /// clearing it is explicit, as the banner's OK button does (#15).
+    #[test]
+    fn reboot_notice_is_durable_until_acknowledged() {
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.apply_ui_requests(vec![json!({"quit": true}), json!({"updateReboot": true})]);
+        assert!(app.update.reboot_notice, "the restart instruction is kept, not a transient status");
+        assert!(app.quit_requested, "the update still asks to quit through the close path");
+        app.update.reboot_notice = false;
+        assert!(!app.update.reboot_notice, "acknowledging the banner clears it");
     }
 }

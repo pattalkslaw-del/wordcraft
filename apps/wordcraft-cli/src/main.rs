@@ -57,6 +57,19 @@ fn set_author(s: &mut Session, name: &str) -> Result<(), String> {
     s.run("file.setAuthor", &json!({"name": name})).map(|_| ()).map_err(|e| format!("--author: {e}"))
 }
 
+/// Run `file.checkForUpdates` for `wordcraft-cli update --check` and return the result. The HTTP
+/// hook and the install-detection environment are injected so tests run offline and independent of
+/// the host; the response must stay a single JSON value on stdout, with no probe output leaking in.
+fn run_update_check(http: wordcraft_engine::update::HttpGet, env: Option<wordcraft_engine::update::EnvReadBox>) -> Result<Value, String> {
+    let mut s = Session::new(wordcraft_doc::Document::new());
+    s.update_http = Some(http);
+    s.update_env = env;
+    if let Ok(exe) = std::env::current_exe() {
+        s.update_exe = Some(exe.to_string_lossy().into_owned());
+    }
+    s.run("file.checkForUpdates", &serde_json::json!({"force": true})).map_err(|e| e.to_string())
+}
+
 /// Build the headless MCP session, wiring the same update HTTP hook the desktop app uses so
 /// `file.checkForUpdates` is reachable through MCP too (#15). `http` is injected so tests run with
 /// an offline fake and no request ever leaves the machine.
@@ -323,13 +336,8 @@ fn run(args: &[String]) -> Result<(), Failure> {
             if !rest.iter().any(|a| a == "--check") {
                 return Err(format!("update: pass --check\n\n{USAGE}").into());
             }
-            let mut s = Session::new(wordcraft_doc::Document::new());
-            s.update_http = Some(update_check::http_get());
-            if let Ok(exe) = std::env::current_exe() {
-                s.update_exe = Some(exe.to_string_lossy().into_owned());
-            }
-            let r = s.run("file.checkForUpdates", &serde_json::json!({"force": true})).map_err(|e| e.to_string())?;
-            write_stdout(|o| writeln!(o, "{}", serde_json::to_string_pretty(&r).unwrap_or_default()))
+            let v = run_update_check(update_check::http_get(), None)?;
+            write_stdout(|o| writeln!(o, "{}", serde_json::to_string_pretty(&v).unwrap_or_default()))
         }
         "mcp" => {
             let (roots, rest) = automation_roots("mcp", &rest)?;
@@ -570,5 +578,43 @@ mod tests {
         assert_eq!(r["status"], "current");
         let seen = calls.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(seen, vec![wordcraft_engine::update::LATEST_API.to_string()], "exactly one offline release request");
+    }
+
+    /// #15: `wordcraft-cli update --check` prints exactly one JSON value. Install detection runs
+    /// inside the command, so this pins the response shape at the CLI boundary: `serde_json` rejects
+    /// any probe output that precedes or follows the value. The engine's captured probe helper is
+    /// what keeps a `dpkg-query -S` from inheriting stdout in the first place.
+    #[test]
+    fn update_check_prints_one_json_value() {
+        struct FakeEnv;
+        impl wordcraft_engine::update::EnvRead for FakeEnv {
+            fn flatpak(&self) -> bool {
+                false
+            }
+            fn appimage(&self) -> Option<String> {
+                None
+            }
+            fn install_override(&self) -> Option<wordcraft_engine::update::InstallKind> {
+                Some(wordcraft_engine::update::InstallKind::Unknown)
+            }
+            fn windows(&self) -> bool {
+                false
+            }
+            fn macos(&self) -> bool {
+                false
+            }
+            fn linux(&self) -> bool {
+                true
+            }
+            fn linux_deb_package(&self, _exe: &str) -> bool {
+                false
+            }
+        }
+        let http: wordcraft_engine::update::HttpGet =
+            std::sync::Arc::new(|_, _| Ok(br#"{"tag_name":"v0.0.1","draft":false,"prerelease":false,"assets":[]}"#.to_vec()));
+        let v = run_update_check(http, Some(std::sync::Arc::new(FakeEnv))).expect("offline check");
+        let text = serde_json::to_string_pretty(&v).unwrap();
+        let _: Value = serde_json::from_str(&text).expect("the response is one JSON value");
+        assert!(text.trim_start().starts_with('{') && text.trim_end().ends_with('}'), "no probe output wraps the JSON: {text:?}");
     }
 }

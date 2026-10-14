@@ -967,7 +967,7 @@ impl WordApp {
             update::apply_command_result(self, up);
         }
         if req.get("updateReboot").is_some() {
-            self.status(tl!("WordCraft was updated. Restart the computer to finish the update."));
+            self.update.reboot_notice = true;
         }
     }
 

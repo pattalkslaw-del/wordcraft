@@ -237,6 +237,9 @@ pub trait BundleOps {
     /// True when `path` is a regular file with an executable bit set.
     fn is_executable(&self, path: &Path) -> bool;
     fn exists(&self, path: &Path) -> bool;
+    /// True when this user may create and remove files in `path` (a package directory such as
+    /// `/Applications`). A folder the user cannot write is replaced through authorization instead.
+    fn is_writable_dir(&self, path: &Path) -> bool;
     fn copy_tree(&self, from: &Path, to: &Path) -> Result<(), String>;
     fn move_path(&self, from: &Path, to: &Path) -> Result<(), String>;
     fn remove_tree(&self, path: &Path) -> Result<(), String>;
@@ -307,6 +310,106 @@ pub fn replace_bundle(ops: &dyn BundleOps, staged: &Path, dest: &Path, exe_name:
     Ok(())
 }
 
+/// A bundle replacement that needs OS authorization because the destination's folder is not
+/// writable by this user (typically `/Applications`, owned by root). The real implementation asks
+/// for administrator approval through `osascript`; tests inject a fake so a cancelled or refused
+/// authorization is covered offline and an unwritable install never fails silently.
+#[cfg(any(target_os = "macos", test))]
+pub trait AuthorizedBundle {
+    /// Replace `dest` with the validated bundle at `staged`, authenticating if needed.
+    fn replace(&self, staged: &Path, dest: &Path, exe_name: &str) -> Result<(), String>;
+}
+
+/// Replace `dest` with the bundle at `staged` — directly when this user can write the folder, or
+/// through [`AuthorizedBundle`] when the folder (such as `/Applications`) is not writable. The
+/// staged bundle is validated either way, so a broken download is refused before anything moves.
+#[cfg(any(target_os = "macos", test))]
+pub fn install_bundle(ops: &dyn BundleOps, auth: &dyn AuthorizedBundle, staged: &Path, dest: &Path, exe_name: &str) -> Result<(), String> {
+    let parent = dest.parent().ok_or("could not find the install folder")?;
+    if ops.is_writable_dir(parent) {
+        replace_bundle(ops, staged, dest, exe_name)
+    } else {
+        validate_bundle(ops, staged, exe_name)?;
+        auth.replace(staged, dest, exe_name)
+    }
+}
+
+/// `sh` single-quote quoting: `'` becomes `'\''`, everything else stays literal. The authorized
+/// script is assembled only from paths we built, but a path can still contain a quote.
+#[cfg(any(target_os = "macos", test))]
+pub fn sh_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// The AppleScript `do shell script` argument: a string literal with `\` and `"` escaped. Without
+/// this, a path containing a double quote would let the shell script escape the string literal.
+#[cfg(any(target_os = "macos", test))]
+pub fn apple_quote(script: &str) -> String {
+    let mut out = String::with_capacity(script.len() + 2);
+    out.push('"');
+    for c in script.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The shell script that runs as root (through `do shell script`) to swap the bundle. It stages
+/// the new bundle beside the old one, moves the old aside, swaps the new in and only then removes
+/// the old; if the swap fails the old bundle is put back, so the install is never left missing.
+#[cfg(any(target_os = "macos", test))]
+pub fn authorized_replace_script(staged: &Path, dest: &Path) -> String {
+    let staged = sh_quote(&staged.to_string_lossy());
+    let dest = sh_quote(&dest.to_string_lossy());
+    format!(
+        "set -e\n\
+         stage={staged}\n\
+         dest={dest}\n\
+         old=\"$dest.wordcraft-previous\"\n\
+         tmp=\"$dest.wordcraft-update\"\n\
+         rm -rf \"$old\" \"$tmp\"\n\
+         /usr/bin/ditto \"$stage\" \"$tmp\"\n\
+         if [ -e \"$dest\" ]; then\n\
+           mv \"$dest\" \"$old\"\n\
+           if mv \"$tmp\" \"$dest\"; then rm -rf \"$old\"; else mv \"$old\" \"$dest\"; exit 1; fi\n\
+         else\n\
+           mv \"$tmp\" \"$dest\"\n\
+         fi\n"
+    )
+}
+
+#[cfg(target_os = "macos")]
+const AUTHORIZE_WAIT_SECS: u64 = 5 * 60;
+
+#[cfg(target_os = "macos")]
+struct RealAuthorizedBundle;
+
+#[cfg(target_os = "macos")]
+impl AuthorizedBundle for RealAuthorizedBundle {
+    fn replace(&self, staged: &Path, dest: &Path, exe_name: &str) -> Result<(), String> {
+        let _ = exe_name;
+        let script = authorized_replace_script(staged, dest);
+        let arg = format!("do shell script {} with administrator privileges", apple_quote(&script));
+        let child = Command::new("osascript").args(["-e", &arg]).spawn().map_err(|e| e.to_string())?;
+        let status = wait_child(child, AUTHORIZE_WAIT_SECS)?;
+        if status.success() { Ok(()) } else { Err("The update needs your permission to replace WordCraft in /Applications.".into()) }
+    }
+}
+
 #[cfg(target_os = "macos")]
 struct RealBundleOps;
 
@@ -327,6 +430,19 @@ impl BundleOps for RealBundleOps {
     }
     fn exists(&self, path: &Path) -> bool {
         path.exists()
+    }
+    fn is_writable_dir(&self, path: &Path) -> bool {
+        if !path.is_dir() {
+            return false;
+        }
+        let probe = path.join(format!(".wordcraft-write-probe-{}", std::process::id()));
+        match std::fs::File::create(&probe) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe);
+                true
+            }
+            Err(_) => false,
+        }
     }
     fn copy_tree(&self, from: &Path, to: &Path) -> Result<(), String> {
         copy_dir_all(from, to)
@@ -399,7 +515,7 @@ fn run_command_status(mut cmd: Command, secs: u64) -> Result<std::process::ExitS
 }
 
 #[cfg(target_os = "macos")]
-fn mac_dmg_with(dmg: &Path, staging: &Path, exe: &str, runner: &dyn DmgRunner) -> Result<(), String> {
+fn mac_dmg_with(dmg: &Path, staging: &Path, exe: &str, runner: &dyn DmgRunner, auth: &dyn AuthorizedBundle) -> Result<(), String> {
     let dest = app_bundle_for(exe).ok_or("WordCraft is not running from an application bundle")?;
     let dest_lower = dest.to_string_lossy().to_ascii_lowercase();
     if !dest_lower.starts_with("/applications/") {
@@ -415,7 +531,7 @@ fn mac_dmg_with(dmg: &Path, staging: &Path, exe: &str, runner: &dyn DmgRunner) -
     let result = if !app_src.is_dir() {
         Err("The disk image does not contain WordCraft.app.".into())
     } else {
-        replace_bundle(&RealBundleOps, &app_src, &dest, exe_name)
+        install_bundle(&RealBundleOps, auth, &app_src, &dest, exe_name)
     };
     runner.detach(mount_s);
     result
@@ -423,7 +539,7 @@ fn mac_dmg_with(dmg: &Path, staging: &Path, exe: &str, runner: &dyn DmgRunner) -
 
 #[cfg(target_os = "macos")]
 fn mac_dmg(dmg: &Path, staging: &Path, exe: &str) -> Result<InstallOutcome, String> {
-    mac_dmg_with(dmg, staging, exe, &RealDmgRunner).map(|()| InstallOutcome::default())
+    mac_dmg_with(dmg, staging, exe, &RealDmgRunner, &RealAuthorizedBundle).map(|()| InstallOutcome::default())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -487,6 +603,8 @@ mod tests {
         /// A copied bundle with metadata and a `MacOS/` folder but no runnable executable.
         no_executable: bool,
         fail_swap: bool,
+        /// Whether the destination's folder is writable by this user (drives authorization).
+        writable: bool,
     }
 
     impl FakeOps {
@@ -508,6 +626,9 @@ mod tests {
         }
         fn exists(&self, path: &Path) -> bool {
             self.dirs.borrow().contains(path) || self.files.borrow().contains(path)
+        }
+        fn is_writable_dir(&self, path: &Path) -> bool {
+            self.writable && self.dirs.borrow().contains(path)
         }
         fn copy_tree(&self, _from: &Path, to: &Path) -> Result<(), String> {
             if self.fail_copy {
@@ -637,7 +758,8 @@ mod tests {
     fn dmg_install_refuses_bundles_outside_system_applications() {
         let dir = private_staging_dir().unwrap();
         let dmg = write_exclusive_file(&dir, "wordcraft.dmg", b"x").unwrap();
-        let err = mac_dmg_with(&dmg, &dir, "/Users/me/Applications/WordCraft.app/Contents/MacOS/wordcraft", &RealDmgRunner).unwrap_err();
+        let err = mac_dmg_with(&dmg, &dir, "/Users/me/Applications/WordCraft.app/Contents/MacOS/wordcraft", &RealDmgRunner, &RealAuthorizedBundle)
+            .unwrap_err();
         assert!(err.contains("/Applications"), "{err}");
     }
 
@@ -659,9 +781,114 @@ mod tests {
         let runner = FailAttach { detached: Cell::new(false) };
         let dir = private_staging_dir().unwrap();
         let dmg = write_exclusive_file(&dir, "wordcraft.dmg", b"x").unwrap();
-        let err = mac_dmg_with(&dmg, &dir, "/Applications/WordCraft.app/Contents/MacOS/wordcraft", &runner).unwrap_err();
+        let err = mac_dmg_with(&dmg, &dir, "/Applications/WordCraft.app/Contents/MacOS/wordcraft", &runner, &RealAuthorizedBundle).unwrap_err();
         assert!(err.contains("attach"), "{err}");
         assert!(!runner.detached.get(), "detach is only needed after a successful attach");
+    }
+
+    /// A fake bundle tree with `Contents/`, `Info.plist` and a runnable executable, so the
+    /// authorized path validates the source the same way the direct path validates its copy.
+    impl FakeOps {
+        fn with_valid_bundle(self, root: &str) -> Self {
+            let root = PathBuf::from(root);
+            self.dirs.borrow_mut().insert(root.clone());
+            self.dirs.borrow_mut().insert(root.join("Contents"));
+            self.files.borrow_mut().insert(root.join("Contents/Info.plist"));
+            self.dirs.borrow_mut().insert(root.join("Contents/MacOS"));
+            let exe = root.join("Contents/MacOS/wordcraft");
+            self.files.borrow_mut().insert(exe.clone());
+            self.execs.borrow_mut().insert(exe);
+            self
+        }
+    }
+
+    /// An authorized handoff that records the call and reports a scripted result, so the fallback
+    /// and its cancellation/failure paths are covered without touching `/Applications`.
+    struct FakeAuth {
+        result: Result<(), String>,
+        calls: RefCell<Vec<(PathBuf, PathBuf)>>,
+    }
+
+    impl AuthorizedBundle for FakeAuth {
+        fn replace(&self, staged: &Path, dest: &Path, exe_name: &str) -> Result<(), String> {
+            let _ = exe_name;
+            self.calls.borrow_mut().push((staged.to_path_buf(), dest.to_path_buf()));
+            self.result.clone()
+        }
+    }
+
+    fn install_ops(writable: bool) -> FakeOps {
+        FakeOps { writable, ..FakeOps::default() }
+            .with_dir("/apps")
+            .with_valid_bundle("/apps/WordCraft.app")
+            .with_valid_bundle("/stage/WordCraft.app")
+    }
+
+    #[test]
+    fn writable_applications_uses_the_direct_swap_without_authorization() {
+        let ops = install_ops(true);
+        let auth = FakeAuth { result: Ok(()), calls: RefCell::new(Vec::new()) };
+        install_bundle(&ops, &auth, &staged(), &dest(), "wordcraft").unwrap();
+        assert!(ops.is_dir(&dest()), "the direct swap replaced the bundle");
+        assert!(auth.calls.borrow().is_empty(), "no authorization when the folder is writable");
+    }
+
+    #[test]
+    fn unwritable_applications_falls_back_to_authorization() {
+        let ops = install_ops(false);
+        let auth = FakeAuth { result: Ok(()), calls: RefCell::new(Vec::new()) };
+        install_bundle(&ops, &auth, &staged(), &dest(), "wordcraft").unwrap();
+        assert_eq!(auth.calls.borrow().len(), 1, "the authorized handoff replaced a read-only /Applications");
+    }
+
+    #[test]
+    fn authorized_install_reports_cancellation() {
+        let ops = install_ops(false);
+        let auth = FakeAuth {
+            result: Err("The update needs your permission to replace WordCraft in /Applications.".into()),
+            calls: RefCell::new(Vec::new()),
+        };
+        let err = install_bundle(&ops, &auth, &staged(), &dest(), "wordcraft").unwrap_err();
+        assert!(err.to_ascii_lowercase().contains("permission"), "{err}");
+    }
+
+    #[test]
+    fn authorized_install_reports_permission_failure() {
+        let ops = install_ops(false);
+        let auth = FakeAuth { result: Err("operation not permitted".into()), calls: RefCell::new(Vec::new()) };
+        let err = install_bundle(&ops, &auth, &staged(), &dest(), "wordcraft").unwrap_err();
+        assert!(err.contains("not permitted"), "{err}");
+        assert!(ops.is_dir(&dest()), "the installed bundle is untouched");
+    }
+
+    #[test]
+    fn authorized_install_refuses_a_broken_download() {
+        let ops =
+            FakeOps { writable: false, ..FakeOps::default() }.with_dir("/apps").with_dir("/apps/WordCraft.app").with_dir("/stage/WordCraft.app");
+        let auth = FakeAuth { result: Ok(()), calls: RefCell::new(Vec::new()) };
+        let err = install_bundle(&ops, &auth, &staged(), &dest(), "wordcraft").unwrap_err();
+        assert!(err.contains("incomplete") || err.contains("Info.plist"), "{err}");
+        assert!(auth.calls.borrow().is_empty(), "an invalid bundle never reaches authorization");
+    }
+
+    #[test]
+    fn authorized_script_quotes_paths_and_swaps_transactionally() {
+        let script = authorized_replace_script(Path::new("/dmg dir/WordCraft.app"), Path::new("/Applications/WordCraft's.app"));
+        assert!(script.contains("stage='/dmg dir/WordCraft.app'"), "a path with a space stays one shell word: {script}");
+        assert!(script.contains(r"'/Applications/WordCraft'\''s.app'"), "a single quote is escaped, not ended: {script}");
+        assert!(script.contains("ditto"), "the bundle is copied with ditto: {script}");
+        assert!(
+            script.contains("mv \"$dest\" \"$old\"") && script.contains("mv \"$old\" \"$dest\""),
+            "the old bundle is restored on failure: {script}"
+        );
+    }
+
+    #[test]
+    fn apple_script_literal_escapes_quotes_and_backslashes() {
+        let q = apple_quote("quotes \" and backslash \\ end");
+        assert!(q.starts_with('"') && q.ends_with('"'), "wrapped as an AppleScript literal: {q}");
+        assert!(q.contains("\\\""), "double quotes are escaped: {q}");
+        assert!(q.contains("\\\\"), "backslashes are escaped: {q}");
     }
 
     /// Records the arguments and reports a scripted return code, so MSI behaviour is covered on

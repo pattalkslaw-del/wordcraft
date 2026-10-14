@@ -159,12 +159,47 @@ pub trait EnvRead {
     }
 }
 
+/// Install-detection probes are bounded so a stuck package or registry helper cannot leave the
+/// update worker busy and block the window from closing.
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Run a helper program with captured output and a hard deadline. Capturing is essential: a probe
+/// that inherited our stdout (such as `dpkg-query -S`) would corrupt `wordcraft-cli update --check`'s
+/// JSON response, which must stay one value.
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+fn run_quiet(program: &str, args: &[&str], timeout: std::time::Duration) -> Option<std::process::Output> {
+    use std::process::{Command, Stdio};
+    let child = Command::new(program).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
+    wait_with_deadline(child, timeout)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+fn wait_with_deadline(mut child: std::process::Child, timeout: std::time::Duration) -> Option<std::process::Output> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            // Exited: collect the captured pipes.
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn linux_deb_package_query(exe: &str) -> bool {
     if exe.is_empty() || exe.len() > 512 {
         return false;
     }
-    std::process::Command::new("dpkg-query").args(["-S", exe]).status().map(|s| s.success()).unwrap_or(false)
+    run_quiet("dpkg-query", &["-S", exe], QUERY_TIMEOUT).is_some_and(|out| out.status.success())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -182,11 +217,10 @@ fn windows_msi_path_matches(exe: &str) -> bool {
         return false;
     }
     ["/reg:64", "/reg:32"].iter().any(|view| {
-        let output = std::process::Command::new("reg")
-            .args(["query", r"HKLM\Software\Microsoft\Windows\CurrentVersion\App Paths\wordcraft.exe", "/ve", view])
-            .output();
+        let output =
+            run_quiet("reg", &["query", r"HKLM\Software\Microsoft\Windows\CurrentVersion\App Paths\wordcraft.exe", "/ve", view], QUERY_TIMEOUT);
         match output {
-            Ok(out) if out.status.success() => {
+            Some(out) if out.status.success() => {
                 let text = String::from_utf8_lossy(&out.stdout);
                 text.split("REG_SZ")
                     .nth(1)
@@ -711,5 +745,32 @@ mod tests {
         assert_eq!(asset_name(v, InstallKind::WindowsPortableZip, "arm64").as_deref(), Some("wordcraft-0.7.0-windows-arm64-portable.zip"));
         assert_eq!(asset_name(v, InstallKind::MacDmg, "x86_64").as_deref(), Some("wordcraft-0.7.0-macos-universal.dmg"));
         assert_eq!(asset_name(v, InstallKind::MacApp, "aarch64").as_deref(), Some("wordcraft-0.7.0-macos-universal.dmg"));
+    }
+
+    /// The regression for the CLI-JSON contamination: a probe's output must land in the returned
+    /// `Output`, never on our stdout (#15). `/bin/echo`/`cmd` are used because every host has one.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn helper_output_is_captured_not_inherited() {
+        #[cfg(unix)]
+        let (program, args): (&str, Vec<&str>) = ("/bin/echo", vec!["wordcraft-capture-probe"]);
+        #[cfg(windows)]
+        let (program, args): (&str, Vec<&str>) = ("cmd", vec!["/C", "echo", "wordcraft-capture-probe"]);
+        let out = run_quiet(program, &args, QUERY_TIMEOUT).expect("the helper runs");
+        assert!(out.status.success(), "the helper succeeded");
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("wordcraft-capture-probe"),
+            "the helper's output is captured in the returned Output, not inherited"
+        );
+    }
+
+    /// A stuck probe is killed at the deadline instead of hanging the update worker (#15).
+    #[cfg(unix)]
+    #[test]
+    fn helper_is_killed_at_the_deadline() {
+        let start = std::time::Instant::now();
+        let out = run_quiet("/bin/sh", &["-c", "sleep 30"], std::time::Duration::from_millis(300));
+        assert!(out.is_none(), "a stuck probe is killed, not waited on forever");
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "the deadline is enforced");
     }
 }
