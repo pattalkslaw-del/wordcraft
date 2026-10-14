@@ -69,6 +69,8 @@ fn apply_module_toggle(app: &mut WordApp, on: bool) {
         }
         return;
     }
+    // The change went through, so any error from an earlier attempt is stale.
+    app.law.validation = None;
     if on {
         set_profiles_dir(settings_dir());
         sync_module(app);
@@ -180,11 +182,8 @@ fn apply_drafts(law: &LawUi, profile_id: &str, profile: &mut Value) {
     }
 }
 
-/// Save every pending text edit for the profile being left through `law.profiles.update`. A field
-/// that never received its blur — because another profile was clicked before it lost focus — would
-/// otherwise be wiped when its draft keys are cleared. Drafts are kept when the save fails, so
-/// returning to the profile shows the text again and it can be retried.
-/// Profile ids that still have uncommitted text edits on the LawCraft page.
+/// Profile ids that still have uncommitted text edits on the LawCraft page. The page has one draft
+/// store; a draft belongs to the profile whose id prefixes its key.
 fn profile_ids_with_drafts(law: &LawUi) -> Vec<String> {
     let mut ids = std::collections::BTreeSet::new();
     for key in
@@ -197,7 +196,10 @@ fn profile_ids_with_drafts(law: &LawUi) -> Vec<String> {
     ids.into_iter().collect()
 }
 
-/// Save every pending LawCraft text edit. Call before leaving the LawCraft pane or closing Options.
+/// Save every pending LawCraft text edit for the whole page through `law.profiles.update`. Call
+/// before any navigation (switch profile or document type, import, export, approve, leave Options)
+/// and before the module toggle can hide the pane. Returns `false` — and leaves the failed draft in
+/// place with `law.validation` set — if any profile's edit cannot be saved, so the caller can cancel.
 pub(crate) fn commit_pending_drafts(app: &mut WordApp) -> bool {
     for id in profile_ids_with_drafts(&app.law) {
         if !flush_drafts(app, &id) {
@@ -218,6 +220,9 @@ fn reload_profile(app: &mut WordApp, profile_id: &str, profile: &mut Value) {
     }
 }
 
+/// Save one profile's pending text edits through `law.profiles.update`, applying them with
+/// [`apply_drafts`]. Its drafts are removed only when the update succeeds; on failure they stay, so
+/// returning to the profile shows the text again and it can be retried.
 fn flush_drafts(app: &mut WordApp, profile_id: &str) -> bool {
     if !has_drafts(&app.law, profile_id) {
         return true;
@@ -250,6 +255,12 @@ pub fn addins(app: &mut WordApp, ui: &mut Ui) {
         apply_module_toggle(app, checked);
     }
     ui.label(RichText::new(tl!("Legal court profiles, formatting rules and filing checks. See docs/law.md.")).small().weak());
+    // The Add-ins checkbox can refuse the change when the LawCraft page has an unsavable draft.
+    // Show that reason here, inline, so the person sees why the module stayed on.
+    if let Some(msg) = app.law.validation.as_ref().filter(|s| !s.is_empty()) {
+        ui.add_space(4.0);
+        ui.colored_label(ui.visuals().error_fg_color, msg);
+    }
 }
 
 /// The LawCraft settings page (only when the module is on).
@@ -301,15 +312,12 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                         }));
                     });
                     if clicked {
-                        // A field whose blur never came (the click landed elsewhere first) still
-                        // has its text in a draft. Commit it through `law.profiles.update` before
-                        // the selection changes and the drafts are cleared.
-                        let previous = app.law.selected.clone().filter(|p| p != id);
-                        let allowed = match previous {
-                            Some(p) => flush_drafts(app, &p),
-                            None => true,
-                        };
-                        if allowed {
+                        // Every click in the list is a navigation: commit every pending draft for
+                        // the whole page before the selection changes. A field whose blur never came
+                        // (the click landed elsewhere first) still has its text in a draft, and a
+                        // draft belonging to another profile must not be dropped either. If any
+                        // commit fails the selection stays put and the error shows inline.
+                        if commit_pending_drafts(app) {
                             app.law.selected = Some(id.to_string());
                             app.law.validation = None;
                             app.law.confirm_approve = false;
@@ -324,22 +332,16 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(tl!("Import…")).clicked() {
-                    let id = app.law.selected.clone();
-                    let allowed = id.as_ref().map(|p| flush_drafts(app, p)).unwrap_or(true);
-                    if allowed {
-                        let _ = app.ask_file(FileDialogRequest::Open { purpose: "lawProfile".into() }, AfterPick::LawImport);
-                    }
+                if ui.button(tl!("Import…")).clicked() && commit_pending_drafts(app) {
+                    let _ = app.ask_file(FileDialogRequest::Open { purpose: "lawProfile".into() }, AfterPick::LawImport);
                 }
                 let id = app.law.selected.clone();
                 ui.add_enabled_ui(id.is_some(), |ui| {
-                    if ui.button(tl!("Export…")).clicked() {
+                    if ui.button(tl!("Export…")).clicked() && commit_pending_drafts(app) {
                         let profile_id = id.as_deref().unwrap_or("");
-                        if flush_drafts(app, profile_id) {
-                            let name = format!("{}.json", profile_id);
-                            app.law.export_id = id;
-                            let _ = app.ask_file(FileDialogRequest::Save { name }, AfterPick::LawExport);
-                        }
+                        let name = format!("{}.json", profile_id);
+                        app.law.export_id = id.clone();
+                        let _ = app.ask_file(FileDialogRequest::Save { name }, AfterPick::LawExport);
                     }
                 });
             });
@@ -390,8 +392,10 @@ fn profile_editor(app: &mut WordApp, ui: &mut Ui, id: &str, list: &[Value]) {
     }
     ui.horizontal(|ui| {
         ui.label(tl!("Document type:"));
+        // Switching document type is a navigation: commit every pending page draft first, so an
+        // edit that never blurred is saved and any unsavable draft cancels the switch.
         for d in &docs {
-            if ui.selectable_label(app.law.doc_type == *d, d.as_str()).clicked() && app.law.doc_type != *d && flush_drafts(app, id) {
+            if ui.selectable_label(app.law.doc_type == *d, d.as_str()).clicked() && app.law.doc_type != *d && commit_pending_drafts(app) {
                 app.law.doc_type = d.clone();
             }
         }
@@ -420,7 +424,9 @@ fn approve_ui(app: &mut WordApp, ui: &mut Ui, id: &str) {
         ui.label(tl!("Approve this court profile? You are confirming that its rules match the court's requirements."));
         ui.horizontal(|ui| {
             if ui.button(tl!("Approve")).clicked() {
-                if !flush_drafts(app, id) {
+                // Approval is a navigation for the draft store: every pending page draft must save
+                // first, or the approval is cancelled.
+                if !commit_pending_drafts(app) {
                     return;
                 }
                 match app.run("law.profiles.approve", json!({"id": id})) {
@@ -436,7 +442,7 @@ fn approve_ui(app: &mut WordApp, ui: &mut Ui, id: &str) {
                 app.law.confirm_approve = false;
             }
         });
-    } else if ui.button(tl!("Approve profile…")).clicked() && flush_drafts(app, id) {
+    } else if ui.button(tl!("Approve profile…")).clicked() && commit_pending_drafts(app) {
         app.law.confirm_approve = true;
     }
 }
@@ -661,7 +667,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
 
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Checks for this document type")).small().weak());
-        if ui.button(tl!("Add check")).clicked() && flush_drafts(app, profile_id) {
+        if ui.button(tl!("Add check")).clicked() && commit_pending_drafts(app) {
             reload_profile(app, profile_id, profile);
             let mut checks = current_checks(profile, doc_key);
             checks.push(json!({"kind": "wordLimit", "limit": 10000, "source": "Edited in LawCraft settings"}));
@@ -690,7 +696,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                         }
                     },
                 );
-                if selected_kind != kind && flush_drafts(app, profile_id) {
+                if selected_kind != kind && commit_pending_drafts(app) {
                     reload_profile(app, profile_id, profile);
                     let mut checks = current_checks(profile, doc_key);
                     if let Some(c) = checks.get_mut(i) {
@@ -699,7 +705,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
                     return;
                 }
-                if ui.button(tl!("Remove")).clicked() && flush_drafts(app, profile_id) {
+                if ui.button(tl!("Remove")).clicked() && commit_pending_drafts(app) {
                     reload_profile(app, profile_id, profile);
                     let mut checks = current_checks(profile, doc_key);
                     if i < checks.len() {
@@ -963,9 +969,9 @@ pub(crate) fn finish_pick(app: &mut WordApp, after: AfterPick, picked: Option<St
     match after {
         AfterPick::LawImport => {
             let Some(path) = picked else { return Ok(json!({"cancelled": true})) };
-            if let Some(sel) = app.law.selected.clone()
-                && !flush_drafts(app, &sel)
-            {
+            // Import is a navigation: commit every pending page draft first. Any unsavable draft
+            // cancels the import and keeps its error inline.
+            if !commit_pending_drafts(app) {
                 return Ok(json!({"cancelled": true, "reason": "pending edits could not be saved"}));
             }
             let r = app.run("law.profiles.import", json!({"path": path}));
@@ -989,7 +995,8 @@ pub(crate) fn finish_pick(app: &mut WordApp, after: AfterPick, picked: Option<St
             };
             let id = app.law.export_id.clone().ok_or_else(|| "no profile selected for export".to_string())?;
             app.law.export_id = None;
-            if !flush_drafts(app, &id) {
+            // Export is a navigation too: commit every pending page draft first.
+            if !commit_pending_drafts(app) {
                 return Ok(json!({"cancelled": true, "reason": "pending edits could not be saved"}));
             }
             let r = app.run("law.profiles.export", json!({"id": id, "path": path}));

@@ -788,6 +788,120 @@ fn switching_document_type_commits_or_keeps_check_source_draft() {
 }
 
 #[test]
+fn switching_document_type_commits_drafts_for_every_profile() {
+    let (_lock, store_dir) = serial();
+    let mut a = law_app();
+    let a_id = unique_id("ui-law-multi-doctype-a");
+    let b_id = unique_id("ui-law-multi-doctype-b");
+    for (id, name) in [(&a_id, "Multi doctype A"), (&b_id, "Multi doctype B")] {
+        a.run(
+            "law.profiles.create",
+            json!({
+                "schema": 1,
+                "id": id,
+                "name": name,
+                "jurisdiction": "Test",
+                "docs": {
+                    "brief": {
+                        "styles": [],
+                        "sections": [{"id": "cover", "name": "Cover"}],
+                        "checks": [],
+                        "source": "Test"
+                    },
+                    "motion": {
+                        "styles": [],
+                        "sections": [{"id": "cover", "name": "Cover"}],
+                        "checks": [],
+                        "source": "Test"
+                    }
+                }
+            }),
+        )
+        .unwrap();
+    }
+    open_law_options(&mut a);
+    a.law.selected = Some(a_id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    // A pending edit on profile B, which is not the selected profile.
+    let b_draft = format!("{b_id}\0brief\0section\0cover");
+    h.state_mut().law.section_name_drafts.insert(b_draft.clone(), "B edited".into());
+
+    // B cannot be saved: switching A's document type is a navigation that must commit every draft
+    // for the whole page, so it is cancelled and B's draft is not dropped.
+    let b_file = store_dir.join(format!("{}.json", b_id));
+    make_read_only(&b_file);
+    h.get_by_label("motion").click();
+    h.run_steps(4);
+    assert_eq!(h.state().law.doc_type, "brief", "the switch is cancelled when another profile's draft fails");
+    assert!(h.state().law.validation.is_some(), "the failing draft's error shows inline");
+    assert!(h.state().law.section_name_drafts.contains_key(&b_draft), "the failing draft is kept for a retry");
+
+    // Once B is writable the same click commits every draft first, then navigates.
+    make_writable(&b_file);
+    h.get_by_label("motion").click();
+    h.run_steps(6);
+    assert_eq!(h.state().law.doc_type, "motion", "the switch succeeds once every draft saves");
+    let b = h.state_mut().run("law.profiles.get", json!({"id": b_id})).unwrap();
+    assert_eq!(b["docs"]["brief"]["sections"][0]["name"], json!("B edited"), "the other profile's draft was committed");
+    assert!(!h.state().law.section_name_drafts.contains_key(&b_draft), "the draft is cleared after it saves");
+}
+
+#[test]
+fn switching_profile_commits_drafts_for_every_profile() {
+    let (_lock, store_dir) = serial();
+    let mut a = law_app();
+    let a_id = unique_id("ui-law-multi-switch-a");
+    let b_id = unique_id("ui-law-multi-switch-b");
+    for (id, name) in [(&a_id, "Multi switch A"), (&b_id, "Multi switch B")] {
+        a.run(
+            "law.profiles.create",
+            json!({
+                "schema": 1,
+                "id": id,
+                "name": name,
+                "jurisdiction": "Test",
+                "docs": {
+                    "brief": {
+                        "styles": [],
+                        "sections": [{"id": "cover", "name": "Cover"}],
+                        "checks": [],
+                        "source": "Test"
+                    }
+                }
+            }),
+        )
+        .unwrap();
+    }
+    open_law_options(&mut a);
+    a.law.selected = Some(a_id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    let b_draft = format!("{b_id}\0brief\0section\0cover");
+    h.state_mut().law.section_name_drafts.insert(b_draft.clone(), "B edited".into());
+
+    let b_file = store_dir.join(format!("{}.json", b_id));
+    make_read_only(&b_file);
+    h.get_by_label("Multi switch B").click();
+    h.run_steps(4);
+    assert_eq!(h.state().law.selected.as_deref(), Some(a_id.as_str()), "the profile switch is cancelled when another profile's draft fails");
+    assert!(h.state().law.validation.is_some(), "the error shows inline");
+    assert!(h.state().law.section_name_drafts.contains_key(&b_draft), "the failing draft is kept");
+
+    make_writable(&b_file);
+    h.get_by_label("Multi switch B").click();
+    h.run_steps(6);
+    assert_eq!(h.state().law.selected.as_deref(), Some(b_id.as_str()), "the switch succeeds once every draft saves");
+    let b = h.state_mut().run("law.profiles.get", json!({"id": b_id})).unwrap();
+    assert_eq!(b["docs"]["brief"]["sections"][0]["name"], json!("B edited"), "the other profile's draft was committed");
+    assert!(!h.state().law.section_name_drafts.contains_key(&b_draft), "the draft is cleared after it saves");
+}
+
+#[test]
 fn failed_section_name_update_keeps_draft_for_retry() {
     let (_lock, store_dir) = serial();
     let mut a = law_app();
@@ -1005,6 +1119,65 @@ fn import_is_cancelled_when_pending_drafts_fail_to_commit() {
 }
 
 #[test]
+fn import_completion_commits_all_drafts_and_cancels_on_another_profiles_failure() {
+    let (_lock, store_dir) = serial();
+    let dir = std::env::temp_dir().join(format!("wc-ui-law-import-complete-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let import_path = dir.join("import.json");
+
+    let (mut a, shown) = async_app();
+    let a_id = unique_id("ui-law-import-complete-a");
+    let b_id = unique_id("ui-law-import-complete-b");
+    for (id, name) in [(&a_id, "Import complete A"), (&b_id, "Import complete B")] {
+        a.run(
+            "law.profiles.create",
+            json!({
+                "schema": 1,
+                "id": id,
+                "name": name,
+                "jurisdiction": "Test",
+                "docs": {
+                    "brief": {
+                        "styles": [],
+                        "sections": [{"id": "cover", "name": "Cover"}],
+                        "source": "Test"
+                    }
+                }
+            }),
+        )
+        .unwrap();
+    }
+    a.run("law.profiles.export", json!({"id": "missouri-appellate-brief", "path": import_path.to_string_lossy()})).unwrap();
+
+    open_law_options(&mut a);
+    a.law.selected = Some(a_id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    // Open the import dialog while there are no drafts.
+    h.get_by_label("Import…").click();
+    h.run_steps(2);
+    assert!(matches!(shown.borrow().last().map(|(r, _)| r.clone()), Some(FileDialogRequest::Open { .. })));
+
+    // A pending edit appears after the dialog opened and its profile cannot be saved. Finishing the
+    // pick must commit every page draft first and cancel when one fails, not import over the top.
+    let b_file = store_dir.join(format!("{}.json", b_id));
+    let b_draft = format!("{b_id}\0brief\0section\0cover");
+    h.state_mut().law.section_name_drafts.insert(b_draft.clone(), "B edited".into());
+    make_read_only(&b_file);
+    answer(&shown, Some(&import_path.to_string_lossy()));
+    h.run_steps(4);
+    assert!(h.state().law.validation.is_some(), "the failed completion shows the error inline");
+    assert_eq!(h.state().law.selected.as_deref(), Some(a_id.as_str()), "the import is cancelled, not applied");
+    assert!(h.state().law.section_name_drafts.contains_key(&b_draft), "the failing draft is kept");
+
+    make_writable(&b_file);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn approve_profile_in_ui_and_block_automation() {
     let (_lock, _) = serial();
     let mut a = law_app();
@@ -1095,11 +1268,14 @@ fn turning_lawcraft_off_from_addins_commits_drafts_first_and_cancels_on_failure(
 
     assert!(h.state().session.module_enabled(MODULE), "a failed save leaves the module on");
     assert!(h.state().law.validation.is_some(), "the save error is shown inline");
+    let err = h.state().law.validation.clone().unwrap_or_default();
+    assert!(h.query_by_label(&err).is_some(), "the Add-ins pane renders the failed-toggle error inline: {err:?}");
 
     make_writable(&profile_file);
     h.get_by_label("LawCraft (court profiles and legal formatting)").click();
     h.run_steps(4);
     assert!(!h.state().session.module_enabled(MODULE), "the module turns off once the draft saves");
+    assert!(h.state().law.validation.is_none(), "a successful toggle clears the stale error");
 }
 
 #[test]
