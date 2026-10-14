@@ -7,7 +7,9 @@ use wordcraft_doc::props::LineSpacing;
 use wordcraft_doc::{Document, Paragraph, PartKind, Path, Pos, StoryRef};
 use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 use wordcraft_engine::{Session, io};
-use wordcraft_pdf::{TextSearchability, text_searchability};
+use wordcraft_pdf::TextSearchability;
+#[cfg(not(target_arch = "wasm32"))]
+use wordcraft_pdf::{Verdict, extract_verdict_detail};
 
 use crate::profile::{CheckSpec, DocSpec, Profile, SectionSpec};
 use crate::store::LawError;
@@ -138,10 +140,11 @@ fn word_limit(doc: &Document, spec: &DocSpec, sections: &[LocatedSection], check
 
 fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], exclude: &[&str]) -> u32 {
     let body_paths = doc.para_paths(StoryRef::Body);
+    let section_by_para = section_ids_per_paragraph(&body_paths, sections);
     let mut total = 0u32;
     for (pi, path) in body_paths.iter().enumerate() {
-        if let Some(sec) = section_at_paragraph(&body_paths, pi, sections)
-            && exclude.contains(&sec.as_str())
+        if let Some(sec) = section_by_para.get(pi).and_then(|s| s.as_deref())
+            && exclude.contains(&sec)
         {
             continue;
         }
@@ -159,8 +162,8 @@ fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], e
         if let StoryRef::Part(id) = story
             && let Some(anchor) = doc.text_box_anchor(id)
             && let Some(pi) = body_paths.iter().position(|p| p == &anchor.path)
-            && let Some(sec) = section_at_paragraph(&body_paths, pi, sections)
-            && exclude.contains(&sec.as_str())
+            && let Some(sec) = section_by_para.get(pi).and_then(|s| s.as_deref())
+            && exclude.contains(&sec)
         {
             continue;
         }
@@ -173,16 +176,26 @@ fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], e
     total
 }
 
-fn section_at_paragraph(paths: &[Path], para_index: usize, sections: &[LocatedSection]) -> Option<String> {
-    let mut current = None;
+/// For each body paragraph index, the section id of the last located section heading at or before it.
+fn section_ids_per_paragraph(body_paths: &[Path], sections: &[LocatedSection]) -> Vec<Option<String>> {
+    let mut boundaries: Vec<(usize, String)> = Vec::new();
     for loc in sections {
-        if let Some(i) = paths.iter().position(|p| p == &loc.path)
-            && i <= para_index
-        {
-            current = Some(loc.id.clone());
+        if let Some(i) = body_paths.iter().position(|p| p == &loc.path) {
+            boundaries.push((i, loc.id.clone()));
         }
     }
-    current
+    boundaries.sort_by_key(|(i, _)| *i);
+    let mut out = Vec::with_capacity(body_paths.len());
+    let mut bi = 0usize;
+    let mut current: Option<String> = None;
+    for pi in 0..body_paths.len() {
+        while bi < boundaries.len() && boundaries[bi].0 <= pi {
+            current = Some(boundaries[bi].1.clone());
+            bi += 1;
+        }
+        out.push(current.clone());
+    }
+    out
 }
 
 fn para_words(p: &Paragraph) -> usize {
@@ -403,20 +416,40 @@ fn text_searchable_pdf(doc: &Document, id: &str, export_opts: Option<&io::Export
 /// The finding for exported PDF `bytes` against `checkId`, or `None` when the PDF is
 /// text-searchable. Split out so tests can hand it bytes no exporter would produce (a font-only
 /// PDF, say) and see the matching finding.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn searchability_finding(bytes: &[u8], check_id: &str) -> Option<Finding> {
-    finding_for_verdict(text_searchability(bytes), check_id)
+    let detail = extract_verdict_detail(bytes);
+    let verdict = match detail.verdict {
+        Verdict::Searchable => TextSearchability::Searchable,
+        Verdict::NotSearchable => TextSearchability::NotSearchable,
+        Verdict::Uncertain => TextSearchability::Uncertain,
+    };
+    finding_for_verdict(verdict, check_id, &detail.unverifiable_pages)
 }
 
-fn finding_for_verdict(verdict: TextSearchability, check_id: &str) -> Option<Finding> {
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn searchability_finding(_bytes: &[u8], check_id: &str) -> Option<Finding> {
+    finding_for_verdict(TextSearchability::Unavailable, check_id, &[])
+}
+
+fn finding_for_verdict(verdict: TextSearchability, check_id: &str, unverifiable_pages: &[usize]) -> Option<Finding> {
     match verdict {
         TextSearchability::Searchable => None,
         TextSearchability::NotSearchable => Some(Finding::error(check_id, "PDF export is not text-searchable")),
-        TextSearchability::Uncertain => Some(Finding::warning(
-            check_id,
-            "PDF text coverage could not be verified: a page is dominated by a picture and its text may be a caption beside a scan",
-        )),
+        TextSearchability::Uncertain => Some(Finding::warning(check_id, unverifiable_scan_message(unverifiable_pages))),
         TextSearchability::Unavailable => {
             Some(Finding::warning(check_id, "Text-searchability could not be verified on this build (no PDF text extractor available)"))
+        }
+    }
+}
+
+fn unverifiable_scan_message(pages: &[usize]) -> String {
+    match pages {
+        [] => "A page has scanned content that could not be verified as searchable.".into(),
+        [n] => format!("Page {n} has scanned content that could not be verified as searchable."),
+        _ => {
+            let list = pages.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
+            format!("Pages {list} have scanned content that could not be verified as searchable.")
         }
     }
 }
@@ -459,12 +492,13 @@ mod tests {
     /// a silent pass; a definite verdict keeps its error/None.
     #[test]
     fn unverifiable_pdf_coverage_is_reported_as_a_warning() {
-        let uncertain = finding_for_verdict(TextSearchability::Uncertain, "textSearchablePdf").expect("a finding");
+        let uncertain = finding_for_verdict(TextSearchability::Uncertain, "textSearchablePdf", &[2]).expect("a finding");
         assert_eq!(uncertain.check_id, "textSearchablePdf");
         assert_eq!(uncertain.severity, "warning");
-        assert!(finding_for_verdict(TextSearchability::Searchable, "textSearchablePdf").is_none());
-        assert_eq!(finding_for_verdict(TextSearchability::NotSearchable, "x").map(|f| f.severity), Some("error".into()));
-        assert_eq!(finding_for_verdict(TextSearchability::Unavailable, "x").map(|f| f.severity), Some("warning".into()));
+        assert!(uncertain.message.contains("Page 2"));
+        assert!(finding_for_verdict(TextSearchability::Searchable, "textSearchablePdf", &[]).is_none());
+        assert_eq!(finding_for_verdict(TextSearchability::NotSearchable, "x", &[]).map(|f| f.severity), Some("error".into()));
+        assert_eq!(finding_for_verdict(TextSearchability::Unavailable, "x", &[]).map(|f| f.severity), Some("warning".into()));
     }
 
     #[test]

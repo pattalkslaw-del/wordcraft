@@ -188,6 +188,28 @@ fn a_scan_with_a_caption_is_not_searchable() {
     assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable, "a caption beside a scan must not certify the scan as searchable");
 }
 
+/// A long caption beside a dominant scan must not pass as searchable: word count alone never
+/// certifies picture content.
+#[test]
+fn a_dominant_scan_with_a_long_caption_is_uncertain() {
+    let mut d = Document::new();
+    let media = d.add_media(png(), "png");
+    let mut scan = Paragraph::with_text("", CharProps::default());
+    scan.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    let caption = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentyfour twentyfive";
+    d.body = vec![para_block(scan), para_block(Paragraph::with_text(caption, CharProps::default()))];
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    assert_eq!(text_searchability(&bytes), TextSearchability::Uncertain);
+    let detail = crate::extract::extract_verdict_detail(&bytes);
+    assert_eq!(detail.verdict, crate::extract::Verdict::Uncertain);
+    assert_eq!(detail.unverifiable_pages, vec![1]);
+}
+
 /// A page dominated by a picture with text that is neither clearly its content nor clearly a
 /// caption cannot be verified: the PDF is reported as uncertain, not as searchable.
 #[test]

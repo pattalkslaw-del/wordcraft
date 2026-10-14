@@ -153,9 +153,6 @@ pub fn extract_page_text(bytes: &[u8]) -> Result<Vec<String>, String> {
 const SCAN_COVERAGE: f64 = 0.15;
 /// Fewer words than this beside a page-dominating picture is a caption, not the page's content.
 const CAPTION_WORDS: usize = 4;
-/// At least this many words beside a page-dominating picture is the page's own text (body text or
-/// an OCR layer), so the page carries searchable content.
-const CONTENT_WORDS: usize = 25;
 
 /// What a PDF's text layer looks like once every page is considered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,27 +174,48 @@ pub enum Verdict {
 /// one-line document is searchable.
 ///
 /// Coverage is what matters, not a single page: a page that draws a picture of its own (a scan,
-/// photograph or figure, outside page furniture) and covers most of the page must also carry
-/// enough text to be its content, not a caption beside a scan — so a searchable cover followed by
-/// scanned body pages is **not** searchable, while blank and furniture-only pages are allowed.
+/// photograph or figure, outside page furniture) and covers most of the page cannot be certified
+/// searchable from unrelated text on the same page (a caption, page number, or long paragraph
+/// beside the scan) — so a searchable cover followed by scanned body pages is **not** searchable,
+/// while blank and furniture-only pages are allowed.
 pub fn extract_verdict(bytes: &[u8]) -> Verdict {
-    let Ok(pages) = extract_pages(bytes) else { return Verdict::NotSearchable };
+    extract_verdict_detail(bytes).verdict
+}
+
+/// Per-page detail for [`extract_verdict`]: which pages could not be certified searchable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerdictDetail {
+    pub verdict: Verdict,
+    /// 1-based page numbers dominated by a picture whose text layer could not be verified.
+    pub unverifiable_pages: Vec<usize>,
+}
+
+/// Judge a PDF's text layer and record pages whose scan coverage could not be verified.
+pub fn extract_verdict_detail(bytes: &[u8]) -> VerdictDetail {
+    let Ok(pages) = extract_pages(bytes) else {
+        return VerdictDetail { verdict: Verdict::NotSearchable, unverifiable_pages: Vec::new() };
+    };
     let mut any_text = false;
     let mut uncertain = false;
-    for page in &pages {
+    let mut unverifiable_pages = Vec::new();
+    for (index, page) in pages.iter().enumerate() {
         match page_coverage(page) {
             Coverage::Covered => {}
-            Coverage::Incidental => return Verdict::NotSearchable,
-            Coverage::Uncertain => uncertain = true,
+            Coverage::Incidental => return VerdictDetail { verdict: Verdict::NotSearchable, unverifiable_pages: Vec::new() },
+            Coverage::Uncertain => {
+                uncertain = true;
+                unverifiable_pages.push(index + 1);
+            }
         }
         if has_substantive_text(&page.content) {
             any_text = true;
         }
     }
     if !any_text {
-        return Verdict::NotSearchable;
+        return VerdictDetail { verdict: Verdict::NotSearchable, unverifiable_pages: Vec::new() };
     }
-    if uncertain { Verdict::Uncertain } else { Verdict::Searchable }
+    let verdict = if uncertain { Verdict::Uncertain } else { Verdict::Searchable };
+    VerdictDetail { verdict, unverifiable_pages }
 }
 
 /// One page's text coverage: its own words against any picture that dominates it.
@@ -219,11 +237,11 @@ fn page_coverage(page: &PageText) -> Coverage {
         return Coverage::Covered;
     }
     let words = word_count(&page.content);
-    if words >= CONTENT_WORDS {
-        Coverage::Covered
-    } else if words <= CAPTION_WORDS {
+    if words <= CAPTION_WORDS {
+        // A caption (or no text) beside a scan is not searchable document text.
         Coverage::Incidental
     } else {
+        // Unrelated extractable text does not certify the picture's content; coverage is unknown.
         Coverage::Uncertain
     }
 }

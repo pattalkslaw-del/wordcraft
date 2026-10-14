@@ -27,7 +27,7 @@ mod extract;
 
 /// The Unicode text of every page, or an error when this build cannot read PDFs.
 #[cfg(not(target_arch = "wasm32"))]
-pub use extract::extract_page_text;
+pub use extract::{Verdict, VerdictDetail, extract_page_text, extract_verdict_detail};
 
 #[cfg(target_arch = "wasm32")]
 pub fn extract_page_text(_bytes: &[u8]) -> Result<Vec<String>, String> {
