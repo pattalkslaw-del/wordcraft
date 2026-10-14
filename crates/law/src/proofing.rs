@@ -38,7 +38,10 @@ pub fn confusion_issues(text: &str) -> Vec<Issue> {
             if !lower.eq_ignore_ascii_case(rule.wrong) {
                 continue;
             }
-            if !phrase_follows(&tokens, idx, text, rule.following) || !phrase_precedes(&tokens, idx, text, rule.preceding) {
+            if !phrase_follows(&tokens, idx, text, rule.following)
+                || !phrase_precedes(&tokens, idx, text, rule.preceding)
+                || !any_precedes(&tokens, idx, text, rule.preceding_any)
+            {
                 continue;
             }
             out.push(Issue {
@@ -91,9 +94,18 @@ struct ConfusionRule {
     message: &'static str,
     /// When non-empty, the words immediately after `wrong` in the same sentence.
     following: &'static [&'static str],
-    /// When non-empty, the words immediately before `wrong` in the same sentence.
+    /// When non-empty, the exact words immediately before `wrong` in the same sentence, in order.
     preceding: &'static [&'static str],
+    /// When non-empty, any one of these words may sit immediately before `wrong`. Use for a
+    /// category (an auxiliary or `to` that only leads a verb) where the exact word varies but the
+    /// context it signals is the same.
+    preceding_any: &'static [&'static str],
 }
+
+/// Words that only precede a *verb*: auxiliaries and the infinitive `to`. A word after one of
+/// these is doing verb work, so `illicit` there is almost certainly the confused verb `elicit`.
+/// Without one, `illicit testimony` ("unlawful testimony") is correct and must not fire.
+const VERB_LEADS: &[&str] = &["to", "will", "would", "can", "could", "may", "might", "must", "shall", "should", "did", "does", "do"];
 
 /// Context-sensitive legal word-pair checks (original wording; no manual copied).
 const CONFUSION_RULES: &[ConfusionRule] = &[
@@ -103,6 +115,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of limitations?",
         following: &["of", "limitations"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "principle",
@@ -110,6 +123,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "In legal writing, the main claim or amount is usually \"principal\", not \"principle\".",
         following: &["issue"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "principle",
@@ -117,6 +131,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "The primary relief sought is the \"principal\" claim, not \"principle\".",
         following: &["claim"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "principal",
@@ -124,6 +139,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "A rule of law is a \"principle\", not \"principal\".",
         following: &["of", "law"],
         preceding: &[],
+        preceding_any: &[],
     },
     // Note: `council for the …` is deliberately absent. "The city council for the district" is
     // correct, and immediate adjacency to `for the` doesn't make `council` likely wrong. Only the
@@ -134,6 +150,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
         following: &["of", "record"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "affect",
@@ -141,6 +158,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "A result or outcome is an \"effect\"; \"affect\" is usually the verb.",
         following: &["of", "the"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "effect",
@@ -148,6 +166,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "To influence a ruling is to \"affect\" it, not \"effect\" (except \"effect change\").",
         following: &["the", "outcome"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "precedence",
@@ -155,6 +174,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "A prior appellate decision is \"precedent\", not \"precedence\" (priority).",
         following: &[],
         preceding: &["binding"],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "precedence",
@@ -162,6 +182,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "Controlling case law is \"precedent\", not \"precedence\".",
         following: &[],
         preceding: &["controlling"],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "proscribe",
@@ -169,6 +190,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "A doctor \"prescribes\" treatment; \"proscribe\" means to forbid.",
         following: &["medication"],
         preceding: &[],
+        preceding_any: &[],
     },
     // Note: `prescribe such conduct` is deliberately absent. A rule can affirmatively *prescribe*
     // conduct, so `prescribe` there is correct, not a reversed `proscribe`; adjacency to `such
@@ -180,6 +202,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "An opposing party or interest is \"adverse\", not \"averse\" (unwilling).",
         following: &["possession"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "adverse",
@@ -187,6 +210,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "Being unwilling is \"averse\"; \"adverse\" describes harm or opposition.",
         following: &["to", "risk"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "illicit",
@@ -194,6 +218,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "To draw out testimony is to \"elicit\" it, not \"illicit\" (unlawful).",
         following: &["testimony"],
         preceding: &[],
+        preceding_any: VERB_LEADS,
     },
     ConfusionRule {
         wrong: "illicit",
@@ -201,6 +226,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
         following: &["a", "response"],
         preceding: &[],
+        preceding_any: VERB_LEADS,
     },
     ConfusionRule {
         wrong: "compliment",
@@ -208,20 +234,19 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "To complete or supplement the record is to \"complement\" it, not \"compliment\".",
         following: &["the", "record"],
         preceding: &[],
+        preceding_any: &[],
     },
-    ConfusionRule {
-        wrong: "complement",
-        right: "compliment",
-        message: "To praise is to \"compliment\", not \"complement\" (complete).",
-        following: &["the", "court"],
-        preceding: &[],
-    },
+    // Note: the reverse `complement the court` rule is deliberately absent. "The new tribunal will
+    // complement the court" is correct — `complement` legitimately takes a court as its object — so
+    // adjacency to `the court` doesn't make the word likely wrong. Only the clear
+    // `compliment the record` case above fires.
     ConfusionRule {
         wrong: "discreet",
         right: "discrete",
         message: "Separate or distinct issues are \"discrete\", not \"discreet\" (tactful).",
         following: &["issues"],
         preceding: &[],
+        preceding_any: &[],
     },
     ConfusionRule {
         wrong: "discrete",
@@ -229,6 +254,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         message: "Careful or tactful conduct is \"discreet\", not \"discrete\" (separate).",
         following: &["investigation"],
         preceding: &[],
+        preceding_any: &[],
     },
 ];
 
@@ -275,6 +301,18 @@ fn phrase_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, ph
         next_start = t.0;
     }
     true
+}
+
+/// Whether any word in `set` sits immediately before the token at `idx`, with no sentence end
+/// between. A set (unlike [`phrase_precedes`]'s ordered phrase) matches any one member, so rules
+/// can name a category such as the auxiliaries and `to` that only lead a verb.
+fn any_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, set: &[&str]) -> bool {
+    if set.is_empty() {
+        return true;
+    }
+    let Some(i) = idx.checked_sub(1) else { return false };
+    let (Some(prev), Some(cur)) = (tokens.get(i), tokens.get(idx)) else { return false };
+    set.contains(&prev.2.as_str()) && !gap_has_sentence_end(text, prev.1, cur.0)
 }
 
 fn capitalize_like(original: &str, replacement: &str) -> String {

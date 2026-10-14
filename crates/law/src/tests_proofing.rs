@@ -84,26 +84,55 @@ fn confusion_issues_hook_into_review_proofing() {
     assert!(issues.as_array().is_some_and(|a| a.is_empty()), "without LawCraft the same text is quiet: {issues}");
 }
 
+/// A firing case must name the exact word highlighted and the exact replacement offered, so a
+/// wrong suggestion can't satisfy coverage by merely producing some finding.
 macro_rules! confusion_pair {
-    ($name:ident, $fires:expr, $quiet:expr) => {
+    ($name:ident, $fires:expr, $quiet:expr, $wrong:expr, $right:expr) => {
         #[test]
         fn $name() {
             let fired = confusion_issues($fires);
-            assert!(!fired.is_empty(), "expected a finding in: {}", $fires);
+            assert_eq!(fired.len(), 1, "expected one finding in: {} → {fired:?}", $fires);
+            let issue = &fired[0];
+            assert_eq!($fires.get(issue.start..issue.end), Some($wrong), "highlighted word in: {}", $fires);
+            assert_eq!(issue.suggestions, vec![$right.to_string()], "replacement in: {}", $fires);
             let quiet = confusion_issues($quiet);
             assert!(quiet.is_empty(), "unexpected finding in: {} → {:?}", $quiet, quiet);
         }
     };
 }
 
-confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.");
-confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.");
-confusion_pair!(counsel_council, "Attorney council of record filed a brief.", "The city council for the district met yesterday.");
-confusion_pair!(counsel_council_ordinance, "The council of record filed an appearance.", "The city council voted for the ordinance.");
-confusion_pair!(affect_effect, "The affect of the ruling was clear.", "The new rule will affect the outcome.");
-confusion_pair!(affect_statute, "The affect of the ruling was clear.", "The rule will affect enforcement of the statute.");
-confusion_pair!(precedent_precedence, "This is binding precedence in our circuit.", "Federal law takes precedence over state law.");
-confusion_pair!(prescribe_proscribe, "The doctor proscribe medication for the patient.", "The rules prescribe such conduct by counsel.");
+confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.", "statue", "statute");
+confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.", "principle", "principal");
+confusion_pair!(
+    counsel_council,
+    "Attorney council of record filed a brief.",
+    "The city council for the district met yesterday.",
+    "council",
+    "counsel"
+);
+confusion_pair!(
+    counsel_council_ordinance,
+    "The council of record filed an appearance.",
+    "The city council voted for the ordinance.",
+    "council",
+    "counsel"
+);
+confusion_pair!(affect_effect, "The affect of the ruling was clear.", "The new rule will affect the outcome.", "affect", "effect");
+confusion_pair!(affect_statute, "The affect of the ruling was clear.", "The rule will affect enforcement of the statute.", "affect", "effect");
+confusion_pair!(
+    precedent_precedence,
+    "This is binding precedence in our circuit.",
+    "Federal law takes precedence over state law.",
+    "precedence",
+    "precedent"
+);
+confusion_pair!(
+    prescribe_proscribe,
+    "The doctor proscribe medication for the patient.",
+    "The rules prescribe such conduct by counsel.",
+    "proscribe",
+    "prescribe"
+);
 
 /// #5 review: correct wording must not be flagged. A governing-body `council` — even "council for
 /// the district" — and a rule that affirmatively `prescribe`s conduct are both correct; adjacency
@@ -121,7 +150,25 @@ fn correct_council_and_prescribe_contexts_are_quiet() {
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
     }
 }
-confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.");
-confusion_pair!(elicit_illicit, "Counsel illicit testimony about the contract.", "Police seized illicit drugs.");
-confusion_pair!(complement_compliment, "The exhibit compliment the record.", "She compliment the judge after argument.");
-confusion_pair!(discrete_discreet, "There are three discreet issues before us.", "A discreet investigation continued.");
+confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
+confusion_pair!(elicit_illicit, "The lawyer attempted to illicit testimony from the witness.", "Police seized illicit drugs.", "illicit", "elicit");
+confusion_pair!(complement_compliment, "The exhibit compliment the record.", "She compliment the judge after argument.", "compliment", "complement");
+confusion_pair!(discrete_discreet, "There are three discreet issues before us.", "A discreet investigation continued.", "discreet", "discrete");
+
+/// #5 review: correct `illicit` (an adjective meaning unlawful) and correct `complement` (to
+/// complete or balance) must not be flagged. Only a verb context — after an auxiliary or `to` —
+/// makes `illicit` likely wrong, and `complement the court` is a valid object; adjacency alone
+/// doesn't establish a mistake. The clear `to illicit testimony` and `compliment the record` cases
+/// still fire (see the pairs above).
+#[test]
+fn correct_illicit_and_complement_contexts_are_quiet() {
+    for text in [
+        "The motion challenges illicit testimony.",
+        "The court excluded illicit testimony at trial.",
+        "The new tribunal will complement the court.",
+        "These judges complement the court well.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
