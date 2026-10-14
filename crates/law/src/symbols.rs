@@ -222,13 +222,15 @@ fn fix_sign_spacing_in_para(para: &mut Paragraph, from: usize, to: usize) -> Res
 
 /// Move a selection endpoint over each replaced space. Each `(start, end)` is a one-byte ASCII
 /// space that became a longer NBSP, so every offset after `start` grows by the difference. The
-/// anchor and focus are mapped independently, which preserves the selection's direction.
-fn map_selection_through(sel: &mut Selection, path: &Path, replaced: &[(usize, usize)]) {
+/// anchor and focus are mapped independently, which preserves the selection's direction. A
+/// `Path` alone is not enough: the body and a header, footer or note can share it, so the edited
+/// story must match too or a caret in another story drifts.
+fn map_selection_through(sel: &mut Selection, story: StoryRef, path: &Path, replaced: &[(usize, usize)]) {
     let shift = |off: usize| off + replaced.iter().filter(|(start, _)| *start < off).count();
-    if sel.anchor.path == *path {
+    if sel.anchor.story == story && sel.anchor.path == *path {
         sel.anchor.off = shift(sel.anchor.off);
     }
-    if sel.focus.path == *path {
+    if sel.focus.story == story && sel.focus.path == *path {
         sel.focus.off = shift(sel.focus.off);
     }
 }
@@ -239,18 +241,23 @@ fn fix_spacing(s: &mut Session, v: &Value) -> CmdResult {
     let (a, b) = s.sel.ordered();
     let mut fixes = 0usize;
     if whole {
-        for path in s.doc.para_paths(StoryRef::Body) {
-            let para = s.doc.para_mut(StoryRef::Body, &path)?;
-            let len = para.len();
-            let replaced = fix_sign_spacing_in_para(para, 0, len)?;
-            if !replaced.is_empty() {
-                fixes += 1;
-                map_selection_through(&mut s.sel, &path, &replaced);
+        // Every text story, not just the body: footnotes, endnotes, headers, footers and text
+        // boxes carry legal signs too.
+        for story in s.doc.text_stories() {
+            for path in s.doc.para_paths(story) {
+                let para = s.doc.para_mut(story, &path)?;
+                let len = para.len();
+                let replaced = fix_sign_spacing_in_para(para, 0, len)?;
+                if !replaced.is_empty() {
+                    fixes += 1;
+                    map_selection_through(&mut s.sel, story, &path, &replaced);
+                }
             }
         }
     } else {
+        let story = a.story;
         for path in s.doc.paths_between(&a, &b) {
-            let para = s.doc.para_mut(a.story, &path)?;
+            let para = s.doc.para_mut(story, &path)?;
             let from = if path == a.path { a.off } else { 0 };
             let to = if path == b.path { b.off } else { para.len() };
             if from >= to {
@@ -259,7 +266,7 @@ fn fix_spacing(s: &mut Session, v: &Value) -> CmdResult {
             let replaced = fix_sign_spacing_in_para(para, from, to)?;
             if !replaced.is_empty() {
                 fixes += 1;
-                map_selection_through(&mut s.sel, &path, &replaced);
+                map_selection_through(&mut s.sel, story, &path, &replaced);
             }
         }
     }

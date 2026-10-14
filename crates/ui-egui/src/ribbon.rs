@@ -926,8 +926,14 @@ fn insert(app: &mut WordApp, ui: &mut Ui) {
                     .collect();
                 egui::Grid::new("law_syms").show(ui, |ui| {
                     for (i, entry) in entries.iter().enumerate() {
-                        let label = egui::RichText::new(entry.glyph).size(16.0);
-                        if ui.button(label).on_hover_text(tl!(entry.label)).clicked() {
+                        // A whitespace glyph (nonbreaking space) is invisible on a button, so show
+                        // the readable label instead.
+                        let text = if entry.glyph.chars().all(char::is_whitespace) {
+                            egui::RichText::new(tl!(entry.label)).size(12.0)
+                        } else {
+                            egui::RichText::new(entry.glyph).size(16.0)
+                        };
+                        if ui.button(text).on_hover_text(tl!(entry.label)).clicked() {
                             let _ = app.run(entry.command, json!({}));
                             ui.close();
                         }

@@ -6,7 +6,7 @@ use crate::tests::roundtrip;
 use crate::tests::{law, run};
 use serde_json::json;
 use wordcraft_doc::para::NBSP;
-use wordcraft_doc::{Document, Pos};
+use wordcraft_doc::{Document, Path, Pos, StoryRef};
 use wordcraft_engine::{CmdError, Selection, Session};
 
 fn press(s: &mut Session, combo: &str) -> Result<serde_json::Value, CmdError> {
@@ -93,6 +93,18 @@ fn fix_spacing_command_and_docx_roundtrip() {
     let doc = roundtrip(&s);
     let text = doc.para_at(&wordcraft_doc::Pos::body(0, 0)).unwrap().text.clone();
     assert_eq!(text, format!("See §{NBSP}1.010 and §§{NBSP}2."), "NBSP survives DOCX: {text}");
+}
+
+#[test]
+fn fix_spacing_undo_restores_the_ordinary_space() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "See § 1"}));
+    run(&mut s, "law.symbols.fixSpacing", json!({"scope": "document"}));
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, format!("See §{NBSP}1"));
+    assert!(s.undo(), "the spacing fix is undoable");
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, "See § 1");
+    assert!(s.redo());
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, format!("See §{NBSP}1"));
 }
 
 #[test]
@@ -184,6 +196,36 @@ fn fix_spacing_document_scope_keeps_the_caret_after_changed_text() {
     run(&mut s, "law.symbols.fixSpacing", json!({"scope": "document"}));
     run(&mut s, "text.insert", json!({"text": "2"}));
     assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, format!("§{NBSP}12"));
+}
+
+#[test]
+fn document_spacing_fixes_non_body_stories_too() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "§ 1"}));
+    let note = run(&mut s, "references.footnote", json!({"text": "¶ 4"}))["id"].as_u64().expect("note id") as u32;
+    let header = run(&mut s, "insert.header", json!({"text": "¶ 2"}))["story"].as_u64().expect("header id") as u32;
+    let footer = run(&mut s, "insert.footer", json!({"text": "§ 3"}))["story"].as_u64().expect("footer id") as u32;
+    run(&mut s, "law.symbols.fixSpacing", json!({"scope": "document"}));
+    assert!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text.starts_with(&format!("§{NBSP}1")), "body");
+    assert!(s.doc.plain_text(StoryRef::Part(note)).contains(&format!("¶{NBSP}4")), "footnote");
+    assert_eq!(s.doc.plain_text(StoryRef::Part(header)), format!("¶{NBSP}2"), "header");
+    assert_eq!(s.doc.plain_text(StoryRef::Part(footer)), format!("§{NBSP}3"), "footer");
+}
+
+/// Body paragraph 0 and a header paragraph 0 share `Path([0])`, so mapping a replaced space by
+/// path alone moves a header caret that this command never edited (a header `§ 1` and a body
+/// `§ 1` used to be indistinguishable). The story must match too.
+#[test]
+fn document_spacing_does_not_move_a_caret_in_another_story_with_the_same_path() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "§ 1"}));
+    let header = run(&mut s, "insert.header", json!({"text": "Header text"}))["story"].as_u64().expect("header id") as u32;
+    // A caret inside the header, past the body's space offset but at the same path.
+    s.sel = Selection::caret(Pos { story: StoryRef::Part(header), path: Path::top(0), off: 4 });
+    run(&mut s, "law.symbols.fixSpacing", json!({"scope": "document"}));
+    run(&mut s, "text.insert", json!({"text": "X"}));
+    assert_eq!(s.doc.para(StoryRef::Part(header), &Path::top(0)).unwrap().text, "HeadXer text", "the header caret stays put");
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, format!("§{NBSP}1"), "the body is still fixed");
 }
 
 #[test]
