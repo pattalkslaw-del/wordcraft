@@ -14,7 +14,7 @@ pub struct CitationEntry {
     pub kind: String,
     /// Full citation text at first occurrence.
     pub label: String,
-    /// Sort key (leading non-adversarial prefixes stripped for cases).
+    /// Sort key (full citation text at first occurrence, same as the label for sorting).
     pub sort_key: String,
     pub occurrences: Vec<CitationOccurrence>,
 }

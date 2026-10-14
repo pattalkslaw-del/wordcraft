@@ -18,8 +18,7 @@ use crate::profile::{DocSpec, Profile};
 const PROP_TOA_START_BM: &str = "LAW_TOA_START_BM";
 const PROP_TOA_END_BM: &str = "LAW_TOA_END_BM";
 const BOOKMARK_PREFIX: &str = "_LawToa";
-const BOOKMARK_TBL_START: &str = "_LawToaTblStart";
-const BOOKMARK_TBL_END: &str = "_LawToaTblEnd";
+const BOOKMARK_TBL: &str = "_LawToaTbl";
 
 /// Build or rebuild the table of authorities at the caret or at the profile's TOA section.
 pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
@@ -55,18 +54,10 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
         insert_at = start;
     }
 
-    let layout = s.layout();
-    let mut page_by_bookmark: BTreeMap<String, String> = BTreeMap::new();
-    for name in bookmarks.values().flatten() {
-        let pos = s.doc.bookmarks().into_iter().find(|(n, _)| n == name).map(|(_, p)| p);
-        let page =
-            pos.and_then(|p| layout.caret(&p).and_then(|c| layout.pages.get(c.page)).map(|pg| pg.number.to_string())).unwrap_or_else(|| "1".into());
-        page_by_bookmark.insert(name.clone(), page);
-    }
-
     let width = page::sect(s).text_width();
     let lang = wordcraft_engine::cmd::default_lang(s);
     let mut blocks: Vec<Block> = Vec::new();
+    let mut entry_lines: Vec<(String, Vec<String>)> = Vec::new();
     for group in group_order() {
         let mut in_group: Vec<&CitationEntry> = entries.iter().filter(|e| group_heading(&e.kind) == group).collect();
         in_group.sort_by_key(|e| sort_key(&e.sort_key, lang.as_deref()));
@@ -76,8 +67,8 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
         blocks.push(Block::Para(Paragraph::with_text(group, Default::default()).styled("Heading")));
         for e in in_group {
             let bms = bookmarks.get(&e.id).cloned().unwrap_or_default();
-            let pages: Vec<String> = bms.iter().map(|n| page_by_bookmark.get(n).cloned().unwrap_or_else(|| "1".into())).collect();
-            let para = paragraph_pageref_line(&e.label, &bms, passim, passim_at, &pages, width, "Normal")?;
+            let para = paragraph_pageref_line(&e.label, &bms, false, passim_at, &[], width, "Normal")?;
+            entry_lines.push((e.label.clone(), bms));
             blocks.push(Block::Para(para));
         }
     }
@@ -87,9 +78,10 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
     }
     if !blocks.is_empty() {
         let end = insert_at + blocks.len() - 1;
+        apply_entry_page_lines(s, insert_at, end, &entry_lines, passim, passim_at, width)?;
         mark_table_bounds(s, insert_at, end)?;
-        s.doc.set_custom_prop(PROP_TOA_START_BM, BOOKMARK_TBL_START);
-        s.doc.set_custom_prop(PROP_TOA_END_BM, BOOKMARK_TBL_END);
+        s.doc.set_custom_prop(PROP_TOA_START_BM, BOOKMARK_TBL);
+        s.doc.set_custom_prop(PROP_TOA_END_BM, BOOKMARK_TBL);
     }
     s.touch();
     Ok(json!({"pack": pack_id, "entries": entries.len(), "blocks": blocks.len(), "start": insert_at}))
@@ -121,27 +113,36 @@ fn applied_profile(s: &Session, v: &Value) -> Result<(Option<Profile>, Option<St
 
 fn insert_plan(s: &Session, spec: Option<&DocSpec>, v: &Value) -> Result<(usize, Option<(usize, usize)>), CmdError> {
     let replace = stored_table_range(s);
-    let default_at = if p::str(v, "at") == Some("cursor") {
-        s.sel.focus.path.last()
+    let insert_at = if let Some((start, _)) = replace {
+        start
+    } else if p::str(v, "at") == Some("cursor") {
+        body_block_at_caret(s)?
     } else if let Some(spec) = spec
         && let Some(toa) = checks::section_body_index(&s.doc, spec, "tableOfAuthorities")
     {
         toa + 1
     } else {
-        s.sel.focus.path.last()
+        body_block_at_caret(s)?
     };
-    let insert_at = replace.map(|(start, _)| start).unwrap_or(default_at);
     Ok((insert_at, replace))
+}
+
+fn body_block_at_caret(s: &Session) -> Result<usize, CmdError> {
+    let focus = &s.sel.focus;
+    if focus.story != StoryRef::Body {
+        return Err(CmdError::Disabled("place the caret in the document body".into()));
+    }
+    focus.path.0.first().map(|i| *i as usize).ok_or_else(|| CmdError::Failed("caret path is invalid".into()))
 }
 
 fn stored_table_range(s: &Session) -> Option<(usize, usize)> {
     let start_name = s.doc.custom_prop(PROP_TOA_START_BM)?;
     let end_name = s.doc.custom_prop(PROP_TOA_END_BM)?;
-    if start_name != BOOKMARK_TBL_START || end_name != BOOKMARK_TBL_END {
+    if start_name != BOOKMARK_TBL || end_name != BOOKMARK_TBL {
         return None;
     }
-    let start = s.doc.bookmarks().into_iter().find(|(n, _)| n == BOOKMARK_TBL_START).map(|(_, p)| p.path.last());
-    let end = bookmark_end_pos(&s.doc, BOOKMARK_TBL_END).map(|p| p.path.last());
+    let start = s.doc.bookmarks().into_iter().find(|(n, _)| n == BOOKMARK_TBL).map(|(_, p)| p.path.last());
+    let end = bookmark_end_pos(&s.doc, BOOKMARK_TBL).map(|p| p.path.last());
     match (start, end) {
         (Some(a), Some(b)) if a <= b => Some((a, b)),
         _ => None,
@@ -167,10 +168,8 @@ fn validated_table_range(s: &Session, start: usize, end: usize) -> bool {
     }
     s.doc
         .para(StoryRef::Body, &Path::top(start))
-        .is_some_and(|p| p.objects.iter().any(|o| matches!(o, InlineObject::BookmarkStart { name } if name == BOOKMARK_TBL_START)))
-        && s.doc
-            .para(StoryRef::Body, &Path::top(end))
-            .is_some_and(|p| p.objects.iter().any(|o| matches!(o, InlineObject::BookmarkEnd { name } if name == BOOKMARK_TBL_END)))
+        .is_some_and(|p| p.objects.iter().any(|o| matches!(o, InlineObject::BookmarkStart { name } if name == BOOKMARK_TBL)))
+        && bookmark_end_pos(&s.doc, BOOKMARK_TBL).is_some_and(|p| p.path.last() == end)
 }
 
 fn mark_table_bounds(s: &mut Session, start: usize, end: usize) -> Result<(), CmdError> {
@@ -178,10 +177,46 @@ fn mark_table_bounds(s: &mut Session, start: usize, end: usize) -> Result<(), Cm
     let path_end = Path::top(end);
     let props = CharProps::default();
     let pos_start = Pos { story: StoryRef::Body, path: path_start.clone(), off: 0 };
-    s.doc.insert_object(&pos_start, InlineObject::BookmarkStart { name: BOOKMARK_TBL_START.into() }, &props)?;
+    s.doc.insert_object(&pos_start, InlineObject::BookmarkStart { name: BOOKMARK_TBL.into() }, &props)?;
     let end_off = s.doc.para(StoryRef::Body, &path_end).map(|p| p.len()).unwrap_or(0);
     let pos_end = Pos { story: StoryRef::Body, path: path_end, off: end_off };
-    s.doc.insert_object(&pos_end, InlineObject::BookmarkEnd { name: BOOKMARK_TBL_END.into() }, &props)?;
+    s.doc.insert_object(&pos_end, InlineObject::BookmarkEnd { name: BOOKMARK_TBL.into() }, &props)?;
+    Ok(())
+}
+
+fn apply_entry_page_lines(
+    s: &mut Session,
+    start: usize,
+    end: usize,
+    entry_lines: &[(String, Vec<String>)],
+    passim: bool,
+    passim_at: u32,
+    width: f32,
+) -> Result<(), CmdError> {
+    let layout = s.layout();
+    let mut page_by_bookmark: BTreeMap<String, String> = BTreeMap::new();
+    for name in entry_lines.iter().flat_map(|(_, bms)| bms) {
+        if page_by_bookmark.contains_key(name) {
+            continue;
+        }
+        let pos = s.doc.bookmarks().into_iter().find(|(n, _)| n == name).map(|(_, p)| p);
+        let page =
+            pos.and_then(|p| layout.caret(&p).and_then(|c| layout.pages.get(c.page)).map(|pg| pg.number.to_string())).unwrap_or_else(|| "1".into());
+        page_by_bookmark.insert(name.clone(), page);
+    }
+    let mut line = 0usize;
+    for i in start..=end {
+        let path = Path::top(i);
+        let Some(para) = s.doc.para(StoryRef::Body, &path) else { continue };
+        if para.props.style.as_deref() == Some("Heading") {
+            continue;
+        }
+        let Some((label, bms)) = entry_lines.get(line) else { break };
+        line += 1;
+        let pages: Vec<String> = bms.iter().map(|n| page_by_bookmark.get(n).cloned().unwrap_or_else(|| "1".into())).collect();
+        let updated = paragraph_pageref_line(label, bms, passim, passim_at, &pages, width, "Normal")?;
+        *s.doc.para_mut(StoryRef::Body, &path)? = updated;
+    }
     Ok(())
 }
 

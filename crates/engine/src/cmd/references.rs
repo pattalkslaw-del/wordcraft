@@ -903,13 +903,31 @@ pub fn paragraph_pageref_line(
         para.insert_text(para.len(), "passim", &CharProps::default())?;
     }
     let hidden = CharProps { hidden: Some(true), ..Default::default() };
-    for (i, bm) in bookmarks.iter().enumerate() {
-        if !use_passim && i > 0 {
-            para.insert_text(para.len(), ", ", &CharProps::default())?;
+    let mut display: Vec<(usize, String)> = Vec::new();
+    for (i, p) in page_results.iter().enumerate() {
+        if !display.iter().any(|(_, pg)| pg == p) {
+            display.push((i, p.clone()));
         }
-        let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
-        let props = if use_passim { &hidden } else { &CharProps::default() };
-        para.insert_object(para.len(), InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false }, props)?;
+    }
+    display.sort_by_key(|(_, p)| p.parse::<u64>().unwrap_or(0));
+    if use_passim {
+        for (i, bm) in bookmarks.iter().enumerate() {
+            let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
+            para.insert_object(para.len(), InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false }, &hidden)?;
+        }
+    } else {
+        for (n, (i, _)) in display.iter().enumerate() {
+            if n > 0 {
+                para.insert_text(para.len(), ", ", &CharProps::default())?;
+            }
+            let bm = bookmarks.get(*i).ok_or_else(|| CmdError::Failed("bookmark index out of range".into()))?;
+            let result = page_results.get(*i).cloned().unwrap_or_else(|| "1".to_string());
+            para.insert_object(
+                para.len(),
+                InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false },
+                &CharProps::default(),
+            )?;
+        }
     }
     para.props.tabs = Some(vec![TabStop { pos: text_width - 0.5, align: TabAlign::Right, leader: TabLeader::Dot }]);
     Ok(para)

@@ -8,6 +8,8 @@ use wordcraft_doc::para::{InlineObject, OBJ};
 use crate::citations::find_entries;
 use crate::cmd::pack_by_id;
 use crate::tests::{MISSOURI, law, roundtrip, run};
+use crate::{MODULE, install};
+use wordcraft_engine::Session;
 
 const CASE_A: &str = "Thummel v. King, 570 S.W.2d 679 (Mo. banc 1978).";
 const CASE_B: &str = "Smith v. Jones, 600 S.W.3d 100 (Mo. App. E.D. 2020).";
@@ -29,8 +31,8 @@ fn field_instrs(doc: &wordcraft_doc::Document) -> Vec<String> {
 
 /// The text the table of authorities currently occupies (its stored bounds).
 fn table_text(s: &wordcraft_engine::Session) -> String {
-    let start = s.doc.bookmarks().into_iter().find(|(n, _)| n == "_LawToaTblStart").map(|(_, p)| p.path.last());
-    let end = wordcraft_engine::cmd::references::bookmark_end_pos(&s.doc, "_LawToaTblEnd").map(|p| p.path.last());
+    let start = s.doc.bookmarks().into_iter().find(|(n, _)| n == "_LawToaTbl").map(|(_, p)| p.path.last());
+    let end = wordcraft_engine::cmd::references::bookmark_end_pos(&s.doc, "_LawToaTbl").map(|p| p.path.last());
     match (start, end) {
         (Some(a), Some(b)) if a <= b => {
             (a..=b).filter_map(|i| s.doc.para(StoryRef::Body, &Path::top(i))).map(|p| p.plain_text()).collect::<Vec<_>>().join("\n")
@@ -294,6 +296,73 @@ fn citations_in_separate_cells_are_distinct() {
     let entries = find_entries(&s.doc, pack, None);
     assert!(entries.iter().any(|e| e.label.contains("S.W.2d 679")), "first cell's citation is found: {entries:?}");
     assert!(entries.iter().any(|e| e.label.contains("S.W.3d 100")), "second cell's citation is found: {entries:?}");
+}
+
+#[test]
+fn toa_docx_round_trip_then_rebuild_and_undo_keep_one_table() {
+    let mut s = law();
+    brief_with_citations(&mut s);
+    run(&mut s, "law.toa.build", json!({}));
+    let first = table_text(&s);
+    let doc = roundtrip(&s);
+    let mut s2 = Session::new(doc);
+    s2.prefs.modules.insert(MODULE.into(), true);
+    assert_eq!(install(&mut s2), crate::specs().len());
+    let depth = s2.undo_depth();
+    run(&mut s2, "law.toa.build", json!({}));
+    assert_eq!(table_text(&s2), first, "rebuild after reopening the .docx");
+    s2.run("edit.undo", &json!({})).expect("undo rebuild");
+    assert_eq!(table_text(&s2), first, "undo rebuild restores the reopened table");
+    assert_eq!(s2.undo_depth(), depth);
+    assert!(s2.doc.bookmarks().into_iter().filter(|(n, _)| *n == "_LawToaTbl").count() == 1, "exactly one table-range bookmark start");
+}
+
+#[test]
+fn toa_build_at_cursor_uses_the_top_level_body_block() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "lead paragraph"}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "text.insert", json!({"text": CASE_A}));
+    run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [0], "off": 0}}));
+    let out = run(&mut s, "law.toa.build", json!({"at": "cursor", "pack": "missouri"}));
+    assert_eq!(out.get("start").and_then(|v| v.as_u64()), Some(0), "insert at block 0 when the caret is there");
+    assert!(table_text(&s).contains("570 S.W.2d 679"));
+
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "before"}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "insert.table", json!({"rows": 1, "cols": 1}));
+    run(&mut s, "text.insert", json!({"text": CASE_A}));
+    run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [2, 0, 0, 0], "off": 0}}));
+    let out = run(&mut s, "law.toa.build", json!({"at": "cursor", "pack": "missouri"}));
+    assert_eq!(out.get("start").and_then(|v| v.as_u64()), Some(2), "a caret in a table cell uses that table's body block");
+}
+
+/// Passim is decided from the layout after the table exists, not from a stale pre-insert layout.
+#[test]
+fn toa_passim_threshold_uses_post_insert_layout() {
+    let mut s = law();
+    run(&mut s, "law.profiles.apply", json!({"id": MISSOURI, "doc": "brief"}));
+    run(&mut s, "text.insert", json!({"text": "Table of Authorities"}));
+    run(&mut s, "styles.apply", json!({"style": "Heading"}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "text.insert", json!({"text": CASE_A}));
+    for _ in 0..3 {
+        run(&mut s, "text.newParagraph", json!({}));
+        run(&mut s, "text.insert", json!({"text": "\u{000c}"}));
+        run(&mut s, "text.newParagraph", json!({}));
+        run(&mut s, "text.insert", json!({"text": CASE_A}));
+    }
+    run(&mut s, "law.toa.build", json!({}));
+    assert!(!table_text(&s).contains("passim"), "four pages must not print passim yet");
+
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "text.insert", json!({"text": "\u{000c}"}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "text.insert", json!({"text": CASE_A}));
+    run(&mut s, "law.toa.build", json!({}));
+    assert!(table_text(&s).contains("passim"), "five pages after rebuild must print passim");
 }
 
 /// The exclusion of a generated table uses the top-level body block, so a citation inside a table
