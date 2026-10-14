@@ -913,6 +913,32 @@ fn insert(app: &mut WordApp, ui: &mut Ui) {
             mi(ui, app, "More Symbols…", "ui.dialog", json!({"name": "symbol"}));
         });
     });
+    if app.session.module_enabled(wordcraft_law::MODULE) {
+        group(ui, "Legal Symbols", None, app, |ui, app| {
+            menu_button(ui, app, "symbol", Some("Legal Symbols"), "Legal Symbols", true, "law.symbols.section", |ui, app| {
+                let font = regular(16.0);
+                let entries: Vec<_> = wordcraft_law::symbols::PALETTE
+                    .iter()
+                    .filter(|e| {
+                        let ch = wordcraft_law::symbols::REFERENCE_MARK;
+                        !e.glyph.contains(ch) || ui.fonts_mut(|f| f.has_glyph(&font, ch))
+                    })
+                    .collect();
+                egui::Grid::new("law_syms").show(ui, |ui| {
+                    for (i, entry) in entries.iter().enumerate() {
+                        let label = egui::RichText::new(entry.glyph).size(16.0);
+                        if ui.button(label).on_hover_text(tl!(entry.label)).clicked() {
+                            let _ = app.run(entry.command, json!({}));
+                            ui.close();
+                        }
+                        if i % 5 == 4 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            });
+        });
+    }
 }
 
 fn draw(app: &mut WordApp, ui: &mut Ui) {

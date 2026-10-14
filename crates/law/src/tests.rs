@@ -39,7 +39,7 @@ fn applied(id: &str, doc_type: &str) -> Document {
     roundtrip(&s)
 }
 
-fn roundtrip(s: &Session) -> Document {
+pub(crate) fn roundtrip(s: &Session) -> Document {
     let bytes = wordcraft_engine::io::save_bytes("law.docx", &s.doc).expect("save a .docx");
     wordcraft_engine::io::open_bytes("law.docx", &bytes).expect("reopen it")
 }
