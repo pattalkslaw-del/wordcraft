@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static LAW_TEST_ID: AtomicU64 = AtomicU64::new(0);
 
 fn unique_id(prefix: &str) -> String {
-    format!("{}-{}", prefix, LAW_TEST_ID.fetch_add(1, Ordering::Relaxed))
+    let n = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    format!("{}-{}-{}-{}", prefix, std::process::id(), LAW_TEST_ID.fetch_add(1, Ordering::Relaxed), n)
 }
 
 /// The law profile store is process-wide; tests in this file run one at a time.
@@ -36,6 +37,10 @@ fn law_app() -> WordApp {
     s.prefs.modules.insert(MODULE.into(), true);
     install(&mut s);
     WordApp::new(s, Services::default())
+}
+
+fn plain_app() -> WordApp {
+    WordApp::new(Session::new(Document::new()), Services::default())
 }
 
 fn async_app() -> (WordApp, Shown) {
@@ -86,6 +91,28 @@ fn law_options_lists_bundled_profiles_with_verification_badges() {
     assert!(h.query_by_label("Missouri appellate brief").is_some());
     assert!(h.query_by_label("Federal appellate brief").is_some());
     assert!(h.query_by_label("Missouri").is_some());
+    assert!(h.query_by_label("Verified").is_some());
+    assert!(h.query_by_label("missouri-appellate-brief").is_some());
+}
+
+#[test]
+fn law_module_toggle_uses_file_options_and_shows_law_pane() {
+    let _lock = serial();
+    let mut a = plain_app();
+    assert!(!a.session.module_enabled(MODULE));
+    a.run("file.options", json!({"pane": "addins"})).unwrap();
+    let mut h = harness(a);
+    h.run_steps(4);
+    assert!(h.query_by_label("LawCraft").is_none(), "LawCraft pane hidden until the module is on");
+    h.get_by_label("LawCraft (court profiles and legal formatting)").click();
+    h.run_steps(6);
+    assert!(h.state().session.module_enabled(MODULE));
+    assert_eq!(h.state().ui.options_pane, "law");
+    assert!(h.query_by_label("Court profiles").is_some());
+    let opts = h.state_mut().run("file.options", json!({"modules": {"law": false}})).unwrap();
+    assert_eq!(opts["lawEnabled"], json!(false));
+    h.run_steps(2);
+    assert!(!h.state().session.module_enabled(MODULE));
 }
 
 #[test]
@@ -104,7 +131,8 @@ fn editing_a_profile_marks_it_unverified() {
             "docs": {
                 "brief": {
                     "styles": [{"name": "Normal"}],
-                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "sections": [{"id": "cover", "name": "Cover"}, {"id": "body", "name": "Body"}],
+                    "checks": [{"kind": "requiredSections", "ids": ["cover"], "source": "Test"}],
                     "source": "Test"
                 }
             }
@@ -115,13 +143,13 @@ fn editing_a_profile_marks_it_unverified() {
     open_law_options(&mut a);
     let mut h = harness(a);
     h.run_steps(6);
-    h.state_mut().law.selected = Some(id.to_string());
-    h.state_mut().law.doc_type = "brief".to_string();
+    h.get_by_label("Edit unverified test").click();
+    h.run_steps(6);
+    h.get_by_label("Add check").click();
     h.run_steps(4);
-    h.state_mut().run("law.profiles.update", json!({"id": id, "name": "Edit unverified test (changed)"})).unwrap();
-    h.run_steps(2);
     let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
     assert_eq!(after["verified"], json!(false));
+    assert!(after["docs"]["brief"]["checks"].as_array().is_some_and(|c| c.len() >= 2), "Add check saves through the editor");
 }
 
 #[test]
@@ -151,6 +179,11 @@ fn law_profile_import_and_export_through_file_dialogs() {
     h.run_steps(4);
     let imported = h.state_mut().run("law.profiles.get", json!({"id": "missouri-appellate-brief"})).unwrap();
     assert_eq!(imported["name"], json!("Missouri appellate brief"));
+    assert_eq!(h.state().law.doc_type, "appendix", "import picks the profile's first document type");
+    let section_count = imported["docs"]["appendix"]["sections"].as_array().map(|a| a.len()).unwrap_or(0);
+    assert!(section_count > 0);
+    h.run_steps(4);
+    assert!(h.query_by_label("Sections").is_some(), "editor shows the selected document type's sections");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

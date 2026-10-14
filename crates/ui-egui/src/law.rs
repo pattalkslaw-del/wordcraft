@@ -1,5 +1,7 @@
 //! File › Options › LawCraft: court profiles (list, edit, import, export, approve).
 
+use std::collections::BTreeMap;
+
 use egui::{RichText, Ui, vec2};
 use serde_json::{Value, json};
 use wordcraft_law::{MODULE, install, set_profiles_dir, settings_dir};
@@ -7,6 +9,9 @@ use wordcraft_law::{MODULE, install, set_profiles_dir, settings_dir};
 use crate::WordApp;
 use crate::file_dialogs::{AfterPick, FileDialogRequest};
 use crate::theme::{Tokens, semibold};
+
+/// Check kinds the profile schema and checks engine know.
+const CHECK_KINDS: &[&str] = &["wordLimit", "minFontSize", "minMargins", "minLineSpacing", "noHyperlinks", "textSearchablePdf", "requiredSections"];
 
 /// UI state for the LawCraft options page.
 #[derive(Clone, Debug, Default)]
@@ -21,6 +26,8 @@ pub struct LawUi {
     pub validation: Option<String>,
     /// Profile id a save dialog is exporting (`None` during import).
     pub export_id: Option<String>,
+    /// Section display names being edited (`profile_id` + section `id`).
+    pub section_name_drafts: BTreeMap<String, String>,
 }
 
 /// Install LawCraft commands when the module is on (safe to call every frame).
@@ -35,19 +42,39 @@ pub fn enabled(app: &WordApp) -> bool {
     app.session.module_enabled(MODULE)
 }
 
-/// Turn LawCraft on or off and install its commands when enabling.
+/// Turn LawCraft on or off through `file.options` and install its commands when enabling.
 pub fn set_enabled(app: &mut WordApp, on: bool) {
+    if enabled(app) == on {
+        return;
+    }
+    apply_module_toggle(app, on);
+}
+
+fn apply_module_toggle(app: &mut WordApp, on: bool) {
+    if let Err(e) = app.run("file.options", json!({"modules": {MODULE: on}})) {
+        app.status(e);
+        return;
+    }
     if on {
-        app.session.prefs.modules.insert(MODULE.into(), true);
         set_profiles_dir(settings_dir());
         sync_module(app);
         app.ui.options_pane = "law".into();
-    } else {
-        app.session.prefs.modules.remove(MODULE);
-        if app.ui.options_pane == "law" {
-            app.ui.options_pane = "addins".into();
-        }
+    } else if app.ui.options_pane == "law" {
+        app.ui.options_pane = "addins".into();
     }
+}
+
+/// After selecting or importing a profile, keep `doc_type` on a key that exists in `docs`.
+fn reconcile_doc_type(law: &mut LawUi, profile: &Value) {
+    let docs = profile["docs"].as_object();
+    let first = docs.and_then(|d| d.keys().next()).map(String::from).unwrap_or_default();
+    if law.doc_type.is_empty() || docs.is_none_or(|d| !d.contains_key(&law.doc_type)) {
+        law.doc_type = first;
+    }
+}
+
+fn section_draft_key(profile_id: &str, section_id: &str) -> String {
+    format!("{profile_id}\0{section_id}")
 }
 
 /// File › Options › Add-ins: optional modules.
@@ -58,7 +85,7 @@ pub fn addins(app: &mut WordApp, ui: &mut Ui) {
     let on = enabled(app);
     let mut checked = on;
     if ui.checkbox(&mut checked, tl!("LawCraft (court profiles and legal formatting)")).changed() {
-        set_enabled(app, checked);
+        apply_module_toggle(app, checked);
     }
     ui.label(RichText::new(tl!("Legal court profiles, formatting rules and filing checks. See docs/law.md.")).small().weak());
 }
@@ -115,12 +142,9 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                         app.law.selected = Some(id.to_string());
                         app.law.validation = None;
                         app.law.confirm_approve = false;
+                        app.law.section_name_drafts.clear();
                         if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
-                            let docs = p["docs"].as_object();
-                            let first = docs.and_then(|d| d.keys().next()).map(String::from).unwrap_or_default();
-                            if app.law.doc_type.is_empty() || docs.is_none_or(|d| !d.contains_key(&app.law.doc_type)) {
-                                app.law.doc_type = first;
-                            }
+                            reconcile_doc_type(&mut app.law, &p);
                         }
                     }
                     ui.label(RichText::new(id).small().weak());
@@ -247,12 +271,17 @@ fn sections_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &s
     let required = required_section_ids(doc);
     for (i, sec) in sections.iter().enumerate() {
         let sid = sec["id"].as_str().unwrap_or("");
-        let mut name = sec["name"].as_str().unwrap_or("").to_string();
+        let draft_key = section_draft_key(profile_id, sid);
+        let stored_name = sec["name"].as_str().unwrap_or("");
+        let mut name = app.law.section_name_drafts.get(&draft_key).cloned().unwrap_or_else(|| stored_name.to_string());
         let is_req = required.iter().any(|r| r == sid);
         let mut req = is_req;
         ui.horizontal(|ui| {
             ui.label(format!("{}.", i + 1));
             let resp = ui.text_edit_singleline(&mut name);
+            if resp.changed() {
+                app.law.section_name_drafts.insert(draft_key.clone(), name.clone());
+            }
             ui.checkbox(&mut req, tl!("Required"));
             if ui.add_enabled(i > 0, egui::Button::new("↑")).clicked() {
                 reorder_sections(app, profile_id, doc_key, profile, i, i - 1);
@@ -260,8 +289,9 @@ fn sections_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &s
             if ui.add_enabled(i + 1 < sections.len(), egui::Button::new("↓")).clicked() {
                 reorder_sections(app, profile_id, doc_key, profile, i, i + 1);
             }
-            let name_save = resp.lost_focus() && resp.changed();
+            let name_save = resp.lost_focus() && name.trim() != stored_name.trim();
             if name_save || req != is_req {
+                app.law.section_name_drafts.remove(&draft_key);
                 let mut secs = profile["docs"][doc_key]["sections"].as_array().cloned().unwrap_or(sections.clone());
                 if let Some(s) = secs.get_mut(i).and_then(Value::as_object_mut) {
                     s.insert("name".into(), json!(name.trim()));
@@ -393,39 +423,218 @@ fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
 
 fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str, doc: &Value, profile: &mut Value) {
     let checks = doc.get("checks").and_then(Value::as_array).cloned().unwrap_or_default();
+    let section_ids: Vec<String> = doc
+        .get("sections")
+        .and_then(Value::as_array)
+        .map(|secs| secs.iter().filter_map(|s| s["id"].as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let style_names: Vec<String> = doc
+        .get("styles")
+        .and_then(Value::as_array)
+        .map(|st| st.iter().filter_map(|s| s["name"].as_str().map(String::from)).collect())
+        .unwrap_or_default();
+
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(tl!("Checks for this document type")).small().weak());
+        if ui.button(tl!("Add check")).clicked() {
+            let mut checks = checks.clone();
+            checks.push(json!({"kind": "wordLimit", "limit": 10000, "source": "Edited in LawCraft settings"}));
+            save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
+        }
+    });
+
     if checks.is_empty() {
         ui.label(tl!("No checks defined for this document type."));
         return;
     }
+
     for (i, ch) in checks.iter().enumerate() {
         let kind = ch["kind"].as_str().unwrap_or("");
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(kind).font(semibold(13.0)));
-            if kind == "wordLimit" {
-                let mut limit = ch["limit"].as_u64().unwrap_or(0) as u32;
-                ui.label(tl!("Word limit:"));
-                if ui.add(egui::DragValue::new(&mut limit).speed(100.0).range(1..=1_000_000)).changed() {
+        ui.group(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(tl!("Kind:"));
+                let mut selected_kind = kind.to_string();
+                egui::ComboBox::from_id_salt(("law_check_kind", profile_id, doc_key, i)).selected_text(&selected_kind).width(200.0).show_ui(
+                    ui,
+                    |ui| {
+                        for k in CHECK_KINDS {
+                            if ui.selectable_label(selected_kind == *k, *k).clicked() {
+                                selected_kind = k.to_string();
+                            }
+                        }
+                    },
+                );
+                if selected_kind != kind {
                     let mut checks = checks.clone();
-                    if let Some(c) = checks.get_mut(i).and_then(Value::as_object_mut) {
-                        c.insert("limit".into(), json!(limit));
+                    if let Some(c) = checks.get_mut(i) {
+                        *c = default_check(&selected_kind, c);
                     }
                     save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
+                    return;
                 }
-            } else if kind == "minFontSize" {
-                let mut pt = ch["pt"].as_f64().unwrap_or(0.0) as f32;
-                ui.label(tl!("Minimum (pt):"));
-                if ui.add(egui::DragValue::new(&mut pt).speed(0.5).range(1.0..=4096.0)).changed() {
+                if ui.button(tl!("Remove")).clicked() {
                     let mut checks = checks.clone();
-                    if let Some(c) = checks.get_mut(i).and_then(Value::as_object_mut) {
-                        c.insert("pt".into(), json!(pt));
-                    }
+                    checks.remove(i);
                     save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
                 }
+            });
+
+            let kind = ch["kind"].as_str().unwrap_or("");
+            match kind {
+                "wordLimit" => {
+                    let mut limit = ch["limit"].as_u64().unwrap_or(0) as u32;
+                    ui.horizontal(|ui| {
+                        ui.label(tl!("Word limit:"));
+                        if ui.add(egui::DragValue::new(&mut limit).speed(100.0).range(1..=1_000_000)).changed() {
+                            patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"limit": limit}));
+                        }
+                    });
+                    check_id_list_editor(
+                        app,
+                        ui,
+                        profile_id,
+                        doc_key,
+                        profile,
+                        &checks,
+                        i,
+                        "excludeSections",
+                        &section_ids,
+                        tl!("Sections excluded from the count:"),
+                    );
+                }
+                "minFontSize" => {
+                    let mut pt = ch["pt"].as_f64().unwrap_or(13.0) as f32;
+                    let mut font = ch["font"].as_str().unwrap_or("").to_string();
+                    ui.horizontal(|ui| {
+                        ui.label(tl!("Minimum (pt):"));
+                        let pt_changed = ui.add(egui::DragValue::new(&mut pt).speed(0.5).range(1.0..=4096.0)).changed();
+                        ui.label(tl!("Font:"));
+                        let font_changed = ui.text_edit_singleline(&mut font).changed();
+                        if pt_changed || font_changed {
+                            patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"pt": pt, "font": font.trim()}));
+                        }
+                    });
+                }
+                "minMargins" => {
+                    let mut pt = ch["pt"].as_f64().unwrap_or(72.0) as f32;
+                    ui.horizontal(|ui| {
+                        ui.label(tl!("Minimum margin (pt):"));
+                        if ui.add(egui::DragValue::new(&mut pt).speed(1.0).range(1.0..=4096.0)).changed() {
+                            patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"pt": pt}));
+                        }
+                    });
+                }
+                "minLineSpacing" => {
+                    let mut spacing = ch["spacing"].as_f64().unwrap_or(1.5) as f32;
+                    ui.horizontal(|ui| {
+                        ui.label(tl!("Minimum line spacing (multiple):"));
+                        if ui.add(egui::DragValue::new(&mut spacing).speed(0.05).range(0.5..=4.0)).changed() {
+                            patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"spacing": spacing}));
+                        }
+                    });
+                    check_id_list_editor(
+                        app,
+                        ui,
+                        profile_id,
+                        doc_key,
+                        profile,
+                        &checks,
+                        i,
+                        "exceptStyles",
+                        &style_names,
+                        tl!("Styles that may be single-spaced:"),
+                    );
+                }
+                "requiredSections" => {
+                    check_id_list_editor(app, ui, profile_id, doc_key, profile, &checks, i, "ids", &section_ids, tl!("Required section ids:"));
+                }
+                "noHyperlinks" | "textSearchablePdf" => {
+                    ui.label(RichText::new(tl!("No parameters for this check.")).small().weak());
+                }
+                _ => {}
+            }
+
+            let mut source = ch["source"].as_str().unwrap_or("").to_string();
+            ui.horizontal(|ui| {
+                ui.label(tl!("Source:"));
+                let resp = ui.text_edit_singleline(&mut source);
+                if resp.lost_focus() && source.trim() != ch["source"].as_str().unwrap_or("").trim() {
+                    patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"source": source.trim()}));
+                }
+            });
+            if let Some(eff) = ch["effective"].as_str().filter(|s| !s.is_empty()) {
+                ui.label(RichText::new(format!("{} {}", tl!("Effective:"), eff)).small().weak());
             }
         });
-        if let Some(src) = ch["source"].as_str().filter(|s| !s.is_empty()) {
-            ui.label(RichText::new(src).small().weak());
+    }
+}
+
+fn default_check(kind: &str, previous: &Value) -> Value {
+    let source = previous.get("source").and_then(Value::as_str).filter(|s| !s.is_empty()).unwrap_or("Edited in LawCraft settings");
+    let effective = previous.get("effective").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "wordLimit" => json!({"kind": kind, "limit": 10000, "excludeSections": [], "source": source, "effective": effective}),
+        "minFontSize" => json!({"kind": kind, "pt": 13.0, "font": "Times New Roman", "source": source, "effective": effective}),
+        "minMargins" => json!({"kind": kind, "pt": 72.0, "source": source, "effective": effective}),
+        "minLineSpacing" => json!({"kind": kind, "spacing": 1.5, "exceptStyles": [], "source": source, "effective": effective}),
+        "requiredSections" => json!({"kind": kind, "ids": [], "source": source, "effective": effective}),
+        "noHyperlinks" | "textSearchablePdf" => json!({"kind": kind, "source": source, "effective": effective}),
+        _ => json!({"kind": kind, "source": source, "effective": effective}),
+    }
+}
+
+fn patch_check(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut Value, checks: &[Value], index: usize, patch: Value) {
+    let mut checks = checks.to_vec();
+    if let Some(c) = checks.get_mut(index).and_then(Value::as_object_mut)
+        && let Some(p) = patch.as_object()
+    {
+        for (k, v) in p {
+            c.insert(k.clone(), v.clone());
         }
+    }
+    save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
+}
+
+fn check_id_list_editor(
+    app: &mut WordApp,
+    ui: &mut Ui,
+    profile_id: &str,
+    doc_key: &str,
+    profile: &mut Value,
+    checks: &[Value],
+    index: usize,
+    field: &str,
+    choices: &[String],
+    label: &str,
+) {
+    let ch = checks.get(index).unwrap_or(&Value::Null);
+    let selected: Vec<String> =
+        ch.get(field).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    ui.label(label);
+    if choices.is_empty() {
+        ui.label(RichText::new(tl!("No sections or styles to choose from yet.")).small().weak());
+        return;
+    }
+    let mut changed = false;
+    let mut next = selected.clone();
+    ui.horizontal_wrapped(|ui| {
+        for id in choices {
+            let mut on = next.iter().any(|s| s == id);
+            if ui.checkbox(&mut on, id.as_str()).changed() {
+                changed = true;
+                if on {
+                    if !next.iter().any(|s| s == id) {
+                        next.push(id.clone());
+                    }
+                } else {
+                    next.retain(|s| s != id);
+                }
+            }
+        }
+    });
+    if changed {
+        let ids: Vec<Value> = next.iter().map(|s| json!(s)).collect();
+        patch_check(app, profile_id, doc_key, profile, checks, index, json!({field: ids}));
     }
 }
 
@@ -473,6 +682,10 @@ pub(crate) fn finish_pick(app: &mut WordApp, after: AfterPick, picked: Option<St
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
                     app.law.selected = Some(id.to_string());
                     app.law.validation = None;
+                    app.law.section_name_drafts.clear();
+                    if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
+                        reconcile_doc_type(&mut app.law, &p);
+                    }
                 }
                 app.status(crate::i18n::fmt(tl!("Imported court profile {path}"), &[("path", &path)]));
             }
