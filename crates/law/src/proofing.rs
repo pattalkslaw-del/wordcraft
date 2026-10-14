@@ -124,12 +124,6 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of limitations?",
     },
     ConfusionPhrase {
-        words: &["statue", "of", "frauds"],
-        wrong_index: 0,
-        right: "statute",
-        message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of frauds?",
-    },
-    ConfusionPhrase {
         words: &["principle", "place", "of", "business"],
         wrong_index: 0,
         right: "principal",

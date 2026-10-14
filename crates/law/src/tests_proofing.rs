@@ -167,7 +167,6 @@ fn confusion_suggestion_preserves_inflection() {
 fn text_slice(text: &str, start: usize, end: usize) -> &str {
     text.get(start..end).unwrap_or("")
 }
-confusion_pair!(statute_frauds, "The statue of frauds bars oral agreements.", "A bronze statue stands in the plaza.", "statue", "statute");
 
 confusion_pair!(
     principal_place_of_business,
@@ -197,6 +196,8 @@ confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The in
 #[test]
 fn removed_confusion_phrases_stay_quiet() {
     for text in [
+        // `statue of frauds` is ambiguous (`frauds` = impostors), so the phrase is removed.
+        "The sculptor carved a statue of frauds who had posed as philanthropists.",
         "The principle claim for damages was dismissed.",
         "The principle amount remains unpaid.",
         "The affect of the ruling was clear.",
