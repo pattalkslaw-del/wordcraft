@@ -39,6 +39,7 @@ mod apply;
 pub mod checks;
 pub mod cmd;
 pub mod profile;
+mod proofing;
 pub mod store;
 
 use wordcraft_engine::Session;
@@ -55,9 +56,12 @@ pub const MODULE: &str = "law";
 /// after it has read the user's preferences, and points the profile store at the user's own
 /// profiles folder first ([`set_profiles_dir`]).
 pub fn install(session: &mut Session) -> usize {
+    session.module_en = wordcraft_proof::ModuleEn::default();
+    session.relayout();
     if !session.module_enabled(MODULE) {
         return 0;
     }
+    session.module_en = proofing::module_hooks();
     checks::register_document_hook();
     // A host may open the file *before* it installs LawCraft (`Session::new(doc)`), so the
     // document-loaded hook never runs for it. Restore the applied profile's export checks from
@@ -71,3 +75,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_checks;
+
+#[cfg(test)]
+mod tests_proofing;

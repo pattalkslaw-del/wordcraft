@@ -448,6 +448,8 @@ pub struct Session {
     lint_findings: Vec<serde_json::Value>,
     /// Commands to run before a PDF export (`(id, params)`); modules register checks here.
     export_check_commands: Vec<(String, serde_json::Value)>,
+    /// English spelling and grammar supplements from optional modules (LawCraft when on).
+    pub module_en: wordcraft_proof::ModuleEn,
 }
 
 /// The number of edit locations Go Back cycles through (Word: four).
@@ -666,6 +668,7 @@ impl Session {
             go_back_step: 0,
             lint_findings: Vec::new(),
             export_check_commands: Vec::new(),
+            module_en: wordcraft_proof::ModuleEn::default(),
         }
     }
 
@@ -868,7 +871,7 @@ impl Session {
             comment_balloons: false,
             field_codes: self.view.field_codes,
             outline: outline.clone(),
-            proof: wordcraft_layout::ProofOptions { grammar: self.prefs.mark_grammar, spelling: self.prefs.spelling() },
+            proof: wordcraft_layout::ProofOptions { grammar: self.prefs.mark_grammar, spelling: self.prefs.spelling(), module: self.module_en },
         };
         let l = Arc::new(wordcraft_layout::layout(&self.doc, &mut self.cache, &opts));
         self.layout = Some((self.rev, width, height, mode, spacing, l.clone(), self.view.proofing, outline, deleted, self.view.numeral));
@@ -1167,6 +1170,7 @@ impl Session {
             go_back_step: _,
             lint_findings: _,
             export_check_commands: _,
+            module_en: _,
         } = self;
         let head = if history.len() + SNAPSHOT_HEAD > MAX_UNDO { history.iter().take(SNAPSHOT_HEAD).cloned().collect() } else { Vec::new() };
         EditSnapshot {

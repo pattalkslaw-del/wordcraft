@@ -41,6 +41,8 @@ dictionary lives beside), one file per profile.
 | `law.profiles.export` | `{"id", "path"}`: write a profile file |
 | `law.profiles.apply` | `{"id", "doc"?}`: apply a document type's styles, page setup and line numbers to the open document |
 | `law.checks.run` | `{"id"?, "doc"?, "forExport"?, "format"?, "store"?}`: run the profile's checks for a document type and return `{"profile", "doc", "findings": [{checkId, severity, message, start?, end?}]}`; it never edits the document |
+| `law.words.list` | `{}`: every legal term added to English spelling while LawCraft is on |
+| `law.proof.confusions` | `{"store"?}`: scan the open document for context-sensitive legal word-pair mistakes (suggestions, not hard errors); default stores findings in Review › Proofing |
 
 Applying a profile runs WordCraft's own commands (`layout.size`, `layout.margins`,
 `layout.lineNumbers`, `insert.pageNumber`, `layout.pageNumberFormat`, `styles.create`,
@@ -150,6 +152,7 @@ findings are reported, not blocking.
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | minor | Legal spell-check supplement (`law.words.list`) and confusion-pair proofing (`law.proof.confusions`) hooked into WordCraft's English proofing when LawCraft is on |
 | 2026-10-14 | patch | `textSearchablePdf` now names the page for a picture-dominated page even when the document has no substantive text: an image-only scan and a scan with only a caption or page-number footer are a page-specific warning, not a document-wide "not searchable" error |
 | 2026-10-13 | minor | Court-profile checks engine: `law.checks.run`, pre-export checks through the engine's export-check hook, text-box-aware line spacing, and a PDF searchability verdict that no longer passes a scan with a caption |
 
