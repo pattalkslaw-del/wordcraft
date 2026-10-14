@@ -410,6 +410,8 @@ pub struct Session {
     pub update_install: Option<crate::update::InstallFn>,
     /// Path to the running executable (install-type detection).
     pub update_exe: Option<String>,
+    /// Install detection override (tests only; production uses [`crate::update::SystemEnv`]).
+    pub update_env: Option<crate::update::EnvReadBox>,
     /// Wall clock for throttling (overridden in tests).
     pub update_now_unix: fn() -> u64,
     /// Read Aloud player (Review › Speech).
@@ -616,6 +618,7 @@ impl Session {
             update_http: None,
             update_install: None,
             update_exe: None,
+            update_env: None,
             update_now_unix: crate::update::unix_now,
             math: None,
             math_latex: false,
@@ -1051,6 +1054,7 @@ impl Session {
             update_http: _,
             update_install: _,
             update_exe: _,
+            update_env: _,
             update_now_unix: _,
             document_id: _,
             read_aloud: _,

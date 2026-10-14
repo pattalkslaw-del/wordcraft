@@ -148,8 +148,6 @@ pub struct Services {
     /// `xdg-mime`. `None` (web, macOS) hides the button; macOS shows how to do it in Finder
     /// instead. An error means nothing changed.
     pub make_default_app: Option<Box<dyn Fn() -> Result<DefaultApp, String>>>,
-    /// Desktop: fetch GitHub's latest-release JSON for the daily update check (#15).
-    pub check_update: Option<update::Fetch>,
 }
 
 /// What [`Services::make_default_app`] did.

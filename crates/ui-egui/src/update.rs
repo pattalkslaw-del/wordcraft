@@ -1,7 +1,5 @@
 //! Desktop update notice (#15, #201). Checks go through `file.checkForUpdates`; this module
-//! polls a background fetch on startup and paints the notice bar.
-
-use std::sync::mpsc::Receiver;
+//! paints the notice bar.
 
 use egui::{Stroke, Ui, vec2};
 use serde_json::{Value, json};
@@ -9,15 +7,11 @@ use serde_json::{Value, json};
 use crate::WordApp;
 use crate::theme::{Tokens, TypeRung};
 
-pub use wordcraft_engine::update::{INTERVAL_SECS, MAX_JSON, due, offer, parse_latest_release, parse_version};
-
-/// Fetches the latest-release JSON. The host caps size and time.
-pub type Fetch = std::sync::Arc<dyn Fn() -> Result<Vec<u8>, String> + Send + Sync>;
+pub use wordcraft_engine::update::{INTERVAL_SECS, MAX_JSON, due};
 
 #[derive(Default)]
 pub struct UpdateCheck {
     started: bool,
-    rx: Option<Receiver<Result<Vec<u8>, String>>>,
     pub notice: Option<Notice>,
 }
 
@@ -30,65 +24,46 @@ pub struct Notice {
     pub external_updater: bool,
 }
 
-pub fn poll(app: &mut WordApp, ctx: &egui::Context) {
-    collect_fetch(app);
+/// Build a notice from a command `ui_request` `update` object or a full check result.
+pub fn notice_from_payload(value: &Value) -> Option<Notice> {
+    if let Some(rel) = value.get("release") {
+        return notice_from_fields(rel);
+    }
+    notice_from_fields(value)
+}
+
+fn notice_from_fields(v: &Value) -> Option<Notice> {
+    let version = v.get("version").and_then(Value::as_str)?;
+    Some(Notice {
+        version: version.into(),
+        notes: v.get("notes").and_then(Value::as_str).unwrap_or("").into(),
+        page_url: v.get("pageUrl").and_then(Value::as_str).unwrap_or(wordcraft_engine::update::RELEASES_PAGE).into(),
+        one_click: v.get("oneClick").and_then(Value::as_bool) == Some(true),
+        external_updater: v.get("externalUpdater").and_then(Value::as_bool) == Some(true),
+    })
+}
+
+pub fn poll(app: &mut WordApp, _ctx: &egui::Context) {
     if app.update.started || app.fonts_frames < 2 {
+        return;
+    }
+    if app.session.update_http.is_none() {
         return;
     }
     let now = now_secs();
     if !due(app.session.update_prefs.check_on_startup, app.session.update_prefs.last_check_unix, now, false) {
         return;
     }
-    if let Some(fetch) = app.services.check_update.clone() {
-        app.update.started = true;
-        app.session.update_prefs.last_check_unix = now;
-        app.update.rx = spawn(fetch, ctx.clone());
-    }
-}
-
-fn collect_fetch(app: &mut WordApp) {
-    let Some(rx) = &app.update.rx else { return };
-    match rx.try_recv() {
-        Ok(Ok(json)) => {
-            app.update.rx = None;
-            let current = parse_version(env!("CARGO_PKG_VERSION")).unwrap_or((0, 0, 0));
-            if let Ok(Some(rel)) = parse_latest_release(&json, current) {
-                if wordcraft_engine::update::skipped(&rel, &app.session.update_prefs.skipped_version) {
-                    return;
-                }
-                let exe = app.session.update_exe.as_deref().unwrap_or("");
-                let kind = wordcraft_engine::update::detect_install_kind(exe, &wordcraft_engine::update::SystemEnv);
-                let off = offer(rel, &app.session.update_prefs.skipped_version, kind);
-                app.update.notice = Some(Notice {
-                    version: off.version,
-                    notes: off.notes,
-                    page_url: off.page_url,
-                    one_click: off.one_click,
-                    external_updater: off.external_updater,
-                });
-            }
-        }
-        Ok(Err(e)) => {
-            log::info!("update check failed: {e}");
-            app.update.rx = None;
-        }
-        Err(std::sync::mpsc::TryRecvError::Empty) => {}
-        Err(std::sync::mpsc::TryRecvError::Disconnected) => app.update.rx = None,
+    app.update.started = true;
+    if let Err(e) = app.run("file.checkForUpdates", json!({"startup": true})) {
+        log::info!("startup update check failed: {e}");
     }
 }
 
 /// Manual check or command-driven notice (`file.checkForUpdates` ui_request).
 pub fn apply_command_result(app: &mut WordApp, value: &Value) {
-    if value.get("status") == Some(&Value::String("available".into()))
-        && let Some(rel) = value.get("release")
-    {
-        app.update.notice = Some(Notice {
-            version: rel.get("version").and_then(Value::as_str).unwrap_or("").into(),
-            notes: rel.get("notes").and_then(Value::as_str).unwrap_or("").into(),
-            page_url: rel.get("pageUrl").and_then(Value::as_str).unwrap_or(wordcraft_engine::update::RELEASES_PAGE).into(),
-            one_click: rel.get("oneClick").and_then(Value::as_bool) == Some(true),
-            external_updater: rel.get("externalUpdater").and_then(Value::as_bool) == Some(true),
-        });
+    if let Some(n) = notice_from_payload(value) {
+        app.update.notice = Some(n);
     }
 }
 
@@ -121,8 +96,18 @@ pub fn bar(app: &mut WordApp, ui: &mut Ui) {
                                     params: json!({"force": true, "apply": true}),
                                     document: app.session.document_id(),
                                 });
-                            } else if app.run("file.checkForUpdates", json!({"force": true, "apply": true})).is_ok() {
-                                close = true;
+                            } else {
+                                match app.run("file.checkForUpdates", json!({"force": true, "apply": true})) {
+                                    Ok(v) => {
+                                        if v.get("status") == Some(&Value::String("error".into())) {
+                                            let msg = v.get("error").and_then(Value::as_str).unwrap_or("Update failed.");
+                                            app.status(tl!(msg));
+                                        } else if app.quit_requested {
+                                            close = true;
+                                        }
+                                    }
+                                    Err(e) => app.status(tl!(&e)),
+                                }
                             }
                         }
                     } else if ui.button(tl!("Download")).clicked() {
@@ -130,7 +115,7 @@ pub fn bar(app: &mut WordApp, ui: &mut Ui) {
                         close = true;
                     }
                     if ui.button(tl!("Skip this version")).clicked() {
-                        app.session.update_prefs.skipped_version = notice.version.clone();
+                        let _ = app.run("file.updatePrefs", json!({"skipVersion": notice.version}));
                         close = true;
                     }
                     if ui.button(tl!("Later")).clicked() {
@@ -163,17 +148,15 @@ pub fn startup_prompt(app: &mut WordApp, ui: &mut Ui, open: &mut bool) {
     egui::Window::new(tl!("Check for updates?")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(
         ui.ctx(),
         |ui| {
-            ui.label(tl!("Once a day, WordCraft can ask GitHub whether a newer release is out. Nothing else is sent."));
+            ui.label(tl!("Once a day, WordCraft can ask GitHub whether a newer WordCraft release is out. Nothing else is sent."));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button(tl!("Yes")).clicked() {
-                    app.session.update_prefs.check_on_startup = true;
-                    app.session.update_prefs.asked_startup = true;
+                    let _ = app.run("file.updatePrefs", json!({"checkOnStartup": true, "askedStartup": true}));
                     *open = false;
                 }
                 if ui.button(tl!("No")).clicked() {
-                    app.session.update_prefs.check_on_startup = false;
-                    app.session.update_prefs.asked_startup = true;
+                    let _ = app.run("file.updatePrefs", json!({"checkOnStartup": false, "askedStartup": true}));
                     *open = false;
                 }
             });
@@ -186,22 +169,38 @@ fn now_secs() -> u64 {
     if ms.is_finite() && ms > 0.0 { (ms / 1000.0) as u64 } else { 0 }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn spawn(fetch: Fetch, ctx: egui::Context) -> Option<Receiver<Result<Vec<u8>, String>>> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    match std::thread::Builder::new().name("update-check".into()).spawn(move || {
-        let _ = tx.send(fetch());
-        ctx.request_repaint();
-    }) {
-        Ok(_) => Some(rx),
-        Err(e) => {
-            log::info!("update check not started: {e}");
-            None
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[cfg(target_arch = "wasm32")]
-fn spawn(_fetch: Fetch, _ctx: egui::Context) -> Option<Receiver<Result<Vec<u8>, String>>> {
-    None
+    #[test]
+    fn ui_request_update_payload_builds_notice() {
+        let up = json!({
+            "version": "9.0.0",
+            "notes": "Hi",
+            "pageUrl": "https://github.com/storytold/wordcraft/releases/tag/v9.0.0",
+            "oneClick": true,
+            "externalUpdater": false,
+        });
+        let n = notice_from_payload(&up).unwrap();
+        assert_eq!(n.version, "9.0.0");
+        assert!(n.one_click);
+    }
+
+    #[test]
+    fn command_result_release_builds_notice() {
+        let r = json!({
+            "status": "available",
+            "release": {
+                "version": "8.0.0",
+                "notes": "",
+                "pageUrl": "https://github.com/storytold/wordcraft/releases/latest",
+                "oneClick": false,
+                "externalUpdater": true,
+            }
+        });
+        let n = notice_from_payload(&r).unwrap();
+        assert_eq!(n.version, "8.0.0");
+        assert!(n.external_updater);
+    }
 }

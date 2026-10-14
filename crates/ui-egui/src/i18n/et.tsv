@@ -2121,3 +2121,7 @@
 	Once a day, WordCraft can ask GitHub whether a newer WordCraft release is out. Nothing else is sent.	Once a day, WordCraft can ask GitHub whether a newer WordCraft release is out. Nothing else is sent.
 	Once a day, ask GitHub whether a newer WordCraft release is out and show a notice. Nothing else is sent.	Once a day, ask GitHub whether a newer WordCraft release is out and show a notice. Nothing else is sent.
 	Updates for this install are provided by Flatpak or AppImage, not from here.	Updates for this install are provided by Flatpak or AppImage, not from here.
+	Update Preferences	Update Preferences
+	Save or discard unsaved changes before updating.	Save or discard unsaved changes before updating.
+	Open the release page in your browser to update.	Open the release page in your browser to update.
+	Downloaded file does not match the published SHA-256 checksum.	Downloaded file does not match the published SHA-256 checksum.

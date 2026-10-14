@@ -20,7 +20,7 @@ No account, identifier, document content, or telemetry is sent. GitHub sees a no
 
 For `.msi`, portable `.zip`, `.deb`, and macOS `.dmg` installs, **Update** downloads the matching release asset, verifies it against `SHA256SUMS.txt` on the release, then starts the platform installer (`msiexec`, `dpkg` via `pkexec`, disk image copy, or portable replace-and-relaunch). If the document has unsaved changes, WordCraft asks you to save first.
 
-Unknown or development installs open the release page in your browser instead.
+Unknown or development installs open the release page in your browser instead. On Linux, only `.deb` packages installed under system paths (verified with `dpkg-query`) use one-click install; RPM and unpackaged `/usr/bin` copies fall back to the release page.
 
 ## Disabling checks
 

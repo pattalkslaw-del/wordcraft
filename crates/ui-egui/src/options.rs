@@ -200,8 +200,7 @@ fn general(app: &mut WordApp, ui: &mut Ui) {
         .on_hover_text(tl!("Once a day, ask GitHub whether a newer WordCraft release is out and show a notice. Nothing else is sent."))
         .changed()
     {
-        app.session.update_prefs.check_on_startup = check_updates;
-        app.session.update_prefs.asked_startup = true;
+        let _ = app.run("file.updatePrefs", json!({"checkOnStartup": check_updates, "askedStartup": true}));
     }
     ui.add_space(8.0);
     section(ui, "Personalize");

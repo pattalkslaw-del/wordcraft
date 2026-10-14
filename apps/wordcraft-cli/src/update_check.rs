@@ -3,10 +3,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use wordcraft_engine::update::{HttpGet, MAX_JSON};
+use wordcraft_engine::update::HttpGet;
 
 pub fn http_get() -> HttpGet {
-    Arc::new(|url| {
+    Arc::new(|url, max_bytes| {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))
             .user_agent(concat!("wordcraft-cli/", env!("CARGO_PKG_VERSION"), " (+https://github.com/storytold/wordcraft)"))
@@ -18,6 +18,6 @@ pub fn http_get() -> HttpGet {
             .header("X-GitHub-Api-Version", "2022-11-28")
             .call()
             .map_err(|e| e.to_string())?;
-        response.body_mut().with_config().limit(MAX_JSON as u64).read_to_vec().map_err(|e| e.to_string())
+        response.body_mut().with_config().limit(max_bytes as u64).read_to_vec().map_err(|e| e.to_string())
     })
 }

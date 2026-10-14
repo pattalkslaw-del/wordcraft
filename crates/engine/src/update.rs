@@ -96,12 +96,19 @@ pub fn detect_install_kind(exe: &str, env: &dyn EnvRead) -> InstallKind {
         return InstallKind::Unknown;
     }
     if env.linux() {
-        if lower.starts_with("/usr/bin/") || lower.starts_with("/usr/local/bin/") || lower.contains("/opt/wordcraft/") {
-            return InstallKind::LinuxDeb;
+        if linux_system_install_path(&lower) {
+            if env.linux_deb_package(&exe) {
+                return InstallKind::LinuxDeb;
+            }
+            return InstallKind::Unknown;
         }
         return InstallKind::Unknown;
     }
     InstallKind::Unknown
+}
+
+fn linux_system_install_path(lower_exe: &str) -> bool {
+    lower_exe.starts_with("/usr/bin/") || lower_exe.starts_with("/usr/local/bin/") || lower_exe.contains("/opt/wordcraft/")
 }
 
 /// Environment hooks for install detection (real env or test fake).
@@ -112,12 +119,30 @@ pub trait EnvRead {
     fn windows(&self) -> bool;
     fn macos(&self) -> bool;
     fn linux(&self) -> bool;
+    /// True when `dpkg-query -S` reports the installed binary (`.deb` installs only).
+    fn linux_deb_package(&self, exe: &str) -> bool;
+}
+
+#[cfg(target_os = "linux")]
+fn linux_deb_package_query(exe: &str) -> bool {
+    if exe.is_empty() || exe.len() > 512 {
+        return false;
+    }
+    std::process::Command::new("dpkg-query").args(["-S", exe]).status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn linux_deb_package_query(_exe: &str) -> bool {
+    false
 }
 
 /// Production environment reader.
 pub struct SystemEnv;
 
 impl EnvRead for SystemEnv {
+    fn linux_deb_package(&self, exe: &str) -> bool {
+        linux_deb_package_query(exe)
+    }
     fn flatpak(&self) -> bool {
         std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists()
     }
@@ -377,18 +402,20 @@ pub struct InstallHandoff {
     pub exe_path: String,
 }
 
-/// HTTP GET through the session hook.
-pub fn http_get(session: &crate::Session, url: &str) -> Result<Vec<u8>, String> {
+/// HTTP GET through the session hook (`max_bytes` is enforced while reading).
+pub fn http_get(session: &crate::Session, url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     let fetch = session.update_http.as_ref().ok_or_else(|| "update check is not available".to_string())?;
-    let data = fetch(url)?;
-    if data.len() > MAX_DOWNLOAD {
+    let cap = max_bytes.min(MAX_DOWNLOAD);
+    let data = fetch(url, cap)?;
+    if data.len() > cap {
         return Err("download too large".into());
     }
     Ok(data)
 }
 
-pub type HttpGet = Arc<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
+pub type HttpGet = Arc<dyn Fn(&str, usize) -> Result<Vec<u8>, String> + Send + Sync>;
 pub type InstallFn = Arc<dyn Fn(InstallHandoff) -> Result<(), String> + Send + Sync>;
+pub type EnvReadBox = Arc<dyn EnvRead + Send + Sync>;
 
 /// Unix seconds for throttling (0 when unknown).
 pub fn unix_now() -> u64 {
@@ -410,6 +437,7 @@ mod tests {
         flatpak: bool,
         appimage: Option<String>,
         override_kind: Option<InstallKind>,
+        linux_deb: bool,
         os: &'static str,
     }
 
@@ -432,22 +460,27 @@ mod tests {
         fn linux(&self) -> bool {
             self.os == "linux"
         }
+        fn linux_deb_package(&self, _exe: &str) -> bool {
+            self.linux_deb
+        }
     }
 
     #[test]
     fn install_kind_detection() {
-        let e = FakeEnv { flatpak: true, appimage: None, override_kind: None, os: "linux" };
+        let e = FakeEnv { flatpak: true, appimage: None, override_kind: None, linux_deb: false, os: "linux" };
         assert_eq!(detect_install_kind("/usr/bin/wordcraft", &e), InstallKind::Flatpak);
-        let e = FakeEnv { flatpak: false, appimage: Some("/x.AppImage".into()), override_kind: None, os: "linux" };
+        let e = FakeEnv { flatpak: false, appimage: Some("/x.AppImage".into()), override_kind: None, linux_deb: false, os: "linux" };
         assert_eq!(detect_install_kind("/tmp/wordcraft", &e), InstallKind::AppImage);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, os: "linux" };
+        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: true, os: "linux" };
         assert_eq!(detect_install_kind("/usr/bin/wordcraft", &e), InstallKind::LinuxDeb);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, os: "macos" };
+        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "linux" };
+        assert_eq!(detect_install_kind("/usr/bin/wordcraft", &e), InstallKind::Unknown);
+        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "macos" };
         assert_eq!(detect_install_kind("/Applications/WordCraft.app/Contents/MacOS/wordcraft", &e), InstallKind::MacApp);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, os: "windows" };
+        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "windows" };
         assert_eq!(detect_install_kind("C:/Program Files/WordCraft/wordcraft.exe", &e), InstallKind::WindowsMsi);
         assert_eq!(detect_install_kind("D:/wordcraft-0.6.0-windows-x64-portable/wordcraft.exe", &e), InstallKind::WindowsPortableZip);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: Some(InstallKind::Unknown), os: "linux" };
+        let e = FakeEnv { flatpak: false, appimage: None, override_kind: Some(InstallKind::Unknown), linux_deb: false, os: "linux" };
         assert_eq!(detect_install_kind("/build/wordcraft", &e), InstallKind::Unknown);
     }
 
