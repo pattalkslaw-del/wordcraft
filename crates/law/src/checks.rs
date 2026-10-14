@@ -4,7 +4,7 @@ use std::sync::Once;
 
 use serde_json::{Value, json};
 use wordcraft_doc::props::LineSpacing;
-use wordcraft_doc::{Document, Paragraph, Path, Pos, StoryRef};
+use wordcraft_doc::{Document, Paragraph, PartKind, Path, Pos, StoryRef};
 use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 use wordcraft_engine::{Session, io};
 use wordcraft_pdf::{TextSearchability, text_searchability};
@@ -153,6 +153,17 @@ fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], e
         if story == StoryRef::Body {
             continue;
         }
+        // A text box belonging to an excluded section (a label on the cover, say) is part of that
+        // section: leave it out with the section's other words. Notes have no text-box anchor and
+        // are counted, as FRAP's word count includes footnotes and endnotes.
+        if let StoryRef::Part(id) = story
+            && let Some(anchor) = doc.text_box_anchor(id)
+            && let Some(pi) = body_paths.iter().position(|p| p == &anchor.path)
+            && let Some(sec) = section_at_paragraph(&body_paths, pi, sections)
+            && exclude.contains(&sec.as_str())
+        {
+            continue;
+        }
         for path in doc.para_paths(story) {
             if let Some(p) = doc.para(story, &path) {
                 total = total.saturating_add(para_words(p) as u32);
@@ -277,34 +288,57 @@ fn min_line_spacing(doc: &Document, spec: &DocSpec, check: &CheckSpec, id: &str,
     } else {
         check.except_styles.clone()
     };
-    for path in doc.para_paths(StoryRef::Body) {
-        let Some(para) = doc.para(StoryRef::Body, &path) else { continue };
-        // A single-spaced exception may be tighter than the body's minimum, but it still may not
-        // go below single spacing: a Heading at 0.5 is reported, one at 1.0 is not.
-        let is_exception = except.iter().any(|n| para_style_name(doc, para).is_some_and(|s| s.eq_ignore_ascii_case(n)));
-        let floor = if is_exception { SINGLE_SPACING } else { min_mult };
-        let rp = doc.styles.resolve_para(&para.props);
-        let natural = para_natural_line_height(doc, para);
-        let mult = effective_line_spacing_multiple(rp.line_spacing, natural);
-        match mult {
-            None => {
-                let start = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
-                let end = Pos { story: StoryRef::Body, path: path.clone(), off: para.text.len() };
-                let source = &check.source;
-                out.push(Finding::at(id, "error", format!("Line spacing could not be verified against the minimum {floor} ({source})"), start, end));
+    // The body and the text boxes it shows: body-flow text, wherever the document keeps it.
+    // Footnotes and endnotes have their own spacing conventions and are not brief body text.
+    for story in body_flow_stories(doc) {
+        for path in doc.para_paths(story) {
+            let Some(para) = doc.para(story, &path) else { continue };
+            // A single-spaced exception may be tighter than the body's minimum, but it still may
+            // not go below single spacing: a Heading at 0.5 is reported, one at 1.0 is not.
+            let is_exception = except.iter().any(|n| para_style_name(doc, para).is_some_and(|s| s.eq_ignore_ascii_case(n)));
+            let floor = if is_exception { SINGLE_SPACING } else { min_mult };
+            let rp = doc.styles.resolve_para(&para.props);
+            let natural = para_natural_line_height(doc, para);
+            let mult = effective_line_spacing_multiple(rp.line_spacing, natural);
+            match mult {
+                None => {
+                    let start = Pos { story, path: path.clone(), off: 0 };
+                    let end = Pos { story, path: path.clone(), off: para.text.len() };
+                    let source = &check.source;
+                    out.push(Finding::at(
+                        id,
+                        "error",
+                        format!("Line spacing could not be verified against the minimum {floor} ({source})"),
+                        start,
+                        end,
+                    ));
+                }
+                Some(m) if m + 0.01 < floor => {
+                    let start = Pos { story, path: path.clone(), off: 0 };
+                    let end = Pos { story, path: path.clone(), off: para.text.len() };
+                    let source = &check.source;
+                    out.push(Finding::at(id, "error", format!("Line spacing {m} is below the minimum {floor} ({source})"), start, end));
+                }
+                _ => {}
             }
-            Some(m) if m + 0.01 < floor => {
-                let start = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
-                let end = Pos { story: StoryRef::Body, path: path.clone(), off: para.text.len() };
-                let source = &check.source;
-                out.push(Finding::at(id, "error", format!("Line spacing {m} is below the minimum {floor} ({source})"), start, end));
+            if out.len() >= MAX_FINDINGS {
+                return;
             }
-            _ => {}
-        }
-        if out.len() >= MAX_FINDINGS {
-            return;
         }
     }
+}
+
+/// The stories that carry the document's own body text: the body plus every text box it shows.
+/// Headers, footers, footnotes, endnotes and comments are not brief body text (and a story nothing
+/// points at is not shown at all).
+fn body_flow_stories(doc: &Document) -> Vec<StoryRef> {
+    doc.counted_stories()
+        .into_iter()
+        .filter(|s| match s {
+            StoryRef::Body => true,
+            StoryRef::Part(id) => doc.parts.get(id).is_some_and(|p| p.kind == PartKind::TextBox),
+        })
+        .collect()
 }
 
 /// Approximate single-spaced line height (ascender + descender) from the paragraph's runs.
@@ -370,16 +404,20 @@ fn text_searchable_pdf(doc: &Document, id: &str, export_opts: Option<&io::Export
 /// text-searchable. Split out so tests can hand it bytes no exporter would produce (a font-only
 /// PDF, say) and see the matching finding.
 pub(crate) fn searchability_finding(bytes: &[u8], check_id: &str) -> Option<Finding> {
-    match text_searchability(bytes) {
+    finding_for_verdict(text_searchability(bytes), check_id)
+}
+
+fn finding_for_verdict(verdict: TextSearchability, check_id: &str) -> Option<Finding> {
+    match verdict {
         TextSearchability::Searchable => None,
         TextSearchability::NotSearchable => Some(Finding::error(check_id, "PDF export is not text-searchable")),
-        TextSearchability::Unavailable => Some(Finding {
-            check_id: check_id.into(),
-            severity: "warning".into(),
-            message: "Text-searchability could not be verified on this build (no PDF text extractor available)".into(),
-            start: None,
-            end: None,
-        }),
+        TextSearchability::Uncertain => Some(Finding::warning(
+            check_id,
+            "PDF text coverage could not be verified: a page is dominated by a picture and its text may be a caption beside a scan",
+        )),
+        TextSearchability::Unavailable => {
+            Some(Finding::warning(check_id, "Text-searchability could not be verified on this build (no PDF text extractor available)"))
+        }
     }
 }
 
@@ -416,6 +454,18 @@ pub fn register_document_hook() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An uncertain text layer (a page dominated by a picture) is reported as a warning, never as
+    /// a silent pass; a definite verdict keeps its error/None.
+    #[test]
+    fn unverifiable_pdf_coverage_is_reported_as_a_warning() {
+        let uncertain = finding_for_verdict(TextSearchability::Uncertain, "textSearchablePdf").expect("a finding");
+        assert_eq!(uncertain.check_id, "textSearchablePdf");
+        assert_eq!(uncertain.severity, "warning");
+        assert!(finding_for_verdict(TextSearchability::Searchable, "textSearchablePdf").is_none());
+        assert_eq!(finding_for_verdict(TextSearchability::NotSearchable, "x").map(|f| f.severity), Some("error".into()));
+        assert_eq!(finding_for_verdict(TextSearchability::Unavailable, "x").map(|f| f.severity), Some("warning".into()));
+    }
 
     #[test]
     fn line_spacing_effective_multiple() {

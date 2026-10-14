@@ -39,20 +39,26 @@ pub fn extract_page_text(_bytes: &[u8]) -> Result<Vec<String>, String> {
 pub enum TextSearchability {
     /// The bytes carry extractable document text.
     Searchable,
-    /// The bytes are a PDF with no extractable text (for example, a scan of images).
+    /// The bytes are a PDF with no extractable text (for example, a scan of images), or a page
+    /// carries only a caption beside a scan.
     NotSearchable,
+    /// The bytes carry text, but at least one page draws a picture that dominates it and its text
+    /// is neither clearly the page's own content nor clearly a caption: coverage cannot be
+    /// verified. This is **not** the same as success.
+    Uncertain,
     /// This build cannot inspect PDF text at all (wasm has no PDF interpreter); verification is
     /// unavailable, which is **not** the same as success.
     Unavailable,
 }
 
 impl TextSearchability {
-    /// `Some(true)`/`Some(false)` when the PDF was actually inspected, `None` when it could not be.
+    /// `Some(true)`/`Some(false)` when the PDF was actually inspected and the answer is definite,
+    /// `None` when it could not be verified (an uncertain page, or a build with no extractor).
     pub fn is_searchable(self) -> Option<bool> {
         match self {
             TextSearchability::Searchable => Some(true),
             TextSearchability::NotSearchable => Some(false),
-            TextSearchability::Unavailable => None,
+            TextSearchability::Uncertain | TextSearchability::Unavailable => None,
         }
     }
 }
@@ -74,7 +80,11 @@ pub fn text_searchability(bytes: &[u8]) -> TextSearchability {
     if bytes.len() < 8 || !bytes.starts_with(b"%PDF") {
         return TextSearchability::NotSearchable;
     }
-    searchability_verdict(Some(extract::has_extractable_text(bytes)))
+    match extract::extract_verdict(bytes) {
+        extract::Verdict::Searchable => TextSearchability::Searchable,
+        extract::Verdict::NotSearchable => TextSearchability::NotSearchable,
+        extract::Verdict::Uncertain => TextSearchability::Uncertain,
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -7,8 +7,8 @@ use hayro_interpret::{
 };
 use hayro_syntax::Pdf;
 
-/// What one page yielded: its text, the text outside page furniture, and whether it drew a
-/// picture of its own.
+/// What one page yielded: its text, the text outside page furniture, and how much of the page
+/// its own pictures cover (so a scan can be told from a figure beside real text).
 struct PageText {
     /// Every glyph drawn, page furniture (headers, footers, watermarks) included.
     all: String,
@@ -16,12 +16,17 @@ struct PageText {
     content: String,
     /// A picture outside artifact-marked content was drawn: a scan, photograph or figure.
     image: bool,
+    /// Page-space area covered by pictures outside artifact-marked content, clamped finite.
+    image_area: f64,
+    /// The page's own area (its intersected crop box), used to judge picture coverage.
+    page_area: f64,
 }
 
 struct Extractor {
     all: String,
     content: String,
     image: bool,
+    image_area: f64,
     /// Marked-content nesting, innermost last; `true` where the sequence is an artifact.
     marks: Vec<bool>,
 }
@@ -64,10 +69,14 @@ impl Device<'_> for Extractor {
             }
         }
     }
-    fn draw_image(&mut self, _: Image<'_, '_>, _: kurbo::Affine) {
+    fn draw_image(&mut self, image: Image<'_, '_>, transform: kurbo::Affine) {
         // Page furniture can carry a logo or watermark image; that is not document content.
         if !self.in_artifact() {
             self.image = true;
+            let area = placed_image_area(&image, transform);
+            if area.is_finite() && area > 0.0 {
+                self.image_area = (self.image_area + area).min(MAX_AREA);
+            }
         }
     }
     fn pop_clip_path(&mut self) {}
@@ -81,6 +90,38 @@ impl Device<'_> for Extractor {
     }
 }
 
+/// Cap on a page's counted picture area, so a hostile transform can't overflow the sum.
+const MAX_AREA: f64 = 1.0e12;
+
+/// The page-space area a picture covers. The interpreter's transform maps the picture's own pixel
+/// space to the page, so the placed rectangle's bounding box is the picture's extent. Anything
+/// non-finite or empty counts as no coverage.
+fn placed_image_area(image: &Image<'_, '_>, transform: kurbo::Affine) -> f64 {
+    let w = image.width() as f64;
+    let h = image.height() as f64;
+    if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
+        return 0.0;
+    }
+    let corners = [
+        transform * kurbo::Point::new(0.0, 0.0),
+        transform * kurbo::Point::new(w, 0.0),
+        transform * kurbo::Point::new(0.0, h),
+        transform * kurbo::Point::new(w, h),
+    ];
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for p in corners {
+        if !p.x.is_finite() || !p.y.is_finite() {
+            return 0.0;
+        }
+        min_x = min_x.min(p.x);
+        min_y = min_y.min(p.y);
+        max_x = max_x.max(p.x);
+        max_y = max_y.max(p.y);
+    }
+    let area = (max_x - min_x) * (max_y - min_y);
+    if area.is_finite() { area.max(0.0) } else { 0.0 }
+}
+
 /// Per page, the text inside and outside artifact-marked content, and whether the page drew a
 /// picture of its own.
 fn extract_pages(bytes: &[u8]) -> Result<Vec<PageText>, String> {
@@ -92,39 +133,105 @@ fn extract_pages(bytes: &[u8]) -> Result<Vec<PageText>, String> {
     let mut out = Vec::new();
     for page in pdf.pages().iter() {
         let mut ctx = Context::new(kurbo::Affine::IDENTITY, kurbo::Rect::new(0.0, 0.0, 1.0, 1.0), &cache, pdf.xref(), InterpreterSettings::default());
-        let mut ex = Extractor { all: String::new(), content: String::new(), image: false, marks: Vec::new() };
+        let mut ex = Extractor { all: String::new(), content: String::new(), image: false, image_area: 0.0, marks: Vec::new() };
         interpret_page(page, &mut ctx, &mut ex);
-        out.push(PageText { all: ex.all, content: ex.content, image: ex.image });
+        let box_ = page.intersected_crop_box();
+        let page_area = (box_.width().max(0.0) * box_.height().max(0.0)).min(MAX_AREA);
+        out.push(PageText { all: ex.all, content: ex.content, image: ex.image, image_area: ex.image_area, page_area });
     }
     Ok(out)
 }
 
 /// Unicode extracted from every page (empty strings for pages with no text), page furniture
-/// included. [`has_extractable_text`] is what judges a PDF's text layer, leaving furniture out.
+/// included. [`extract_verdict`] is what judges a PDF's text layer, leaving furniture out.
 pub fn extract_page_text(bytes: &[u8]) -> Result<Vec<String>, String> {
     Ok(extract_pages(bytes)?.into_iter().map(|p| p.all).collect())
 }
 
-/// True when the PDF carries searchable document text on every page that has content.
+/// How much of a page a picture has to cover before a page with only a little text on it is read
+/// as a scan rather than a text page with a small figure.
+const SCAN_COVERAGE: f64 = 0.15;
+/// Fewer words than this beside a page-dominating picture is a caption, not the page's content.
+const CAPTION_WORDS: usize = 4;
+/// At least this many words beside a page-dominating picture is the page's own text (body text or
+/// an OCR layer), so the page carries searchable content.
+const CONTENT_WORDS: usize = 25;
+
+/// What a PDF's text layer looks like once every page is considered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Every page carries document text, or is blank or furniture-only.
+    Searchable,
+    /// At least one page carries no document text, or only a caption beside a scan.
+    NotSearchable,
+    /// A page draws a picture that dominates it and carries text that is neither clearly the
+    /// page's content nor clearly a caption: its text layer cannot be verified.
+    Uncertain,
+}
+
+/// Judge a PDF's text layer page by page.
 ///
 /// A page counts as carrying document text when it has letters of its own outside artifact-marked
 /// furniture. A lone page number is numeric and stays furniture, whether or not the producer
-/// tagged it; a word — however short — is document text. There is no minimum document length, so
-/// a fully extractable one-line document is searchable.
+/// tagged it; a word is document text. There is no minimum document length, so a fully extractable
+/// one-line document is searchable.
 ///
-/// Coverage is what matters, not a single page: every page that draws a picture of its own (a
-/// scan, photograph or figure, outside page furniture) must also carry such text, so a searchable
-/// cover followed by scanned body pages is **not** searchable, while blank and furniture-only
-/// pages are allowed.
-pub fn has_extractable_text(bytes: &[u8]) -> bool {
-    match extract_pages(bytes) {
-        Ok(pages) => {
-            let any_text = pages.iter().any(|p| has_substantive_text(&p.content));
-            let every_content_page_is_text = pages.iter().all(|p| !p.image || has_substantive_text(&p.content));
-            any_text && every_content_page_is_text
+/// Coverage is what matters, not a single page: a page that draws a picture of its own (a scan,
+/// photograph or figure, outside page furniture) and covers most of the page must also carry
+/// enough text to be its content, not a caption beside a scan — so a searchable cover followed by
+/// scanned body pages is **not** searchable, while blank and furniture-only pages are allowed.
+pub fn extract_verdict(bytes: &[u8]) -> Verdict {
+    let Ok(pages) = extract_pages(bytes) else { return Verdict::NotSearchable };
+    let mut any_text = false;
+    let mut uncertain = false;
+    for page in &pages {
+        match page_coverage(page) {
+            Coverage::Covered => {}
+            Coverage::Incidental => return Verdict::NotSearchable,
+            Coverage::Uncertain => uncertain = true,
         }
-        Err(_) => false,
+        if has_substantive_text(&page.content) {
+            any_text = true;
+        }
     }
+    if !any_text {
+        return Verdict::NotSearchable;
+    }
+    if uncertain { Verdict::Uncertain } else { Verdict::Searchable }
+}
+
+/// One page's text coverage: its own words against any picture that dominates it.
+enum Coverage {
+    Covered,
+    Incidental,
+    Uncertain,
+}
+
+fn page_coverage(page: &PageText) -> Coverage {
+    if !page.image {
+        // A page with its own text, or a blank or furniture-only page, never leaves a gap; the
+        // document-wide "any text at all" rule is what rejects a PDF with no text layer.
+        return Coverage::Covered;
+    }
+    let coverage = if page.page_area > 0.0 && page.image_area.is_finite() { (page.image_area / page.page_area).clamp(0.0, 1.0) } else { 1.0 };
+    if coverage < SCAN_COVERAGE {
+        // A small figure; the text beside it is the page's own content.
+        return Coverage::Covered;
+    }
+    let words = word_count(&page.content);
+    if words >= CONTENT_WORDS {
+        Coverage::Covered
+    } else if words <= CAPTION_WORDS {
+        Coverage::Incidental
+    } else {
+        Coverage::Uncertain
+    }
+}
+
+/// Words in the page's own text: a run of non-space characters that has a letter, so a numeric
+/// page number or stamp stays furniture.
+fn word_count(content: &str) -> usize {
+    content.split_whitespace().filter(|w| w.chars().any(char::is_alphabetic)).count()
 }
 
 /// Does the page's own text (outside page furniture) contain letters? A page number or a numeric

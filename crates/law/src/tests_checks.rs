@@ -1,7 +1,7 @@
 //! Court profile checks: compliant and violating documents per bundled profile.
 
 use serde_json::{Value, json};
-use wordcraft_doc::StoryRef;
+use wordcraft_doc::{CharProps, Document, Paragraph, StoryRef, para_block};
 use wordcraft_engine::Session;
 
 use crate::cmd::store;
@@ -222,6 +222,58 @@ fn word_limit_counts_included_sections_only() {
     assert!(f.iter().any(|x| x.check_id == "wordLimit"), "one over the limit must fail: {f:?}");
 }
 
+/// The bundled word limits are exercised at their real production boundaries, not a lowered test
+/// value: exactly the limit passes, one word more fails, for every bundled limit.
+#[test]
+fn bundled_word_limits_are_exact_at_their_production_values() {
+    let cases = [
+        (MISSOURI, "brief", 31_000u32),
+        (MISSOURI, "respondentBrief", 27_900),
+        (MISSOURI, "reply", 7_750),
+        (FEDERAL, "brief", 13_000),
+        (FEDERAL, "reply", 6_500),
+    ];
+    for (id, doc_type, limit) in cases {
+        let profile = store().get(id).expect("profile").clone();
+        let words = |n: usize| {
+            let text = vec!["word"; n].join(" ");
+            let mut d = Document::new();
+            d.body = vec![para_block(Paragraph::with_text(&text, CharProps::default()))];
+            d
+        };
+        let at = crate::checks::evaluate(&words(limit as usize), &profile, doc_type, false, false, None).expect("evaluate");
+        assert!(!at.iter().any(|x| x.check_id == "wordLimit"), "{id}/{doc_type}: exactly {limit} words must pass");
+        let over = crate::checks::evaluate(&words(limit as usize + 1), &profile, doc_type, false, false, None).expect("evaluate");
+        assert!(over.iter().any(|x| x.check_id == "wordLimit"), "{id}/{doc_type}: {} words must fail", limit + 1);
+    }
+}
+
+/// A text box under an excluded section (a label on the cover) is left out of the word count, and
+/// one under a counted section is counted — text boxes belong to the section that anchors them.
+#[test]
+fn text_boxes_follow_their_section_for_the_word_limit() {
+    let mut profile = store().get(MISSOURI).expect("profile").clone();
+    let brief = profile.docs.get_mut("brief").expect("brief");
+    let wl = brief.checks.iter_mut().find(|c| c.kind == "wordLimit").expect("a word limit");
+    wl.limit = Some(2);
+
+    // Under the excluded Cover: the box's ten words do not count.
+    let mut s = apply_session(MISSOURI, "brief");
+    run(&mut s, "styles.apply", json!({"style": "Heading"}));
+    run(&mut s, "text.insert", json!({"text": "Cover\r"}));
+    run(&mut s, "insert.textBox", json!({"text": "one two three four five six seven eight nine ten"}));
+    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, false, None).expect("evaluate");
+    assert!(!f.iter().any(|x| x.check_id == "wordLimit"), "a text box under the excluded cover must not count: {f:?}");
+
+    // Under a counted heading: the box's ten words do count.
+    let mut s = apply_session(MISSOURI, "brief");
+    run(&mut s, "styles.apply", json!({"style": "Heading"}));
+    run(&mut s, "text.insert", json!({"text": "Argument\r"}));
+    run(&mut s, "insert.textBox", json!({"text": "one two three four five six seven eight nine ten"}));
+    let f = crate::checks::evaluate(&s.doc, &profile, "brief", false, false, None).expect("evaluate");
+    assert!(f.iter().any(|x| x.check_id == "wordLimit"), "a text box under a counted heading must count: {f:?}");
+}
+
 #[test]
 fn each_missouri_check_fires_on_a_violation() {
     let profile = store().get(MISSOURI).expect("profile").clone();
@@ -333,6 +385,37 @@ fn exact_line_spacing_below_minimum_fails() {
     run(&mut s, "para.lineSpacing", json!({"exactly": 12}));
     run(&mut s, "text.insert", json!({"text": "Tight body line.\r"}));
     assert!(has_check(&findings(&mut s, MISSOURI, "brief", false), "minLineSpacing"));
+}
+
+/// Body text placed in a text box is still body text: a single-spaced box violates Missouri's
+/// 1.5-spacing rule and Federal's double-spacing rule, exactly as a single-spaced body paragraph
+/// does. Text boxes live in their own part stories, so the check cannot look at the body alone.
+#[test]
+fn text_box_line_spacing_is_checked() {
+    for (id, doc_type) in [(MISSOURI, "brief"), (FEDERAL, "brief")] {
+        let profile = store().get(id).expect("profile").clone();
+        let mut s = apply_session(id, doc_type);
+        write_skeleton(&mut s, &profile, doc_type);
+        run(&mut s, "insert.textBox", json!({"text": "A tight box."}));
+        run(&mut s, "styles.apply", json!({"style": "Body"}));
+        run(&mut s, "para.lineSpacing", json!({"value": 1}));
+        let f = findings(&mut s, id, doc_type, false);
+        assert!(has_check(&f, "minLineSpacing"), "{id}: a single-spaced text box must be reported: {f:?}");
+    }
+}
+
+/// The profile's single-spaced exceptions apply inside a text box too: a Caption-styled box at
+/// single spacing is allowed, like any other caption.
+#[test]
+fn text_box_single_spaced_exceptions_are_allowed() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    run(&mut s, "insert.textBox", json!({"text": "A caption box."}));
+    run(&mut s, "styles.apply", json!({"style": "Caption"}));
+    run(&mut s, "para.lineSpacing", json!({"value": 1}));
+    let f = findings(&mut s, MISSOURI, "brief", false);
+    assert!(!has_check(&f, "minLineSpacing"), "a single-spaced caption text box is allowed: {f:?}");
 }
 
 #[test]
@@ -452,6 +535,39 @@ fn non_pdf_export_runs_document_checks_not_pdf_verification() {
     // The findings are surfaced the same way as any other lint finding.
     let issues = run(&mut s, "review.issues", json!({}));
     assert!(issues.as_array().expect("issues").iter().any(|x| x["kind"] == "lint" && x["checkId"] == "noHyperlinks"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Exporting a page as PNG runs the applied profile's checks too, but never the PDF verification:
+/// a PNG is not a PDF copy.
+#[test]
+fn png_export_runs_document_checks_not_pdf_verification() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    run(&mut s, "insert.link", json!({"url": "https://example.com", "text": "x"}));
+    let dir = super::tests::temp_dir("export-png-checks");
+    let path = dir.join("brief.png");
+    let r = run(&mut s, "file.exportPng", json!({"path": path.to_string_lossy()}));
+    let f = r["findings"].as_array().expect("export findings");
+    assert!(f.iter().any(|x| x["checkId"] == "noHyperlinks"), "a PNG export still runs document checks: {f:?}");
+    assert!(!f.iter().any(|x| x["checkId"] == "textSearchablePdf"), "PDF verification must not run for a PNG export: {f:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Printing to PDF is an export too: the applied profile's checks run, and the PDF verification
+/// runs with them because the output is a PDF.
+#[test]
+fn print_pdf_export_runs_checks() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    run(&mut s, "insert.link", json!({"url": "https://example.com", "text": "x"}));
+    let dir = super::tests::temp_dir("export-print-checks");
+    let path = dir.join("brief.pdf");
+    let r = run(&mut s, "file.printPdf", json!({"path": path.to_string_lossy()}));
+    let f = r["findings"].as_array().expect("export findings");
+    assert!(f.iter().any(|x| x["checkId"] == "noHyperlinks"), "a print-to-PDF still runs the checks: {f:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

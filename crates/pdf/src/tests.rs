@@ -167,6 +167,69 @@ fn a_searchable_cover_with_scanned_body_pages_is_not_searchable() {
     assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable, "a scanned body page leaves the PDF unsearchable");
 }
 
+/// A scan with a caption beside it is still not text-searchable: the caption extracts, but the
+/// scanned writing it labels does not. This is the case a bare "any alphabetic text" rule passed.
+#[test]
+fn a_scan_with_a_caption_is_not_searchable() {
+    let mut d = Document::new();
+    let media = d.add_media(png(), "png");
+    let mut scan = Paragraph::with_text("", CharProps::default());
+    scan.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    // The caption lands on the same page as the scan it labels.
+    d.body = vec![para_block(scan), para_block(Paragraph::with_text("Exhibit A", CharProps::default()))];
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    assert_eq!(extract_text(&bytes).len(), 1, "the scan and its caption share a page");
+    assert!(squash(&extract_text(&bytes).concat()).contains("Exhibit A"), "the caption is extractable");
+    assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable, "a caption beside a scan must not certify the scan as searchable");
+}
+
+/// A page dominated by a picture with text that is neither clearly its content nor clearly a
+/// caption cannot be verified: the PDF is reported as uncertain, not as searchable.
+#[test]
+fn a_dominant_picture_with_some_text_is_uncertain() {
+    let mut d = Document::new();
+    let media = d.add_media(png(), "png");
+    let mut scan = Paragraph::with_text("", CharProps::default());
+    scan.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    // Ten words: more than a caption, less than a page's own text.
+    d.body = vec![para_block(scan), para_block(Paragraph::with_text("one two three four five six seven eight nine ten", CharProps::default()))];
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    assert_eq!(text_searchability(&bytes), TextSearchability::Uncertain);
+    assert_eq!(text_searchability(&bytes).is_searchable(), None);
+}
+
+/// A small figure beside a caption is not a scan: the picture does not dominate the page, so the
+/// caption is the page's own content and the PDF stays searchable.
+#[test]
+fn a_small_figure_with_a_caption_stays_searchable() {
+    let mut d = Document::new();
+    let media = d.add_media(png(), "png");
+    let mut figure = Paragraph::with_text("Figure 1: ", CharProps::default());
+    let n = figure.len();
+    figure
+        .insert_object(
+            n,
+            InlineObject::Image { media, w: 80.0, h: 40.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+            &CharProps::default(),
+        )
+        .unwrap();
+    let n = figure.len();
+    figure.insert_text(n, "gradient", &CharProps::default()).unwrap();
+    d.body = vec![para_block(figure)];
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
+}
+
 /// There is no minimum document length: a fully extractable one-line document (far under any
 /// earlier character threshold) is searchable.
 #[test]

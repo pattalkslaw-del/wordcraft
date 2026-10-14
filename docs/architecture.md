@@ -28,7 +28,7 @@ winit or rfd.
 | L4 | `zotero` | 1.7k | Zotero's word-processor integration protocol answered against a `Session` |
 | L4 | `control-key` | 0.1k | Per-window control-port key files shared by the app and the MCP bridge |
 | L5 | `mcp` | 1.0k | MCP server: every command as a tool; headless or bridged to the running app |
-| L5 | `law` | 1.9k | LawCraft: court profiles as JSON data (`law.profiles.*` commands), applied through the engine's own style and layout commands ([`law.md`](law.md)) |
+| L5 | `law` | 2.1k | LawCraft: court profiles as JSON data (`law.profiles.*`) and the checks engine (`law.checks.run`), applied through the engine's own style and layout commands ([`law.md`](law.md)) |
 | L6 | `ui-egui` | 13.1k | Word-style front end: ribbon, keytips, mini-toolbar, Backstage, canvas, rulers, panes, dialogs, Equation tab, i18n catalogs, themes, control channel, headless `ui_shot` example |
 | apps | `wordcraft` | 1.6k | Desktop app (eframe + wgpu; logging, window geometry, file associations) |
 | apps | `wordcraft-cli` | 0.4k | `convert`, `text`, `inspect`, `run`, `commands`, `parity`, `mcp`, `zotero` |
@@ -74,6 +74,7 @@ one. See [`law.md`](law.md).
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-13 | minor | The `law` module's checks engine: `law.checks.run`, findings through the engine's lint storage and pre-export check hook, and a text/PDF searchability verdict used by court checks |
 | 2026-10-13 | minor | The `law` module (LawCraft court profiles) and the engine hooks it needs: `Session::install_commands`, `Prefs::modules`, `styles.create {apply}` |
 | 2026-10-10 | minor | `proof`: proofing languages (English, Polish), affix engine, Polish patterns; layout and engine route each run by its language |
 | 2026-10-10 | major | First committed architecture doc, from the crates' sources and `AGENTS.md` |

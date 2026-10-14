@@ -26,6 +26,10 @@ impl Finding {
         Finding { check_id: check_id.into(), severity: "error".into(), message: message.into(), start: None, end: None }
     }
 
+    pub fn warning(check_id: impl Into<String>, message: impl Into<String>) -> Self {
+        Finding { check_id: check_id.into(), severity: "warning".into(), message: message.into(), start: None, end: None }
+    }
+
     pub fn at(check_id: impl Into<String>, severity: impl Into<String>, message: impl Into<String>, start: Pos, end: Pos) -> Self {
         Finding { check_id: check_id.into(), severity: severity.into(), message: message.into(), start: Some(start), end: Some(end) }
     }
@@ -58,9 +62,12 @@ mod tests {
         let mut s = crate::Session::new(Document::new());
         let start = Pos { story: StoryRef::Body, path: wordcraft_doc::Path::top(0), off: 0 };
         let end = Pos { story: StoryRef::Body, path: wordcraft_doc::Path::top(0), off: 1 };
-        s.set_lint_findings(vec![Finding::at("testRule", "warning", "example", start, end)]);
+        let warn = Finding::warning("warnRule", "careful");
+        assert_eq!(warn.severity, "warning");
+        assert!(warn.start.is_none() && warn.end.is_none());
+        s.set_lint_findings(vec![Finding::at("testRule", "warning", "example", start, end), warn]);
         let v = s.run("review.lintFindings", &serde_json::json!({})).expect("lint");
-        assert_eq!(v.as_array().map(Vec::len), Some(1));
+        assert_eq!(v.as_array().map(Vec::len), Some(2));
         let issues = s.run("review.issues", &serde_json::json!({})).expect("issues");
         assert!(issues.as_array().is_some_and(|a| a.iter().any(|i| i["kind"] == "lint")));
     }
