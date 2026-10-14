@@ -479,6 +479,11 @@ pub struct Settings {
     pub attached_template: Option<String>,
     /// Update the document's styles from the attached template when it is opened (`w:linkStyles`).
     pub link_styles: bool,
+    /// Document variables (`w:docVars`, ECMA-376 §17.15.1.20): name/value pairs that Word and other
+    /// readers keep with the document. WordCraft also stores per-section properties that have no
+    /// `w:sectPr` slot here (see [`section::PAGE_NUM_PREFIX_DOCVAR`]); those are consumed on read.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub doc_vars: Vec<(String, String)>,
 }
 
 /// Word's compatibility mode for documents that don't state one.
@@ -556,6 +561,7 @@ impl Default for Settings {
             bib_style: None,
             attached_template: None,
             link_styles: false,
+            doc_vars: Vec::new(),
         }
     }
 }

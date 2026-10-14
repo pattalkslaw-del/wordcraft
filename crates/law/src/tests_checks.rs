@@ -120,6 +120,23 @@ fn missouri_respondent_and_reply_violations_are_reported() {
     }
 }
 
+/// Missouri appendix: margins and font checks (no word limit on the exhibit volume).
+#[test]
+fn missouri_appendix_violations_are_reported() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = apply_session(MISSOURI, "appendix");
+    write_skeleton(&mut s, &profile, "appendix");
+    run(&mut s, "format.size", json!({"size": 10}));
+    run(&mut s, "text.insert", json!({"text": "tiny"}));
+    assert!(has_check(&findings(&mut s, MISSOURI, "appendix", false), "minFontSize"));
+    let mut s = apply_session(MISSOURI, "appendix");
+    write_skeleton(&mut s, &profile, "appendix");
+    assert!(s.run("layout.margins", &json!({"top": 36})).is_ok());
+    assert!(has_check(&findings(&mut s, MISSOURI, "appendix", false), "minMargins"));
+    let kinds: Vec<&str> = profile.docs.get("appendix").expect("appendix").checks.iter().map(|c| c.kind.as_str()).collect();
+    assert!(!kinds.contains(&"wordLimit"), "appendix has no word limit: {kinds:?}");
+}
+
 /// Federal violations beyond the type size: margins, spacing and section order.
 #[test]
 fn federal_checks_fire_beyond_font_size() {

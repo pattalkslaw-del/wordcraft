@@ -63,6 +63,7 @@ pub fn settings_dir() -> Option<PathBuf> {
 }
 
 /// The commands, for [`wordcraft_engine::Session::install_commands`].
+/// Profile and check commands (appendix commands are in [`crate::appendix`]).
 pub fn specs() -> Vec<CommandSpec> {
     let mut v = symbols::specs();
     v.extend([
