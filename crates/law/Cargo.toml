@@ -16,6 +16,7 @@ wordcraft-geom = { workspace = true }
 wordcraft-control-key = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+regex = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 

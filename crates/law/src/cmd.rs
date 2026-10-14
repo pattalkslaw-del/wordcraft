@@ -8,6 +8,7 @@
 //! A profile created or updated through these commands is always saved unverified: only
 //! `law.profiles.approve`, a person's action, verifies one.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -16,12 +17,25 @@ use wordcraft_engine::{CmdError, CommandSpec, p};
 
 use crate::apply;
 use crate::checks;
+use crate::citation_pack::CompiledPack;
+use crate::citations;
 use crate::profile::{Patch, Profile};
 use crate::store::{LawError, Store};
 
 /// Where the profile commands live in the ribbon.
 const LOC: &str = "Law › Court Profiles";
 const CHECKS_LOC: &str = "Law › Court Checks";
+const CITATIONS_LOC: &str = "Law › Citations";
+
+static PACKS: OnceLock<BTreeMap<String, CompiledPack>> = OnceLock::new();
+
+fn packs() -> &'static BTreeMap<String, CompiledPack> {
+    PACKS.get_or_init(crate::citation_pack::bundled_map)
+}
+
+fn pack_by_id(id: &str) -> Result<&'static CompiledPack, CmdError> {
+    packs().get(id).ok_or_else(|| CmdError::Failed(format!("no citation pack `{id}`")))
+}
 
 /// The profiles WordCraft knows: the ones it ships and the user's own.
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
@@ -178,6 +192,34 @@ pub fn specs() -> Vec<CommandSpec> {
         })
         .params(
             r#"{"id"?: string, "doc"?: string, "forExport"?: bool (run export-only checks such as textSearchablePdf), "format"?: string (the output extension an export is writing; `textSearchablePdf` runs only for "pdf"), "store"?: bool (default true: show findings in Review › Proofing)} → {"profile", "doc", "findings": [{checkId, severity, message, start?, end?}]}"#,
+        )
+        .pure(),
+        CommandSpec::new("law.citations.check", "Check Citation Form", CITATIONS_LOC, |s, v| {
+            let pack_id = match p::str(v, "pack") {
+                Some(id) => id.to_string(),
+                None => {
+                    let profile_id = s.doc.custom_prop(checks::PROP_PROFILE).ok_or_else(|| {
+                        CmdError::Params("`pack` (citation pack id) is required when no court profile is applied".into())
+                    })?;
+                    let store = store();
+                    let Some(profile) = store.get(profile_id) else {
+                        return Err(not_found(profile_id));
+                    };
+                    profile.citation_pack.clone().ok_or_else(|| {
+                        CmdError::Params(format!("court profile `{profile_id}` has no `citationPack`"))
+                    })?
+                }
+            };
+            let pack = pack_by_id(&pack_id)?;
+            let findings = citations::check_document(&s.doc, pack);
+            let json_findings = citations::findings_json(&findings);
+            if p::bool(v, "store").unwrap_or(true) {
+                s.set_lint_findings(findings);
+            }
+            Ok(json!({"pack": pack_id, "findings": json_findings}))
+        })
+        .params(
+            r#"{"pack"?: string (defaults to the applied court profile's citationPack), "store"?: bool (default true: show findings in Review › Proofing)} → {"pack", "findings": [{checkId, severity, message, start?, end?}]}"#,
         )
         .pure(),
     ]

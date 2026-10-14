@@ -4,6 +4,7 @@
   "name": "Federal appellate brief",
   "jurisdiction": "Federal (FRAP)",
   "verified": true,
+  "citationPack": "federal",
   "docs": {
     "brief": {
       "label": "Principal brief",
