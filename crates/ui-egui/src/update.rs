@@ -267,11 +267,11 @@ fn apply_install_result(app: &mut WordApp, v: Result<Value, String>) -> bool {
                 }
                 app.update_feedback(text);
                 false
-            } else if app.session.dirty {
-                app.update_feedback(tl!("Save or discard unsaved changes before updating."));
-                false
             } else {
                 // Only MSI / .deb one-click handoffs quit; macOS opens the `.dmg` in Finder.
+                // The pending quit is kept even when the document is dirty (the user may have
+                // edited while the worker ran): the ordinary close path prompts for unsaved
+                // changes. Dropping it here would leave a finished update unable to restart (#15).
                 should_quit_after_successful_apply(&v)
             }
         }
@@ -491,14 +491,30 @@ mod tests {
         assert!(n.one_click);
     }
 
+    /// The update starts on a clean document, but the user edits while the worker runs (download
+    /// and install happen off the UI thread). The document is dirty when the install finishes, so
+    /// dropping the quit there would leave the finished update unable to restart; the pending quit
+    /// must survive and the ordinary close path show the save prompt (#15 review).
     #[test]
-    fn worker_apply_with_dirty_document_does_not_request_quit() {
+    fn update_quit_after_edits_made_while_the_worker_runs_still_prompts() {
         let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        // Edited after the update was queued and before the worker finished.
         app.session.dirty = true;
-        let done = WorkerDone { result: Ok(json!({"status": "available"})), prefs: UpdatePrefs::default(), ui_requests: vec![json!({"quit": true})] };
+        let done = WorkerDone {
+            result: Ok(json!({"status": "available", "release": {"oneClick": true}})),
+            prefs: UpdatePrefs::default(),
+            ui_requests: vec![json!({"quit": true})],
+        };
         let _ = apply_worker_result(&mut app, done, false, true);
-        assert!(!app.quit_requested, "edits after the save prompt must block quitting");
-        assert!(!app.update.quit_pending, "and no quit is left pending");
+        assert!(app.update.quit_pending, "a successful one-click update keeps the quit for the close path");
+        assert!(!app.quit_requested, "the close path, not a direct quit, runs");
+        assert!(!app.update_quit_requested(), "unsaved edits block the close");
+        assert!(matches!(app.dialog, Some(crate::dialogs::Dialog::SaveChanges { .. })), "the save prompt is shown");
+
+        // Cancelling keeps the document open; nothing is lost.
+        app.run("ui.saveChanges", json!({"answer": "cancel"})).unwrap();
+        assert!(!app.quit_requested, "cancelling keeps the document open");
+        assert!(!app.update.quit_pending, "the pending update quit was consumed");
     }
 
     /// A successful update sets the quit, but editing remains possible before the host acts on
