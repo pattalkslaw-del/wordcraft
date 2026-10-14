@@ -325,21 +325,34 @@ fn sections_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &s
             let name_save = resp.lost_focus() && name.trim() != stored_name.trim();
             if name_save || req != is_req {
                 app.law.section_name_drafts.remove(&draft_key);
-                let mut secs = profile["docs"][doc_key]["sections"].as_array().cloned().unwrap_or(sections.clone());
-                if let Some(s) = secs.get_mut(i).and_then(Value::as_object_mut) {
-                    s.insert("name".into(), json!(name.trim()));
+                // Commit the name by section id, not by position: an arrow click in this same frame
+                // has already reordered the sections, so `i` may now point at a neighbour.
+                if name_save {
+                    let secs = patch_section_name(profile, doc_key, sid, name.trim());
+                    save_doc(app, profile_id, doc_key, profile, json!({"sections": secs}));
                 }
                 if req != is_req {
                     set_section_required_in_profile(profile, doc_key, sid, req);
-                    if let Some(ch) = profile["docs"][doc_key]["checks"].as_array() {
-                        save_doc(app, profile_id, doc_key, profile, json!({"sections": secs, "checks": ch}));
-                        return;
-                    }
+                    let checks = profile["docs"][doc_key]["checks"].clone();
+                    save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
                 }
-                save_doc(app, profile_id, doc_key, profile, json!({"sections": secs}));
             }
         });
     }
+}
+
+/// Set one section's display name in the profile's *current* sections. The section is found by id,
+/// so a reorder that already happened this frame cannot misdirect the rename to its neighbour.
+fn patch_section_name(profile: &Value, doc_key: &str, section_id: &str, name: &str) -> Vec<Value> {
+    let mut secs = profile["docs"][doc_key]["sections"].as_array().cloned().unwrap_or_default();
+    for s in &mut secs {
+        if s.get("id").and_then(Value::as_str) == Some(section_id)
+            && let Some(o) = s.as_object_mut()
+        {
+            o.insert("name".into(), json!(name));
+        }
+    }
+    secs
 }
 
 fn required_section_ids(doc: &Value) -> Vec<String> {
@@ -401,6 +414,30 @@ fn reorder_sections(app: &mut WordApp, profile_id: &str, doc_key: &str, profile:
     save_doc(app, profile_id, doc_key, profile, json!({"sections": sections}));
 }
 
+/// The styles the profile currently holds for one document type (the up-to-date value, not the
+/// snapshot a frame started with).
+fn current_styles(profile: &Value, doc_key: &str) -> Vec<Value> {
+    profile["docs"][doc_key]["styles"].as_array().cloned().unwrap_or_default()
+}
+
+/// Merge edits into one style. It reads the profile's *current* styles, so a commit later in the
+/// same frame (the line-spacing field after the font field saved) cannot revert the earlier edit
+/// by cloning the frame's starting snapshot.
+fn patch_style(
+    app: &mut WordApp,
+    profile_id: &str,
+    doc_key: &str,
+    profile: &mut Value,
+    index: usize,
+    edit: impl FnOnce(&mut serde_json::Map<String, Value>),
+) {
+    let mut styles = current_styles(profile, doc_key);
+    if let Some(s) = styles.get_mut(index).and_then(Value::as_object_mut) {
+        edit(s);
+    }
+    save_doc(app, profile_id, doc_key, profile, json!({"styles": styles}));
+}
+
 fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str, doc: &Value, profile: &mut Value) {
     let styles = doc.get("styles").and_then(Value::as_array).cloned().unwrap_or_default();
     if styles.is_empty() {
@@ -428,8 +465,7 @@ fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     let font_dirty = font.trim() != stored_font.trim();
                     if size_changed || (font_resp.lost_focus() && font_dirty) {
                         app.law.style_font_drafts.remove(&draft_key);
-                        let mut styles = styles.clone();
-                        if let Some(s) = styles.get_mut(i).and_then(Value::as_object_mut) {
+                        patch_style(app, profile_id, doc_key, profile, i, |s| {
                             let chr = s.entry("chr").or_insert(json!({}));
                             if let Some(c) = chr.as_object_mut() {
                                 if !font.trim().is_empty() {
@@ -439,22 +475,19 @@ fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                                     c.insert("size".into(), json!(size));
                                 }
                             }
-                        }
-                        save_doc(app, profile_id, doc_key, profile, json!({"styles": styles}));
+                        });
                     }
                 });
                 let mut spacing = st.pointer("/para/lineSpacing/value").and_then(Value::as_f64).unwrap_or(0.0) as f32;
                 ui.horizontal(|ui| {
                     ui.label(tl!("Line spacing (multiple):"));
                     if ui.add(egui::DragValue::new(&mut spacing).speed(0.05).range(0.5..=4.0)).changed() {
-                        let mut styles = styles.clone();
-                        if let Some(s) = styles.get_mut(i).and_then(Value::as_object_mut) {
+                        patch_style(app, profile_id, doc_key, profile, i, |s| {
                             let para = s.entry("para").or_insert(json!({}));
                             if let Some(p) = para.as_object_mut() {
                                 p.insert("lineSpacing".into(), json!({"rule": "multiple", "value": spacing}));
                             }
-                        }
-                        save_doc(app, profile_id, doc_key, profile, json!({"styles": styles}));
+                        });
                     }
                 });
             });

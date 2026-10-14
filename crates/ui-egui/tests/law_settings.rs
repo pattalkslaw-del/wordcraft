@@ -21,7 +21,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
 use std::rc::Rc;
 use std::sync::mpsc::{Sender, channel};
 
-use egui_kittest::kittest::Queryable;
+use egui_kittest::kittest::{NodeT, Queryable};
 use serde_json::json;
 use wordcraft_doc::Document;
 use wordcraft_engine::Session;
@@ -419,6 +419,139 @@ fn editing_source_and_exclusion_together_keeps_both() {
     let check = &after["docs"]["brief"]["checks"][0];
     assert!(check["source"].as_str().unwrap_or("").ends_with("New"), "the source edit is saved: {check}");
     assert_eq!(check["excludeSections"], json!(["s1"]), "the exclusion survives the source commit: {check}");
+    assert_eq!(after["verified"], json!(false));
+}
+
+#[test]
+fn renaming_and_reordering_a_section_keeps_both_identities() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-section-reorder");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Section reorder test",
+            "jurisdiction": "Test",
+            "verified": true,
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [
+                        {"id": "first", "name": "First"},
+                        {"id": "second", "name": "Second"}
+                    ],
+                    "checks": [],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    // Rename the first section, then click its down arrow in the same frame: the blur commits the
+    // name while the arrow reorders the list.
+    h.get_by_label("1.").focus();
+    h.run_steps(2);
+    for ch in " X".chars() {
+        h.get_by_label("1.").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    let down = h.query_all_by_label("↓").find(|n| !n.accesskit_node().is_disabled()).expect("an enabled down arrow for the first section");
+    down.click();
+    h.run_steps(2);
+
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let sections = after["docs"]["brief"]["sections"].as_array().cloned().unwrap_or_default();
+    assert_eq!(sections.len(), 2);
+    assert_eq!(sections[0]["id"], json!("second"), "the renamed section moved down one place");
+    assert_eq!(sections[1]["id"], json!("first"));
+    let renamed = sections.iter().find(|s| s["id"] == json!("first")).unwrap();
+    let neighbour = sections.iter().find(|s| s["id"] == json!("second")).unwrap();
+    assert_eq!(renamed["name"], json!("First X"), "the rename follows the section's id, not its old index");
+    assert_eq!(neighbour["name"], json!("Second"), "the neighbouring section is not renamed");
+}
+
+#[test]
+fn editing_style_font_and_line_spacing_together_keeps_both() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-style-merge");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Style merge test",
+            "jurisdiction": "Test",
+            "verified": true,
+            "docs": {
+                "brief": {
+                    "styles": [{
+                        "name": "Norm1",
+                        "chr": {"font": "Old", "size": 12.0},
+                        "para": {"lineSpacing": {"rule": "multiple", "value": 1.0}}
+                    }],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    a.run("law.profiles.approve", json!({"id": id})).unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+    h.get_by_label("Norm1").click();
+    h.run_steps(4);
+
+    h.get_by_label("Font:").focus();
+    h.run_steps(2);
+    for ch in "Times New Roman".chars() {
+        h.get_by_label("Font:").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+
+    // Change the size and the line spacing in one frame. The size commits the font through the
+    // same handler; the spacing save must merge into the just-saved font, not the frame's starting
+    // styles snapshot.
+    let (size, spacing) = {
+        let spins: Vec<_> = h.query_all_by_role(egui::accesskit::Role::SpinButton).collect();
+        assert!(spins.len() >= 2, "expected size and line-spacing spin buttons, found {}", spins.len());
+        (spins[0].accesskit_node().locate(), spins[1].accesskit_node().locate())
+    };
+    // Both actions go into the same frame: `Harness::event` would give each its own frame, and
+    // the bug only appears when the two saves happen together.
+    h.input_mut().events.push(egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+        target_node: size.0,
+        target_tree: size.1,
+        action: egui::accesskit::Action::Increment,
+        data: None,
+    }));
+    h.input_mut().events.push(egui::Event::AccessKitActionRequest(egui::accesskit::ActionRequest {
+        target_node: spacing.0,
+        target_tree: spacing.1,
+        action: egui::accesskit::Action::Increment,
+        data: None,
+    }));
+    h.run_steps(2);
+
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let style = &after["docs"]["brief"]["styles"][0];
+    let font = style["chr"]["font"].as_str().unwrap_or("");
+    assert!(font.ends_with("Times New Roman"), "the font edit survives the spacing save: {style}");
+    assert!(style["chr"]["size"].as_f64().unwrap_or(0.0) > 12.0, "the size edit survives the spacing save: {style}");
+    assert!(style["para"]["lineSpacing"]["value"].as_f64().unwrap_or(0.0) > 1.0, "the line-spacing edit is saved: {style}");
     assert_eq!(after["verified"], json!(false));
 }
 
