@@ -24,6 +24,8 @@
         "xOfY": false,
         "format": "decimal"
       },
+      "toaPassim": true,
+      "toaPassimAt": 5,
       "styles": [
         {
           "name": "Normal",

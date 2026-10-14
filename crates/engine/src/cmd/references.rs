@@ -887,13 +887,30 @@ pub fn paragraph_pageref_line(
 ) -> Result<Paragraph, CmdError> {
     let mut para = Paragraph::with_text(citation, CharProps::default()).styled(style);
     para.insert_text(para.len(), "\t", &CharProps::default())?;
-    if passim && bookmarks.len() >= passim_at as usize {
+    let mut unique_pages: Vec<String> = Vec::new();
+    for p in page_results {
+        if !unique_pages.contains(p) {
+            unique_pages.push(p.clone());
+        }
+    }
+    let use_passim = passim && unique_pages.len() >= passim_at as usize;
+    if use_passim {
         para.insert_text(para.len(), "passim", &CharProps::default())?;
     } else {
         for (i, bm) in bookmarks.iter().enumerate() {
             if i > 0 {
                 para.insert_text(para.len(), ", ", &CharProps::default())?;
             }
+            let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
+            para.insert_object(
+                para.len(),
+                InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false },
+                &CharProps::default(),
+            )?;
+        }
+    }
+    if use_passim {
+        for (i, bm) in bookmarks.iter().enumerate() {
             let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
             para.insert_object(
                 para.len(),

@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use regex::Regex;
 use wordcraft_doc::{Document, Pos, StoryRef};
 use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 
@@ -34,19 +33,6 @@ struct RawHit {
     rule_id: String,
 }
 
-fn id_re() -> Option<&'static Regex> {
-    static RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\bId\.\s*(?:at\s+)?\d*").ok()).as_ref()
-}
-
-fn case_key_re() -> Option<&'static Regex> {
-    static RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(r"(?i)(\d+)\s+S\.W\.(?:2d|3d)\s+(\d+)|(\d+)\s+U\.\s*S\.\s+(\d+)|(\d+)\s+F\.(?:2d|3d|4th)\s+(\d+)|(\d+)\s+S\.\s*Ct\.\s+(\d+)").ok()
-    })
-    .as_ref()
-}
-
 /// Map a pack rule `kind` to a table-of-authorities group heading.
 pub fn group_heading(kind: &str) -> &'static str {
     match kind {
@@ -58,48 +44,49 @@ pub fn group_heading(kind: &str) -> &'static str {
     }
 }
 
-fn citation_sort_key(text: &str) -> String {
-    let t = text.trim();
-    let stripped = t
-        .strip_prefix("In re ")
-        .or_else(|| t.strip_prefix("in re "))
-        .or_else(|| t.strip_prefix("State ex rel. "))
-        .or_else(|| t.strip_prefix("state ex rel. "))
-        .or_else(|| t.strip_prefix("Ex parte "))
-        .or_else(|| t.strip_prefix("ex parte "))
-        .unwrap_or(t);
-    stripped.to_string()
+fn sort_key_for_label(pack: &CompiledPack, label: &str) -> String {
+    let t = label.trim();
+    for prefix in &pack.sort_strip_prefixes {
+        if t.starts_with(prefix) {
+            return t[prefix.len()..].trim().to_string();
+        }
+    }
+    t.to_string()
 }
 
-fn case_entry_key(text: &str) -> Option<String> {
-    let m = case_key_re().and_then(|re| re.find(text))?;
-    Some(m.as_str().to_ascii_lowercase().replace(' ', ""))
-}
-
-/// Scan `doc` with `pack` and return grouped authority entries in document order.
-pub fn find_entries(doc: &Document, pack: &CompiledPack) -> Vec<CitationEntry> {
+/// Scan `doc` with `pack` and return authority entries. Paragraphs in `exclude_blocks` (inclusive
+/// body block indices) are skipped — used to omit a generated table of authorities.
+pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usize, usize)>) -> Vec<CitationEntry> {
     let mut raw = Vec::new();
     for story in doc.counted_stories() {
         for path in doc.para_paths(story) {
+            if story == StoryRef::Body
+                && let Some((lo, hi)) = exclude_blocks
+                && {
+                    let i = path.last();
+                    i >= lo && i <= hi
+                }
+            {
+                continue;
+            }
             let Some(para) = doc.para(story, &path) else { continue };
             let text = &para.text;
             if text.is_empty() {
                 continue;
             }
             for rule in &pack.rules {
+                if !rule.finder {
+                    continue;
+                }
                 for m in rule.detect.find_iter(text) {
                     let end = if rule.extend_tail { extend_span(text, m.end()) } else { m.end() };
                     let slice = text.get(m.start()..end).map_or(m.as_str(), |s| s);
+                    if rule.valid.as_ref().is_some_and(|v| !v.is_match(slice)) {
+                        continue;
+                    }
                     let start = Pos { story, path: path.clone(), off: m.start() };
                     let end_pos = Pos { story, path: path.clone(), off: end };
                     raw.push(RawHit { kind: rule.kind.clone(), text: slice.to_string(), start, end: end_pos, rule_id: rule.id.clone() });
-                }
-            }
-            if let Some(id) = id_re() {
-                for m in id.find_iter(text) {
-                    let start = Pos { story, path: path.clone(), off: m.start() };
-                    let end_pos = Pos { story, path: path.clone(), off: m.end() };
-                    raw.push(RawHit { kind: "case".into(), text: m.as_str().to_string(), start, end: end_pos, rule_id: "shortId".into() });
                 }
             }
         }
@@ -110,23 +97,24 @@ pub fn find_entries(doc: &Document, pack: &CompiledPack) -> Vec<CitationEntry> {
     let mut next_id = 1u32;
     let mut key_to_id: HashMap<String, u32> = HashMap::new();
     let mut last_case: Option<u32> = None;
-    let mut hits: Vec<(u32, RawHit)> = Vec::new();
+    let mut hits: Vec<(u32, RawHit, bool)> = Vec::new();
     for h in raw {
-        let id = if h.rule_id == "shortId" || h.rule_id == "moPinCite" {
+        let rule = pack.rules.iter().find(|r| r.id == h.rule_id);
+        let link_last = rule.and_then(|r| r.link.as_deref()) == Some("lastCase");
+        let is_primary = !link_last;
+        let id = if link_last {
             last_case.unwrap_or_else(|| {
                 let id = next_id;
                 next_id += 1;
                 id
             })
-        } else if h.kind == "case" {
-            let key = case_entry_key(&h.text).unwrap_or_else(|| h.text.to_ascii_lowercase());
-            let id = key_to_id.entry(key).or_insert_with(|| {
+        } else if let Some(re) = rule.and_then(|r| r.entry_key.as_ref()) {
+            let key = re.find(&h.text).map(|m| m.as_str().to_ascii_lowercase()).unwrap_or_else(|| h.text.to_ascii_lowercase());
+            *key_to_id.entry(key).or_insert_with(|| {
                 let id = next_id;
                 next_id += 1;
                 id
-            });
-            last_case = Some(*id);
-            *id
+            })
         } else {
             let key = format!("{}:{}", h.kind, h.text.to_ascii_lowercase());
             *key_to_id.entry(key).or_insert_with(|| {
@@ -135,53 +123,28 @@ pub fn find_entries(doc: &Document, pack: &CompiledPack) -> Vec<CitationEntry> {
                 id
             })
         };
-        if h.kind == "case" && h.rule_id != "shortId" && h.rule_id != "moPinCite" {
+        if h.kind == "case" && is_primary {
             last_case = Some(id);
         }
-        hits.push((id, h));
+        hits.push((id, h, is_primary));
     }
 
-    let mut map: HashMap<u32, (String, Vec<CitationOccurrence>)> = HashMap::new();
-    for (id, h) in hits {
-        let slot = map.entry(id).or_insert_with(|| (h.kind.clone(), Vec::new()));
-        if h.rule_id != "shortId" && h.rule_id != "moPinCite" {
+    let mut map: HashMap<u32, (String, String, Vec<CitationOccurrence>)> = HashMap::new();
+    for (id, h, is_primary) in hits {
+        let slot = map.entry(id).or_insert_with(|| (h.kind.clone(), h.text.trim().to_string(), Vec::new()));
+        if is_primary {
             slot.0 = h.kind.clone();
+            slot.1 = h.text.trim().to_string();
         }
-        slot.1.push(CitationOccurrence { start: h.start, end: h.end });
+        slot.2.push(CitationOccurrence { start: h.start, end: h.end });
     }
     let mut out: Vec<CitationEntry> = Vec::new();
-    for (id, (kind, occurrences)) in map {
-        let label = occurrences.first().map(|o| entry_label(doc, &kind, o)).unwrap_or_default();
-        let sort_key = citation_sort_key(&label);
+    for (id, (kind, label, occurrences)) in map {
+        let sort_key = sort_key_for_label(pack, &label);
         out.push(CitationEntry { id, kind, label, sort_key, occurrences });
     }
     out.sort_by_key(|e| e.id);
     out
-}
-
-fn doc_text_span(doc: &Document, start: &Pos, end: &Pos) -> String {
-    doc.copy_range(start, end).plain_text()
-}
-
-/// Citation text as it appears at an occurrence (case hits include the party-name lead-in).
-fn entry_label(doc: &Document, kind: &str, occ: &CitationOccurrence) -> String {
-    let Some(para) = doc.para(occ.start.story, &occ.start.path) else {
-        return doc_text_span(doc, &occ.start, &occ.end);
-    };
-    let slice = para.text.get(occ.start.off..occ.end.off).unwrap_or("");
-    if kind != "case" {
-        return slice.trim().to_string();
-    }
-    let mut start = occ.start.off;
-    while start > 0 {
-        let b = para.text.as_bytes()[start - 1];
-        if b.is_ascii_alphanumeric() || matches!(b, b' ' | b',' | b'.' | b'\'' | b'-' | b'&') {
-            start -= 1;
-        } else {
-            break;
-        }
-    }
-    para.text.get(start..occ.end.off).unwrap_or(slice).trim().to_string()
 }
 
 fn pos_order(start: &Pos, _end: &Pos) -> (i64, usize, usize) {

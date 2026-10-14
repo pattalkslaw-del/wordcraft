@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use wordcraft_doc::collate::sort_key;
+use wordcraft_doc::para::InlineObject;
+use wordcraft_doc::props::CharProps;
 use wordcraft_doc::{Block, Paragraph, Path, Pos, StoryRef};
 use wordcraft_engine::cmd::page;
 use wordcraft_engine::cmd::references::{bookmark_range, paragraph_pageref_line};
@@ -13,20 +15,34 @@ use crate::checks;
 use crate::citations::{CitationEntry, find_entries, group_heading};
 use crate::profile::{DocSpec, Profile};
 
-const PROP_TOA_START: &str = "LAW_TOA_START";
-const PROP_TOA_END: &str = "LAW_TOA_END";
+const PROP_TOA_START_BM: &str = "LAW_TOA_START_BM";
+const PROP_TOA_END_BM: &str = "LAW_TOA_END_BM";
 const BOOKMARK_PREFIX: &str = "_LawToa";
+const BOOKMARK_TBL_START: &str = "_LawToaTblStart";
+const BOOKMARK_TBL_END: &str = "_LawToaTblEnd";
 
 /// Build or rebuild the table of authorities at the caret or at the profile's TOA section.
 pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
     let pack_id = pack_id(s, v)?;
     let pack = crate::cmd::pack_by_id(&pack_id)?;
-    let passim = p::bool(v, "passim").unwrap_or(true);
-    let passim_at = p::u64(v, "passimAt").unwrap_or(5).clamp(1, 99) as u32;
     let (profile, doc_type) = applied_profile(s, v)?;
     let spec = profile.as_ref().and_then(|p| doc_type.as_ref().and_then(|d| p.docs.get(d)));
+    let passim = p::bool(v, "passim").unwrap_or_else(|| spec.and_then(|d| d.toa_passim).unwrap_or(true));
+    let passim_at = p::u64(v, "passimAt").map(|n| n.clamp(1, 99) as u32).or_else(|| spec.and_then(|d| d.toa_passim_at)).unwrap_or(5);
 
-    let entries = find_entries(&s.doc, pack);
+    let (mut insert_at, replace) = insert_plan(s, spec, v)?;
+    let entries = find_entries(&s.doc, pack, replace);
+
+    if let Some((start, end)) = replace {
+        if !validated_table_range(s, start, end) {
+            return Err(CmdError::Failed("stored table of authorities bounds are invalid".into()));
+        }
+        for i in (start..=end).rev() {
+            s.doc.remove_block(StoryRef::Body, &Path::top(i))?;
+        }
+        insert_at = start;
+    }
+
     let mut bookmarks: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     let mut occ: Vec<(u32, Pos, Pos)> = entries.iter().flat_map(|e| e.occurrences.iter().map(|o| (e.id, o.start.clone(), o.end.clone()))).collect();
     occ.sort_by_key(|(_, start, _)| std::cmp::Reverse(pos_desc(start)));
@@ -44,18 +60,10 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
         page_by_bookmark.insert(name.clone(), page);
     }
 
-    let (mut insert_at, replace) = insert_plan(s, spec, v)?;
-    if let Some((start, end)) = replace {
-        for i in (start..=end).rev() {
-            s.doc.remove_block(StoryRef::Body, &Path::top(i))?;
-        }
-        insert_at = start;
-    }
     let width = page::sect(s).text_width();
     let lang = wordcraft_engine::cmd::default_lang(s);
     let mut blocks: Vec<Block> = Vec::new();
-    let groups = group_order();
-    for group in groups {
+    for group in group_order() {
         let mut in_group: Vec<&CitationEntry> = entries.iter().filter(|e| group_heading(&e.kind) == group).collect();
         in_group.sort_by_key(|e| sort_key(&e.sort_key, lang.as_deref()));
         if in_group.is_empty() {
@@ -64,26 +72,20 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
         blocks.push(Block::Para(Paragraph::with_text(group, Default::default()).styled("Heading")));
         for e in in_group {
             let bms = bookmarks.get(&e.id).cloned().unwrap_or_default();
-            let mut pages: Vec<String> = Vec::new();
-            let mut page_bms: Vec<String> = Vec::new();
-            for n in &bms {
-                let p = page_by_bookmark.get(n).cloned().unwrap_or_else(|| "1".into());
-                if !pages.contains(&p) {
-                    pages.push(p);
-                    page_bms.push(n.clone());
-                }
-            }
-            let para = paragraph_pageref_line(&e.label, &page_bms, passim, passim_at, &pages, width, "Normal")?;
+            let pages: Vec<String> = bms.iter().map(|n| page_by_bookmark.get(n).cloned().unwrap_or_else(|| "1".into())).collect();
+            let para = paragraph_pageref_line(&e.label, &bms, passim, passim_at, &pages, width, "Normal")?;
             blocks.push(Block::Para(para));
         }
     }
+
     for (k, block) in blocks.iter().enumerate() {
         s.doc.insert_block(StoryRef::Body, &Path::top(insert_at + k), block.clone())?;
     }
     if !blocks.is_empty() {
         let end = insert_at + blocks.len() - 1;
-        s.doc.set_custom_prop(PROP_TOA_START, &insert_at.to_string());
-        s.doc.set_custom_prop(PROP_TOA_END, &end.to_string());
+        mark_table_bounds(s, insert_at, end)?;
+        s.doc.set_custom_prop(PROP_TOA_START_BM, BOOKMARK_TBL_START);
+        s.doc.set_custom_prop(PROP_TOA_END_BM, BOOKMARK_TBL_END);
     }
     s.touch();
     Ok(json!({"pack": pack_id, "entries": entries.len(), "blocks": blocks.len(), "start": insert_at}))
@@ -114,59 +116,69 @@ fn applied_profile(s: &Session, v: &Value) -> Result<(Option<Profile>, Option<St
 }
 
 fn insert_plan(s: &Session, spec: Option<&DocSpec>, v: &Value) -> Result<(usize, Option<(usize, usize)>), CmdError> {
-    if p::str(v, "at") == Some("cursor") {
-        let at = s.sel.focus.path.last();
-        let rep = stored_range(s);
-        return Ok((at, rep));
-    }
-    if let Some(spec) = spec
+    let replace = stored_table_range(s);
+    let default_at = if p::str(v, "at") == Some("cursor") {
+        s.sel.focus.path.last()
+    } else if let Some(spec) = spec
         && let Some(toa) = checks::section_body_index(&s.doc, spec, "tableOfAuthorities")
     {
-        let replace = content_range(&s.doc, spec, toa);
-        return Ok((toa + 1, replace));
-    }
-    let at = s.sel.focus.path.last();
-    Ok((at, stored_range(s)))
+        toa + 1
+    } else {
+        s.sel.focus.path.last()
+    };
+    let insert_at = replace.map(|(start, _)| start).unwrap_or(default_at);
+    Ok((insert_at, replace))
 }
 
-fn stored_range(s: &Session) -> Option<(usize, usize)> {
-    let start = s.doc.custom_prop(PROP_TOA_START).and_then(|t| t.parse::<usize>().ok());
-    let end = s.doc.custom_prop(PROP_TOA_END).and_then(|t| t.parse::<usize>().ok());
+fn stored_table_range(s: &Session) -> Option<(usize, usize)> {
+    let start_name = s.doc.custom_prop(PROP_TOA_START_BM)?;
+    let end_name = s.doc.custom_prop(PROP_TOA_END_BM)?;
+    if start_name != BOOKMARK_TBL_START || end_name != BOOKMARK_TBL_END {
+        return None;
+    }
+    let start = s.doc.bookmarks().into_iter().find(|(n, _)| n == BOOKMARK_TBL_START).map(|(_, p)| p.path.last());
+    let end = s.doc.bookmarks().into_iter().find(|(n, _)| n == BOOKMARK_TBL_END).map(|(_, p)| p.path.last());
     match (start, end) {
         (Some(a), Some(b)) if a <= b => Some((a, b)),
         _ => None,
     }
 }
 
-fn content_range(doc: &wordcraft_doc::Document, spec: &DocSpec, toa_heading: usize) -> Option<(usize, usize)> {
-    if let (Some(a), Some(b)) =
-        (doc.custom_prop(PROP_TOA_START).and_then(|t| t.parse().ok()), doc.custom_prop(PROP_TOA_END).and_then(|t| t.parse().ok()))
-        && a > toa_heading
-    {
-        return Some((a, b));
+fn validated_table_range(s: &Session, start: usize, end: usize) -> bool {
+    if end < start || end >= s.doc.body.len() {
+        return false;
     }
-    let sections = locate_headings(doc, spec);
-    let here = sections.iter().position(|(_, idx)| *idx == toa_heading)?;
-    let next = sections.get(here + 1).map(|(_, i)| *i).unwrap_or(doc.body.len());
-    let start = toa_heading + 1;
-    if start >= next {
-        return None;
-    }
-    Some((start, next - 1))
-}
-
-fn locate_headings(doc: &wordcraft_doc::Document, spec: &DocSpec) -> Vec<(String, usize)> {
-    let mut found = Vec::new();
-    for path in doc.para_paths(StoryRef::Body) {
-        let Some(para) = doc.para(StoryRef::Body, &path) else { continue };
-        let idx = path.last();
-        for sec in &spec.sections {
-            if para.plain_text().trim().eq_ignore_ascii_case(sec.name.trim()) && !found.iter().any(|(id, _)| id == &sec.id) {
-                found.push((sec.id.clone(), idx));
+    for i in start..=end {
+        let Some(para) = s.doc.para(StoryRef::Body, &Path::top(i)) else {
+            return false;
+        };
+        let style = para.props.style.as_deref().unwrap_or("Normal");
+        if i == start {
+            if !para.plain_text().trim().is_empty() && style != "Heading" && style != "Normal" {
+                return false;
             }
+        } else if style != "Normal" && style != "Heading" {
+            return false;
         }
     }
-    found
+    s.doc
+        .para(StoryRef::Body, &Path::top(start))
+        .is_some_and(|p| p.objects.iter().any(|o| matches!(o, InlineObject::BookmarkStart { name } if name == BOOKMARK_TBL_START)))
+        && s.doc
+            .para(StoryRef::Body, &Path::top(end))
+            .is_some_and(|p| p.objects.iter().any(|o| matches!(o, InlineObject::BookmarkEnd { name } if name == BOOKMARK_TBL_END)))
+}
+
+fn mark_table_bounds(s: &mut Session, start: usize, end: usize) -> Result<(), CmdError> {
+    let path_start = Path::top(start);
+    let path_end = Path::top(end);
+    let props = CharProps::default();
+    let pos_start = Pos { story: StoryRef::Body, path: path_start.clone(), off: 0 };
+    s.doc.insert_object(&pos_start, InlineObject::BookmarkStart { name: BOOKMARK_TBL_START.into() }, &props)?;
+    let end_off = s.doc.para(StoryRef::Body, &path_end).map(|p| p.len()).unwrap_or(0);
+    let pos_end = Pos { story: StoryRef::Body, path: path_end, off: end_off };
+    s.doc.insert_object(&pos_end, InlineObject::BookmarkEnd { name: BOOKMARK_TBL_END.into() }, &props)?;
+    Ok(())
 }
 
 fn pos_desc(start: &Pos) -> (i64, usize, usize) {
