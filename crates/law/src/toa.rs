@@ -35,13 +35,15 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
     let passim = p::bool(v, "passim").unwrap_or_else(|| spec.and_then(|d| d.toa_passim).unwrap_or(true));
     let passim_at = p::u64(v, "passimAt").map(|n| n.clamp(1, 99) as u32).or_else(|| spec.and_then(|d| d.toa_passim_at)).unwrap_or(DEFAULT_PASSIM_AT);
 
-    let (mut insert_at, replace) = insert_plan(s, spec, v)?;
+    let replace = stored_table_range(s);
     if let Some((start, end)) = replace
         && !validated_table_range(s, start, end)
     {
         return Err(CmdError::Failed("stored table of authorities bounds are invalid".into()));
     }
+    // Scan before any insertion planning that could change paragraph boundaries.
     let entries = find_entries(&s.doc, pack, replace)?;
+    let mut insert_at = insert_index(s, spec, v, replace)?;
 
     // Source bookmarks are created while the old table is still in the document, so every
     // occurrence path is current; they then move with their text when its blocks are removed.
@@ -136,44 +138,31 @@ fn applied_profile(s: &Session, v: &Value) -> Result<(Option<Profile>, Option<St
     Ok((profile, doc_type))
 }
 
-fn insert_plan(s: &mut Session, spec: Option<&DocSpec>, v: &Value) -> Result<(usize, Option<(usize, usize)>), CmdError> {
-    let replace = stored_table_range(s);
+fn insert_index(s: &Session, spec: Option<&DocSpec>, v: &Value, replace: Option<(usize, usize)>) -> Result<usize, CmdError> {
     if let Some((start, _)) = replace {
-        return Ok((start, replace));
+        return Ok(start);
     }
     if p::str(v, "at") == Some("cursor") {
-        return Ok((body_block_at_caret(s)?, None));
+        return body_block_at_caret(s);
     }
     if let Some(spec) = spec
         && let Some(toa) = checks::section_body_index(&s.doc, spec, "tableOfAuthorities")
     {
-        return Ok((toa + 1, None));
+        return Ok(toa + 1);
     }
-    Ok((body_block_at_caret(s)?, None))
+    body_block_at_caret(s)
 }
 
-/// Where a cursor-positioned table goes: the top-level body block the caret is in. At the start of
-/// a paragraph the table is inserted before it; past the start the paragraph is split at the caret
-/// so the table lands where the caret is, and at the end of a paragraph it is inserted after it. A
-/// caret inside a table or another nested container uses its top-level block.
-fn body_block_at_caret(s: &mut Session) -> Result<usize, CmdError> {
-    let focus = s.sel.focus.clone();
+/// Top-level body block index where a cursor-positioned table is inserted: always immediately
+/// before the block that contains the caret, without splitting paragraphs (so citations are not
+/// broken before the finder scan). A caret inside a table or other nested container uses that
+/// container's top-level block.
+fn body_block_at_caret(s: &Session) -> Result<usize, CmdError> {
+    let focus = &s.sel.focus;
     if focus.story != StoryRef::Body {
         return Err(CmdError::Disabled("place the caret in the document body".into()));
     }
-    let i = focus.path.0.first().map(|b| *b as usize).ok_or_else(|| CmdError::Failed("caret path is invalid".into()))?;
-    if focus.path.depth() > 1 {
-        return Ok(i);
-    }
-    if focus.off == 0 {
-        return Ok(i);
-    }
-    let len = s.doc.para(StoryRef::Body, &focus.path).map(|p| p.len()).unwrap_or(0);
-    if focus.off >= len {
-        return Ok(i + 1);
-    }
-    s.doc.split_paragraph(&focus)?;
-    Ok(i + 1)
+    focus.path.0.first().map(|b| *b as usize).ok_or_else(|| CmdError::Failed("caret path is invalid".into()))
 }
 
 fn stored_table_range(s: &Session) -> Option<(usize, usize)> {

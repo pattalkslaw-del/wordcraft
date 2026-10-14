@@ -390,22 +390,57 @@ fn toa_build_at_cursor_uses_the_top_level_body_block() {
     assert_eq!(out.get("start").and_then(|v| v.as_u64()), Some(2), "a caret in a table cell uses that table's body block");
 }
 
-/// A cursor part-way through a paragraph inserts the table where the caret is: the paragraph is
-/// split at the caret, not left whole with the table before it.
+/// A cursor part-way through a paragraph inserts the table before that paragraph, without splitting
+/// it (so citations stay intact for the finder).
 #[test]
-fn toa_build_at_cursor_splits_the_paragraph_at_the_caret() {
+fn toa_build_at_cursor_inserts_before_the_paragraph_without_splitting() {
     let mut s = law();
     run(&mut s, "text.insert", json!({"text": "lead "}));
     run(&mut s, "text.insert", json!({"text": CASE_A}));
-    // The caret is part-way through the paragraph, before the citation.
     run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [0], "off": 5}}));
     let out = run(&mut s, "law.toa.build", json!({"at": "cursor", "pack": "missouri"}));
-    assert_eq!(out.get("start").and_then(|v| v.as_u64()), Some(1), "the table goes after the split-off first half");
+    assert_eq!(out.get("start").and_then(|v| v.as_u64()), Some(0), "the table goes before the caret paragraph");
 
-    let first = s.doc.para(StoryRef::Body, &Path::top(0)).expect("the first half").plain_text();
-    assert_eq!(first, "lead ", "the text before the caret stays in its own paragraph");
+    let mut para = None;
+    for path in s.doc.para_paths(StoryRef::Body) {
+        let Some(p) = s.doc.para(StoryRef::Body, &path) else { continue };
+        let t = p.plain_text();
+        if t.contains("lead ") && t.contains("Thummel v. King") {
+            para = Some(t);
+            break;
+        }
+    }
+    let para = para.expect("citation paragraph");
+    assert_eq!(para, format!("lead {CASE_A}"), "the paragraph is not split");
     assert!(table_text(&s).contains("570 S.W.2d 679"), "the citation still reaches the table");
-    assert!(s.doc.plain_text(StoryRef::Body).contains(CASE_A), "the text after the caret is kept");
+}
+
+/// Regression: caret inside a matched citation must not split the paragraph before scanning.
+#[test]
+fn toa_build_at_cursor_inside_a_citation_keeps_the_authority_and_undo_restores() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": CASE_A}));
+    let body = s.doc.plain_text(StoryRef::Body);
+    let inside = body.find("570").expect("reporter cite") + 3;
+    run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [0], "off": inside}}));
+    run(&mut s, "law.toa.build", json!({"at": "cursor", "pack": "missouri"}));
+    let mut source = None;
+    for path in s.doc.para_paths(StoryRef::Body) {
+        let Some(p) = s.doc.para(StoryRef::Body, &path) else { continue };
+        let t = p.plain_text();
+        if t.starts_with("Thummel v. King") {
+            source = Some(t);
+            break;
+        }
+    }
+    let source = source.expect("source paragraph");
+    assert_eq!(source, CASE_A, "the citation paragraph stays whole");
+    assert!(table_text(&s).contains("570 S.W.2d 679"), "the authority is listed");
+    let refs = pagerefs(&s);
+    assert!(refs.iter().any(|(n, r)| n.starts_with("_LawToa") && !n.contains("Tbl") && !r.is_empty()), "source PAGEREF fields are present: {refs:?}");
+    s.run("edit.undo", &json!({})).expect("undo build");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), body, "undo removes the table and restores the body");
+    assert!(s.doc.bookmarks().is_empty(), "undo clears table bookmarks");
 }
 
 /// Every citation kind the finder reports maps to its group, and the rendered table lists the
