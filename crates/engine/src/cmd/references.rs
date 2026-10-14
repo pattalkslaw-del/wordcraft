@@ -831,6 +831,7 @@ pub fn update_fields(s: &mut Session) -> Result<(), CmdError> {
         }
         para.touch();
     }
+    refresh_law_toa_pageref_lines(s)?;
     super::citations::update_citations(s)?;
     update_toc(s)
 }
@@ -877,6 +878,68 @@ pub fn bookmark_range(s: &mut Session, start: &Pos, end: &Pos, prefix: &str) -> 
     Ok(name)
 }
 
+/// Bookmark prefix for table-of-authorities source marks (`PAGEREF` targets).
+pub const LAW_TOA_BOOKMARK_PREFIX: &str = "_LawToa";
+
+fn pageref_page_sort_key(page: &str) -> u64 {
+    page.parse().unwrap_or(0)
+}
+
+fn pageref_unique_pages(page_results: &[String]) -> Vec<String> {
+    let mut unique: Vec<String> = Vec::new();
+    for p in page_results {
+        if !unique.contains(p) {
+            unique.push(p.clone());
+        }
+    }
+    unique.sort_by_key(|p| pageref_page_sort_key(p));
+    unique
+}
+
+fn pageref_use_passim(passim: bool, passim_at: u32, page_results: &[String]) -> bool {
+    passim && pageref_unique_pages(page_results).len() >= passim_at as usize
+}
+
+/// Every bookmark gets a `PAGEREF`; visible ones list distinct pages (first occurrence per page).
+fn append_pageref_page_fields(
+    para: &mut Paragraph,
+    bookmarks: &[String],
+    page_results: &[String],
+    passim: bool,
+    passim_at: u32,
+) -> Result<(), CmdError> {
+    let use_passim = pageref_use_passim(passim, passim_at, page_results);
+    if use_passim {
+        para.insert_text(para.len(), "passim", &CharProps::default())?;
+    }
+    let hidden = CharProps { hidden: Some(true), ..Default::default() };
+    let visible = CharProps::default();
+    let unique = pageref_unique_pages(page_results);
+    let mut visible_rep: Vec<usize> = Vec::new();
+    if !use_passim {
+        for page in &unique {
+            let i = page_results.iter().position(|p| p == page).ok_or_else(|| CmdError::Failed("page result missing for bookmark".into()))?;
+            visible_rep.push(i);
+        }
+        for (n, i) in visible_rep.iter().enumerate() {
+            if n > 0 {
+                para.insert_text(para.len(), ", ", &CharProps::default())?;
+            }
+            let bm = bookmarks.get(*i).ok_or_else(|| CmdError::Failed("bookmark index out of range".into()))?;
+            let result = page_results.get(*i).cloned().unwrap_or_else(|| "1".to_string());
+            para.insert_object(para.len(), InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false }, &visible)?;
+        }
+    }
+    for (i, bm) in bookmarks.iter().enumerate() {
+        if !use_passim && visible_rep.contains(&i) {
+            continue;
+        }
+        let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
+        para.insert_object(para.len(), InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false }, &hidden)?;
+    }
+    Ok(())
+}
+
 /// One authorities/index line: `citation`, a right tab, then page numbers as `PAGEREF` fields
 /// (or the word `passim` when `passim` is true and there are at least `passim_at` bookmarks).
 /// With `passim` printed the fields are kept but hidden, so their page numbers never show while
@@ -892,45 +955,64 @@ pub fn paragraph_pageref_line(
 ) -> Result<Paragraph, CmdError> {
     let mut para = Paragraph::with_text(citation, CharProps::default()).styled(style);
     para.insert_text(para.len(), "\t", &CharProps::default())?;
-    let mut unique_pages: Vec<String> = Vec::new();
-    for p in page_results {
-        if !unique_pages.contains(p) {
-            unique_pages.push(p.clone());
-        }
-    }
-    let use_passim = passim && unique_pages.len() >= passim_at as usize;
-    if use_passim {
-        para.insert_text(para.len(), "passim", &CharProps::default())?;
-    }
-    let hidden = CharProps { hidden: Some(true), ..Default::default() };
-    let mut display: Vec<(usize, String)> = Vec::new();
-    for (i, p) in page_results.iter().enumerate() {
-        if !display.iter().any(|(_, pg)| pg == p) {
-            display.push((i, p.clone()));
-        }
-    }
-    display.sort_by_key(|(_, p)| p.parse::<u64>().unwrap_or(0));
-    if use_passim {
-        for (i, bm) in bookmarks.iter().enumerate() {
-            let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
-            para.insert_object(para.len(), InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false }, &hidden)?;
-        }
-    } else {
-        for (n, (i, _)) in display.iter().enumerate() {
-            if n > 0 {
-                para.insert_text(para.len(), ", ", &CharProps::default())?;
-            }
-            let bm = bookmarks.get(*i).ok_or_else(|| CmdError::Failed("bookmark index out of range".into()))?;
-            let result = page_results.get(*i).cloned().unwrap_or_else(|| "1".to_string());
-            para.insert_object(
-                para.len(),
-                InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false },
-                &CharProps::default(),
-            )?;
-        }
-    }
+    append_pageref_page_fields(&mut para, bookmarks, page_results, passim, passim_at)?;
     para.props.tabs = Some(vec![TabStop { pos: text_width - 0.5, align: TabAlign::Right, leader: TabLeader::Dot }]);
     Ok(para)
+}
+
+fn pageref_line_citation(p: &Paragraph) -> Option<String> {
+    let shown: String = p.text.chars().filter(|c| *c != OBJ).collect();
+    let (cite, _) = shown.split_once('\t')?;
+    Some(cite.to_string())
+}
+
+fn pageref_line_passim_mode(p: &Paragraph) -> bool {
+    let shown: String = p.text.chars().filter(|c| *c != OBJ).collect();
+    let (_, after) = shown.split_once('\t').unwrap_or(("", ""));
+    after.trim_start().starts_with("passim")
+}
+
+/// Collect `_LawToa` `PAGEREF` bookmarks and their cached results (sorted by bookmark id).
+fn pageref_line_bookmarks(p: &Paragraph) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for o in &p.objects {
+        if let InlineObject::Field { instr, result, .. } = o
+            && let Some(rest) = instr.strip_prefix("PAGEREF ")
+        {
+            let name = rest.split_whitespace().next().unwrap_or(rest);
+            if name.starts_with(LAW_TOA_BOOKMARK_PREFIX) && !name.contains("Tbl") {
+                out.push((name.to_string(), result.clone()));
+            }
+        }
+    }
+    out.sort_by_key(|(n, _)| n.strip_prefix(LAW_TOA_BOOKMARK_PREFIX).and_then(|d| d.parse::<u64>().ok()).unwrap_or(0));
+    out
+}
+
+/// After `PAGEREF` results change, refresh which fields are visible so distinct pages stay current.
+pub fn refresh_law_toa_pageref_lines(s: &mut Session) -> Result<(), CmdError> {
+    for path in s.doc.para_paths(StoryRef::Body) {
+        let Some(p) = s.doc.para(StoryRef::Body, &path) else { continue };
+        let pairs = pageref_line_bookmarks(p);
+        if pairs.is_empty() {
+            continue;
+        }
+        let Some(citation) = pageref_line_citation(p) else { continue };
+        let passim = pageref_line_passim_mode(p);
+        let passim_at = 5;
+        let bookmarks: Vec<String> = pairs.iter().map(|(n, _)| n.clone()).collect();
+        let results: Vec<String> = pairs.iter().map(|(_, r)| r.clone()).collect();
+        let width = p.props.tabs.as_ref().and_then(|t| t.first()).map(|t| t.pos + 0.5).unwrap_or(400.0);
+        let style = p.props.style.clone().unwrap_or_else(|| "Normal".into());
+        let fresh = paragraph_pageref_line(&citation, &bookmarks, passim, passim_at, &results, width, &style)?;
+        *s.doc.para_mut(StoryRef::Body, &path)? = fresh;
+    }
+    Ok(())
+}
+
+/// True when a paragraph is a law table-of-authorities page-reference line.
+pub fn is_law_toa_pageref_line(p: &Paragraph) -> bool {
+    !pageref_line_bookmarks(p).is_empty()
 }
 
 /// The text a bookmark marks (field results included), up to its end in the same paragraph or
@@ -1028,6 +1110,41 @@ mod tests {
         let end = bookmark_end_pos(&s.doc, "B").expect("end found");
         assert_eq!((end.path, end.off), (p1, 3));
         assert!(bookmark_end_pos(&s.doc, "missing").is_none());
+    }
+
+    /// Every occurrence keeps its own `PAGEREF`; when two land on the same page only one shows until
+    /// they separate, then updating fields reveals both pages without rebuilding the table.
+    #[test]
+    fn pageref_line_keeps_every_occurrence_when_pages_split() {
+        let mut s = Session::new(wordcraft_doc::Document::from_text("first cite\nsecond cite"));
+        let p0 = Path::top(0);
+        let p1 = Path::top(1);
+        let bm0 = bookmark_range(
+            &mut s,
+            &Pos { story: StoryRef::Body, path: p0.clone(), off: 0 },
+            &Pos { story: StoryRef::Body, path: p0, off: 10 },
+            LAW_TOA_BOOKMARK_PREFIX,
+        )
+        .expect("bm0");
+        let bm1 = bookmark_range(
+            &mut s,
+            &Pos { story: StoryRef::Body, path: p1.clone(), off: 0 },
+            &Pos { story: StoryRef::Body, path: p1, off: 11 },
+            LAW_TOA_BOOKMARK_PREFIX,
+        )
+        .expect("bm1");
+        let line = paragraph_pageref_line("Case", &[bm0.clone(), bm1.clone()], false, 5, &["2".into(), "2".into()], 400.0, "Normal").expect("line");
+        s.doc.insert_block(StoryRef::Body, &Path::top(2), Block::Para(line)).expect("insert");
+        assert_eq!(fields(&s).len(), 2, "both occurrences keep a PAGEREF");
+
+        s.doc.insert_block(StoryRef::Body, &Path::top(1), Block::Para(Paragraph::with_text("\u{000c}", CharProps::default()))).expect("break");
+        update_fields(&mut s).expect("update");
+        let table = s.doc.para(StoryRef::Body, &Path::top(3)).expect("table line");
+        let line_text = table.plain_text();
+        let pages = line_text.split('\t').nth(1).unwrap_or_default();
+        let parts: Vec<&str> = pages.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+        assert_eq!(parts.len(), 2, "both pages show after the cites separate: {pages}");
+        assert_ne!(parts[0], parts[1]);
     }
 
     /// Passim keeps the `PAGEREF` references (so they keep updating) but hides their results: the

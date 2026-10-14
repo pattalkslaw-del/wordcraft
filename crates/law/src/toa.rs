@@ -193,6 +193,27 @@ fn apply_entry_page_lines(
     passim_at: u32,
     width: f32,
 ) -> Result<(), CmdError> {
+    const MAX_ROUNDS: usize = 8;
+    let mut prev: Option<Vec<Vec<String>>> = None;
+    for _ in 0..MAX_ROUNDS {
+        let snapshot = apply_entry_page_lines_once(s, start, end, entry_lines, passim, passim_at, width)?;
+        if prev.as_ref() == Some(&snapshot) {
+            break;
+        }
+        prev = Some(snapshot);
+    }
+    Ok(())
+}
+
+fn apply_entry_page_lines_once(
+    s: &mut Session,
+    start: usize,
+    end: usize,
+    entry_lines: &[(String, Vec<String>)],
+    passim: bool,
+    passim_at: u32,
+    width: f32,
+) -> Result<Vec<Vec<String>>, CmdError> {
     let layout = s.layout();
     let mut page_by_bookmark: BTreeMap<String, String> = BTreeMap::new();
     for name in entry_lines.iter().flat_map(|(_, bms)| bms) {
@@ -204,6 +225,7 @@ fn apply_entry_page_lines(
             pos.and_then(|p| layout.caret(&p).and_then(|c| layout.pages.get(c.page)).map(|pg| pg.number.to_string())).unwrap_or_else(|| "1".into());
         page_by_bookmark.insert(name.clone(), page);
     }
+    let mut snapshot: Vec<Vec<String>> = Vec::new();
     let mut line = 0usize;
     for i in start..=end {
         let path = Path::top(i);
@@ -214,10 +236,11 @@ fn apply_entry_page_lines(
         let Some((label, bms)) = entry_lines.get(line) else { break };
         line += 1;
         let pages: Vec<String> = bms.iter().map(|n| page_by_bookmark.get(n).cloned().unwrap_or_else(|| "1".into())).collect();
+        snapshot.push(pages.clone());
         let updated = paragraph_pageref_line(label, bms, passim, passim_at, &pages, width, "Normal")?;
         *s.doc.para_mut(StoryRef::Body, &path)? = updated;
     }
-    Ok(())
+    Ok(snapshot)
 }
 
 fn pos_desc(start: &Pos) -> (i64, usize, usize) {

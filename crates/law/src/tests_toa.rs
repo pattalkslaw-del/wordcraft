@@ -259,7 +259,11 @@ fn toa_passim_uses_profile_default_and_can_be_disabled() {
     let no_passim = table_text(&s);
     let case_line = no_passim.lines().find(|l| l.contains("570 S.W.2d 679")).expect("case line in table");
     assert!(!case_line.contains("passim"), "passim can be turned off per build: {case_line}");
-    assert!(case_line.chars().any(|c| c.is_ascii_digit()), "page numbers show when passim is off: {case_line}");
+    let after_tab = case_line.split('\t').nth(1).unwrap_or_default().trim();
+    assert!(
+        after_tab.split(',').map(str::trim).any(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit())),
+        "the tab column must list page numbers, not citation text: {after_tab}"
+    );
 
     let doc = roundtrip(&s);
     assert!(field_instrs(&doc).iter().filter(|i| i.contains("PAGEREF")).count() >= 5, "every occurrence keeps a PAGEREF");
@@ -336,6 +340,76 @@ fn toa_build_at_cursor_uses_the_top_level_body_block() {
     run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [2, 0, 0, 0], "off": 0}}));
     let out = run(&mut s, "law.toa.build", json!({"at": "cursor", "pack": "missouri"}));
     assert_eq!(out.get("start").and_then(|v| v.as_u64()), Some(2), "a caret in a table cell uses that table's body block");
+}
+
+/// Two cites of the same case on one page collapse to one page reference until an edit separates them.
+#[test]
+fn toa_same_page_occurrences_gain_a_second_page_without_rebuild() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": CASE_A}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "text.insert", json!({"text": CASE_A}));
+    run(&mut s, "law.toa.build", json!({"pack": "missouri"}));
+    let table = table_text(&s);
+    let one_page = table.lines().find(|l| l.contains("570 S.W.2d 679")).and_then(|l| l.split('\t').nth(1)).unwrap_or_default().trim();
+    assert!(!one_page.contains(','), "one page while both cites share it: {one_page}");
+
+    run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [1], "off": 0}}));
+    run(&mut s, "text.insert", json!({"text": "\u{000c}"}));
+    run(&mut s, "references.updateFields", json!({}));
+    let layout = s.layout();
+    let source_pages: std::collections::BTreeSet<String> = s
+        .doc
+        .bookmarks()
+        .into_iter()
+        .filter(|(n, _)| n.starts_with("_LawToa") && !n.contains("Tbl"))
+        .filter_map(|(_, pos)| layout.caret(&pos).and_then(|c| layout.pages.get(c.page)).map(|pg| pg.number.to_string()))
+        .collect();
+    assert_eq!(source_pages.len(), 2, "the cites must land on two pages: {source_pages:?}");
+
+    let case_marks: Vec<String> =
+        s.doc.bookmarks().into_iter().filter_map(|(n, _)| (n.starts_with("_LawToa") && !n.contains("Tbl")).then_some(n)).collect();
+    let mut listed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for (name, result) in pagerefs(&s) {
+        if case_marks.contains(&name) {
+            listed.insert(result);
+        }
+    }
+    assert_eq!(listed.len(), 2, "table PAGEREF results must list both pages: {listed:?} in {case_marks:?}");
+
+    let case_line = s
+        .doc
+        .para_paths(StoryRef::Body)
+        .into_iter()
+        .filter_map(|path| s.doc.para(StoryRef::Body, &path).cloned())
+        .find(|p| p.plain_text().contains("S.W.2d 679") && p.plain_text().contains('\t'))
+        .expect("case line in the table");
+    let line_text = case_line.plain_text();
+    let pages = line_text.split('\t').nth(1).unwrap_or_default().trim();
+    let parts: Vec<&str> = pages.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+    assert_eq!(parts.len(), 2, "both pages must show in the table line: `{line_text}`");
+    assert_ne!(parts[0], parts[1]);
+}
+
+/// Page numbers in the built table must match layout immediately (no separate field-update pass).
+#[test]
+fn toa_build_resolves_page_numbers_against_final_layout() {
+    let mut s = law();
+    brief_with_citations(&mut s);
+    run(&mut s, "law.toa.build", json!({}));
+    let layout = s.layout();
+    let page_of = |name: &str| {
+        s.doc
+            .bookmarks()
+            .into_iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, pos)| layout.caret(&pos).and_then(|c| layout.pages.get(c.page)).map(|pg| pg.number.to_string()))
+    };
+    for (name, result) in pagerefs(&s) {
+        if let Some(page) = page_of(&name) {
+            assert_eq!(result, page, "PAGEREF {name} must match layout right after build");
+        }
+    }
 }
 
 /// Passim is decided from the layout after the table exists, not from a stale pre-insert layout.
