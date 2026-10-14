@@ -104,6 +104,12 @@ struct ConfusionPhrase {
 }
 
 /// Fixed wrong phrases only — no single-token guesses or lookahead (original wording; no manual copied).
+///
+/// Every entry must be unambiguous: it fires only when the highlighted word cannot be right. Where
+/// no exact phrase is unambiguous the pair is omitted rather than guessed at — for example
+/// `prescribe`/`proscribe`, because a subject that can forbid can also legitimately `proscribe`
+/// medication ("Doctors proscribe medication that is contraindicated") and `controlling
+/// precedence` because `precedence` correctly means priority.
 const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
     ConfusionPhrase {
         words: &["statue", "of", "limitations"],
@@ -200,18 +206,6 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         wrong_index: 1,
         right: "precedent",
         message: "A prior appellate decision is \"precedent\", not \"precedence\" (priority).",
-    },
-    ConfusionPhrase {
-        words: &["controlling", "precedence"],
-        wrong_index: 1,
-        right: "precedent",
-        message: "Controlling case law is \"precedent\", not \"precedence\".",
-    },
-    ConfusionPhrase {
-        words: &["doctor", "proscribe", "medication"],
-        wrong_index: 1,
-        right: "prescribe",
-        message: "A doctor \"prescribes\" treatment; \"proscribe\" means to forbid.",
     },
     ConfusionPhrase {
         words: &["averse", "possession"],

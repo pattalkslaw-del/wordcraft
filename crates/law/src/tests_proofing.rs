@@ -248,25 +248,29 @@ confusion_pair!(
     "precedence",
     "precedent"
 );
-confusion_pair!(
-    controlling_precedence,
-    "This decision is controlling precedence here.",
-    "The statute takes precedence over the rule.",
-    "precedence",
-    "precedent"
-);
-confusion_pair!(
-    prescribe_proscribe,
-    "The doctor proscribe medication for the patient.",
-    "The rules prescribe such conduct by counsel.",
-    "proscribe",
-    "prescribe"
-);
-
-/// Exact-phrase check: forbidding medication advertising is `proscribe`, not a doctor's `prescribe`.
+/// #5 review: `precedence` correctly means priority, so a phrase like `controlling precedence`
+/// is ambiguous and must stay quiet; only the fixed idiom `binding precedence` (which suggests
+/// `precedent`) is an entry. This is the regression for the removed `controlling precedence` rule.
 #[test]
-fn proscribe_medication_advertising_is_quiet() {
+fn controlling_precedence_is_quiet() {
     for text in [
+        "The scheduling order contains rules controlling precedence among competing motions.",
+        "The court explained the rules controlling precedence among competing motions.",
+        "The statute takes precedence over the rule.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
+/// #5 review: `proscribe` correctly means to forbid, and a subject that can forbid medication
+/// (`Doctors proscribe medication that is contraindicated`) makes any `doctor proscribe
+/// medication` phrase ambiguous, so that entry was removed. `proscribe` in these correct
+/// sentences must stay quiet.
+#[test]
+fn proscribe_medication_usage_is_quiet() {
+    for text in [
+        "Doctors proscribe medication that is contraindicated.",
         "The physician testified that the regulation will proscribe medication advertising to minors.",
         "The regulation will proscribe medication advertising to minors.",
         "The statute will proscribe medication by unlicensed sellers.",
