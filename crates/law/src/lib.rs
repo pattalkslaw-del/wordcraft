@@ -83,6 +83,15 @@ mod tests_checks;
 
 #[cfg(test)]
 mod tests_proofing;
+
+#[cfg(test)]
 mod tests_symbols;
+
+#[cfg(test)]
 mod tests_citations;
+
+#[cfg(test)]
 mod tests_certificate;
+
+#[cfg(test)]
+mod tests_integration;

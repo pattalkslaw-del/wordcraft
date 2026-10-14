@@ -210,6 +210,7 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(proofing::run_confusion_checks(s, store))
         })
         .params(r#"{"store"?: bool (default true: show findings in Review › Proofing)} → {"findings": [{checkId, severity, message, start?, end?}]}"#)
+        .pure(),
         CommandSpec::new("law.citations.check", "Check Citation Form", CITATIONS_LOC, |s, v| {
             let pack_id = match p::str(v, "pack") {
                 Some(id) => id.to_string(),
@@ -250,7 +251,6 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"refreshed": true}))
         })
         .params(r#"{} → {"refreshed": true} (updates LAWWORDCOUNT fields; runs before export when a profile is applied)"#),
-    ]
     ]);
     v
 }
