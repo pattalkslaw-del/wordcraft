@@ -16,6 +16,7 @@ wordcraft-fonts = { workspace = true }
 wordcraft-layout = { workspace = true }
 wordcraft-render = { workspace = true }
 wordcraft-engine = { workspace = true }
+wordcraft-law = { workspace = true }
 wordcraft-zotero = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
@@ -39,7 +40,6 @@ js-sys = "0.3"
 
 [dev-dependencies]
 egui_kittest = { workspace = true, features = ["wgpu", "snapshot"] }
-wordcraft-law = { workspace = true }
 zip = { workspace = true }
 
 [build-dependencies]

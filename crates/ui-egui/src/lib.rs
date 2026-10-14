@@ -56,6 +56,7 @@ pub mod icons;
 pub mod ink;
 pub mod keys;
 pub mod keytips;
+pub mod law;
 pub mod mini_toolbar;
 pub mod objects;
 pub mod options;
@@ -417,6 +418,8 @@ pub struct WordApp {
     pub(crate) outline_prev_tab: Option<String>,
     /// Zotero commands in flight (`ui.zotero.*`).
     pub zotero: zotero::ZoteroLink,
+    /// File › Options › LawCraft.
+    pub law: law::LawUi,
     /// The egui context, once the first frame has run (background work wakes the UI with it).
     pub(crate) ctx: Option<egui::Context>,
     /// Read Aloud: the start of the sentence the caret was last moved to, and the last error shown.
@@ -506,6 +509,7 @@ impl WordApp {
             smart_art_typing: None,
             outline_prev_tab: None,
             zotero: zotero::ZoteroLink::default(),
+            law: law::LawUi::default(),
             ctx: None,
             read_aloud_at: None,
             read_aloud_error: None,
