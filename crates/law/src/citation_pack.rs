@@ -13,8 +13,10 @@ const MAX_RULES: usize = 200;
 const MAX_REGEX_LEN: usize = 800;
 const MAX_MESSAGE_LEN: usize = 500;
 
-/// One rule in a citation pack. `detect` finds a span; when `valid` is set, a finding is
-/// reported only if the matched text does not match `valid`.
+/// One rule in a citation pack. `detect` finds a span; `valid` is the rule's accepted form. A
+/// match that is not `valid` is a citation-form finding (`law.citations.check`); a match that is
+/// becomes an authority the table of authorities can list. A rule with no `valid` only reports
+/// violations.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PackRule {
@@ -26,9 +28,6 @@ pub struct PackRule {
     pub valid: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub extend_tail: bool,
-    /// When true, valid matches (see `valid`) are included in the table-of-authorities finder.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub finder: bool,
     pub message: String,
 }
 
@@ -55,7 +54,6 @@ pub struct CompiledRule {
     pub valid: Option<Regex>,
     /// When true, extend the match with an optional pin cite and parenthetical before `valid`.
     pub extend_tail: bool,
-    pub finder: bool,
 }
 
 /// A loaded pack with compiled regexes.
@@ -84,16 +82,7 @@ impl CitationPack {
                 Some(s) => Some(compile_regex(s, "valid")?),
                 None => None,
             };
-            rules.push(CompiledRule {
-                id: r.id,
-                kind: r.kind,
-                source: r.source,
-                message: r.message,
-                detect,
-                valid,
-                extend_tail: r.extend_tail,
-                finder: r.finder,
-            });
+            rules.push(CompiledRule { id: r.id, kind: r.kind, source: r.source, message: r.message, detect, valid, extend_tail: r.extend_tail });
         }
         Ok(CompiledPack { id: self.id, name: self.name, jurisdiction: self.jurisdiction, rules })
     }
