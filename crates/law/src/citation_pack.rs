@@ -29,12 +29,6 @@ pub struct PackRule {
     /// When true, valid matches (see `valid`) are included in the table-of-authorities finder.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub finder: bool,
-    /// Merge occurrences that share the same `entryKey` capture (case reporter cites).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub entry_key: Option<String>,
-    /// Link this hit to the previous case entry (`lastCase`, for Id. and similar short forms).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub link: Option<String>,
     pub message: String,
 }
 
@@ -48,9 +42,6 @@ pub struct CitationPack {
     pub jurisdiction: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub effective: String,
-    /// Leading prefixes stripped from case sort keys in the table of authorities (`In re `…).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sort_strip_prefixes: Vec<String>,
     pub rules: Vec<PackRule>,
 }
 
@@ -65,8 +56,6 @@ pub struct CompiledRule {
     /// When true, extend the match with an optional pin cite and parenthetical before `valid`.
     pub extend_tail: bool,
     pub finder: bool,
-    pub entry_key: Option<Regex>,
-    pub link: Option<String>,
 }
 
 /// A loaded pack with compiled regexes.
@@ -74,7 +63,6 @@ pub struct CompiledPack {
     pub id: String,
     pub name: String,
     pub jurisdiction: String,
-    pub sort_strip_prefixes: Vec<String>,
     pub rules: Vec<CompiledRule>,
 }
 
@@ -96,10 +84,6 @@ impl CitationPack {
                 Some(s) => Some(compile_regex(s, "valid")?),
                 None => None,
             };
-            let entry_key = match &r.entry_key {
-                Some(s) => Some(compile_regex(s, "entryKey")?),
-                None => None,
-            };
             rules.push(CompiledRule {
                 id: r.id,
                 kind: r.kind,
@@ -109,11 +93,9 @@ impl CitationPack {
                 valid,
                 extend_tail: r.extend_tail,
                 finder: r.finder,
-                entry_key,
-                link: r.link,
             });
         }
-        Ok(CompiledPack { id: self.id, name: self.name, jurisdiction: self.jurisdiction, sort_strip_prefixes: self.sort_strip_prefixes, rules })
+        Ok(CompiledPack { id: self.id, name: self.name, jurisdiction: self.jurisdiction, rules })
     }
 }
 

@@ -8,7 +8,7 @@ use wordcraft_doc::para::InlineObject;
 use wordcraft_doc::props::CharProps;
 use wordcraft_doc::{Block, Paragraph, Path, Pos, StoryRef};
 use wordcraft_engine::cmd::page;
-use wordcraft_engine::cmd::references::{bookmark_range, paragraph_pageref_line};
+use wordcraft_engine::cmd::references::{bookmark_end_pos, bookmark_range, paragraph_pageref_line};
 use wordcraft_engine::{CmdError, Session, p};
 
 use crate::checks;
@@ -31,24 +31,28 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
     let passim_at = p::u64(v, "passimAt").map(|n| n.clamp(1, 99) as u32).or_else(|| spec.and_then(|d| d.toa_passim_at)).unwrap_or(5);
 
     let (mut insert_at, replace) = insert_plan(s, spec, v)?;
+    if let Some((start, end)) = replace
+        && !validated_table_range(s, start, end)
+    {
+        return Err(CmdError::Failed("stored table of authorities bounds are invalid".into()));
+    }
     let entries = find_entries(&s.doc, pack, replace);
 
-    if let Some((start, end)) = replace {
-        if !validated_table_range(s, start, end) {
-            return Err(CmdError::Failed("stored table of authorities bounds are invalid".into()));
-        }
-        for i in (start..=end).rev() {
-            s.doc.remove_block(StoryRef::Body, &Path::top(i))?;
-        }
-        insert_at = start;
-    }
-
+    // Source bookmarks are created while the old table is still in the document, so every
+    // occurrence path is current; they then move with their text when its blocks are removed.
     let mut bookmarks: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     let mut occ: Vec<(u32, Pos, Pos)> = entries.iter().flat_map(|e| e.occurrences.iter().map(|o| (e.id, o.start.clone(), o.end.clone()))).collect();
     occ.sort_by_key(|(_, start, _)| std::cmp::Reverse(pos_desc(start)));
     for (entry_id, start, end) in occ {
         let name = bookmark_range(s, &start, &end, BOOKMARK_PREFIX)?;
         bookmarks.entry(entry_id).or_default().push(name);
+    }
+
+    if let Some((start, end)) = replace {
+        for i in (start..=end).rev() {
+            s.doc.remove_block(StoryRef::Body, &Path::top(i))?;
+        }
+        insert_at = start;
     }
 
     let layout = s.layout();
@@ -137,7 +141,7 @@ fn stored_table_range(s: &Session) -> Option<(usize, usize)> {
         return None;
     }
     let start = s.doc.bookmarks().into_iter().find(|(n, _)| n == BOOKMARK_TBL_START).map(|(_, p)| p.path.last());
-    let end = s.doc.bookmarks().into_iter().find(|(n, _)| n == BOOKMARK_TBL_END).map(|(_, p)| p.path.last());
+    let end = bookmark_end_pos(&s.doc, BOOKMARK_TBL_END).map(|p| p.path.last());
     match (start, end) {
         (Some(a), Some(b)) if a <= b => Some((a, b)),
         _ => None,

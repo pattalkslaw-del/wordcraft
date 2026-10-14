@@ -30,7 +30,6 @@ struct RawHit {
     text: String,
     start: Pos,
     end: Pos,
-    rule_id: String,
 }
 
 /// Map a pack rule `kind` to a table-of-authorities group heading.
@@ -44,28 +43,19 @@ pub fn group_heading(kind: &str) -> &'static str {
     }
 }
 
-fn sort_key_for_label(pack: &CompiledPack, label: &str) -> String {
-    let t = label.trim();
-    for prefix in &pack.sort_strip_prefixes {
-        if t.starts_with(prefix) {
-            return t[prefix.len()..].trim().to_string();
-        }
-    }
-    t.to_string()
-}
-
 /// Scan `doc` with `pack` and return authority entries. Paragraphs in `exclude_blocks` (inclusive
-/// body block indices) are skipped — used to omit a generated table of authorities.
+/// top-level body block indices) are skipped — used to omit a generated table of authorities.
+///
+/// Every match the pack's existing finder rules report is used as-is: a hit is one authority, and
+/// hits whose text and kind are identical collapse into one entry (its first hit supplies the
+/// label). No new detection or linking happens here.
 pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usize, usize)>) -> Vec<CitationEntry> {
     let mut raw = Vec::new();
     for story in doc.counted_stories() {
         for path in doc.para_paths(story) {
             if story == StoryRef::Body
                 && let Some((lo, hi)) = exclude_blocks
-                && {
-                    let i = path.last();
-                    i >= lo && i <= hi
-                }
+                && path.0.first().is_some_and(|b| (*b as usize) >= lo && (*b as usize) <= hi)
             {
                 continue;
             }
@@ -86,87 +76,57 @@ pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<
                     }
                     let start = Pos { story, path: path.clone(), off: m.start() };
                     let end_pos = Pos { story, path: path.clone(), off: end };
-                    raw.push(RawHit { kind: rule.kind.clone(), text: slice.to_string(), start, end: end_pos, rule_id: rule.id.clone() });
+                    raw.push(RawHit { kind: rule.kind.clone(), text: slice.to_string(), start, end: end_pos });
                 }
             }
         }
     }
     raw = dedupe_overlaps(raw);
-    raw.sort_by_key(|h| pos_order(&h.start, &h.end));
+    raw.sort_by_key(|h| pos_order(&h.start));
 
     let mut next_id = 1u32;
     let mut key_to_id: HashMap<String, u32> = HashMap::new();
-    let mut last_case: Option<u32> = None;
-    let mut hits: Vec<(u32, RawHit, bool)> = Vec::new();
+    let mut map: HashMap<u32, CitationEntry> = HashMap::new();
     for h in raw {
-        let rule = pack.rules.iter().find(|r| r.id == h.rule_id);
-        let link_last = rule.and_then(|r| r.link.as_deref()) == Some("lastCase");
-        let is_primary = !link_last;
-        let id = if link_last {
-            last_case.unwrap_or_else(|| {
-                let id = next_id;
-                next_id += 1;
-                id
-            })
-        } else if let Some(re) = rule.and_then(|r| r.entry_key.as_ref()) {
-            let key = re.find(&h.text).map(|m| m.as_str().to_ascii_lowercase()).unwrap_or_else(|| h.text.to_ascii_lowercase());
-            *key_to_id.entry(key).or_insert_with(|| {
-                let id = next_id;
-                next_id += 1;
-                id
-            })
-        } else {
-            let key = format!("{}:{}", h.kind, h.text.to_ascii_lowercase());
-            *key_to_id.entry(key).or_insert_with(|| {
-                let id = next_id;
-                next_id += 1;
-                id
-            })
-        };
-        if h.kind == "case" && is_primary {
-            last_case = Some(id);
-        }
-        hits.push((id, h, is_primary));
+        let key = format!("{}:{}", h.kind, h.text.trim().to_ascii_lowercase());
+        let id = *key_to_id.entry(key).or_insert_with(|| {
+            let id = next_id;
+            next_id += 1;
+            id
+        });
+        let entry = map.entry(id).or_insert_with(|| CitationEntry {
+            id,
+            kind: h.kind.clone(),
+            label: h.text.trim().to_string(),
+            sort_key: h.text.trim().to_string(),
+            occurrences: Vec::new(),
+        });
+        entry.occurrences.push(CitationOccurrence { start: h.start, end: h.end });
     }
-
-    let mut map: HashMap<u32, (String, String, Vec<CitationOccurrence>)> = HashMap::new();
-    for (id, h, is_primary) in hits {
-        let slot = map.entry(id).or_insert_with(|| (h.kind.clone(), h.text.trim().to_string(), Vec::new()));
-        if is_primary {
-            slot.0 = h.kind.clone();
-            slot.1 = h.text.trim().to_string();
-        }
-        slot.2.push(CitationOccurrence { start: h.start, end: h.end });
-    }
-    let mut out: Vec<CitationEntry> = Vec::new();
-    for (id, (kind, label, occurrences)) in map {
-        let sort_key = sort_key_for_label(pack, &label);
-        out.push(CitationEntry { id, kind, label, sort_key, occurrences });
-    }
+    let mut out: Vec<CitationEntry> = map.into_values().collect();
     out.sort_by_key(|e| e.id);
     out
 }
 
-fn pos_order(start: &Pos, _end: &Pos) -> (i64, usize, usize) {
-    let story = match start.story {
-        StoryRef::Body => 0,
-        StoryRef::Part(id) => id as i64 + 1,
-    };
-    (story, start.path.last(), start.off)
+fn pos_order(start: &Pos) -> (i64, Vec<u32>, usize) {
+    (story_rank(start.story), start.path.0.clone(), start.off)
 }
 
-fn para_key(story: StoryRef, path: &wordcraft_doc::Path) -> (i64, usize) {
-    let story = match story {
+fn para_key(story: StoryRef, path: &wordcraft_doc::Path) -> (i64, Vec<u32>) {
+    (story_rank(story), path.0.clone())
+}
+
+fn story_rank(story: StoryRef) -> i64 {
+    match story {
         StoryRef::Body => 0,
         StoryRef::Part(id) => id as i64 + 1,
-    };
-    (story, path.last())
+    }
 }
 
 fn dedupe_overlaps(hits: Vec<RawHit>) -> Vec<RawHit> {
     let mut hits = hits;
-    hits.sort_by(|a, b| b.text.len().cmp(&a.text.len()).then_with(|| pos_order(&a.start, &a.end).cmp(&pos_order(&b.start, &b.end))));
-    let mut taken: HashMap<(i64, usize), Vec<(usize, usize)>> = HashMap::new();
+    hits.sort_by(|a, b| b.text.len().cmp(&a.text.len()).then_with(|| pos_order(&a.start).cmp(&pos_order(&b.start))));
+    let mut taken: HashMap<(i64, Vec<u32>), Vec<(usize, usize)>> = HashMap::new();
     let mut out = Vec::new();
     for h in hits {
         let key = para_key(h.start.story, &h.start.path);
@@ -177,7 +137,7 @@ fn dedupe_overlaps(hits: Vec<RawHit>) -> Vec<RawHit> {
         ranges.push((h.start.off, h.end.off));
         out.push(h);
     }
-    out.sort_by_key(|h| pos_order(&h.start, &h.end));
+    out.sort_by_key(|h| pos_order(&h.start));
     out
 }
 

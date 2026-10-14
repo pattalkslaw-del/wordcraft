@@ -4,7 +4,6 @@
   "name": "Federal citation forms",
   "jurisdiction": "Federal",
   "effective": "2024-01-01",
-  "sortStripPrefixes": [],
   "rules": [
     {
       "id": "usReporter",
@@ -14,7 +13,6 @@
       "extendTail": true,
       "valid": "^\\d+\\s+U\\.\\s*S\\.\\s+\\d+(?:,\\s*\\d+(?:[-–—]\\d+)?)?\\s+\\(\\s*\\d{4}\\s*\\)$",
       "finder": true,
-      "entryKey": "\\d+\\s+U\\.\\s*S\\.\\s+\\d+",
       "message": "U.S. Reports citations use U.S. with periods and usually include a year parenthetical."
     },
     {
@@ -25,7 +23,6 @@
       "extendTail": true,
       "valid": "^\\d+\\s+S\\.\\s+Ct\\.\\s+\\d+(?:,\\s*\\d+(?:[-–—]\\d+)?)?\\s+\\(\\s*\\d{4}\\s*\\)$",
       "finder": true,
-      "entryKey": "\\d+\\s+S\\.\\s+Ct\\.\\s+\\d+",
       "message": "Supreme Court Reporter citations use S. Ct. with a space after S. and a year parenthetical."
     },
     {
@@ -57,7 +54,6 @@
       "extendTail": true,
       "valid": "^\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+(?:,\\s*\\d+(?:[-–—]\\d+)?)?\\s+\\(\\s*(?:(?:[1-9]\\d?(?:st|nd|rd|th)|[23]d|D\\.C\\.|Fed\\.)\\s+Cir\\.|(?:[A-Z]\\.\\s*){1,4}(?:[A-Z][a-z]+\\.?)?)\\s*\\d{4}\\s*\\)$",
       "finder": true,
-      "entryKey": "\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+",
       "message": "Federal appellate and district reporter citations need a court parenthetical with the year, e.g. (8th Cir. 2009)."
     },
     {
@@ -86,16 +82,6 @@
       "valid": "^Fed\\.\\s+R\\.\\s+Civ\\.\\s+P\\.\\s+\\d+(?:\\([a-z0-9]+\\))*$",
       "finder": true,
       "message": "Federal Rules of Civil Procedure: Fed. R. Civ. P. 12(b)(6)."
-    },
-    {
-      "id": "federalShortId",
-      "kind": "case",
-      "source": "Bluebook R. 4 (short forms)",
-      "detect": "(?i)\\bId\\.\\s*(?:at\\s+)?\\d*",
-      "valid": "(?i)^Id\\.\\s*(?:at\\s+)?\\d*\\.?\\s*$",
-      "finder": true,
-      "link": "lastCase",
-      "message": "Short-form Id. cites refer to the immediately preceding case citation."
     },
     {
       "id": "federalRecordCite",

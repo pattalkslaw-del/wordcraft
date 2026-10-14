@@ -846,23 +846,26 @@ pub fn date_picture(instr: &str) -> Option<String> {
 }
 
 /// A hidden bookmark from `start` through `end` in one paragraph (reuses an existing mark when
-/// it already covers the same span). `prefix` is the bookmark name prefix (`_LawToa` → `_LawToa000000001`).
+/// it already covers the span, so rebuilding a table doesn't pile up marks or shift offsets).
+/// `prefix` is the bookmark name prefix (`_LawToa` → `_LawToa000000001`).
 pub fn bookmark_range(s: &mut Session, start: &Pos, end: &Pos, prefix: &str) -> Result<String, CmdError> {
     if start.story != end.story || start.path != end.path || start.off > end.off {
         return Err(CmdError::Failed("bookmark range must lie in one paragraph".into()));
     }
     let para = s.doc.para(start.story, &start.path).ok_or_else(|| CmdError::Failed("paragraph is gone".into()))?;
-    for off in para.object_offsets() {
-        if let Some(InlineObject::BookmarkStart { name }) = para.object_at(off) {
-            if !name.starts_with(prefix) {
-                continue;
-            }
-            let covers = para.object_offsets().into_iter().any(|o| {
-                o > off && matches!(para.object_at(o), Some(InlineObject::BookmarkEnd { name: n }) if n == name) && off == start.off && o >= end.off
-            });
-            if covers {
-                return Ok(name.clone());
-            }
+    let offsets = para.object_offsets();
+    for off in &offsets {
+        let Some(InlineObject::BookmarkStart { name }) = para.object_at(*off) else { continue };
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        let end_off =
+            offsets.iter().copied().find(|o| *o > *off && matches!(para.object_at(*o), Some(InlineObject::BookmarkEnd { name: n }) if n == name));
+        if let Some(end_off) = end_off
+            && *off <= start.off
+            && end_off >= end.off
+        {
+            return Ok(name.clone());
         }
     }
     let next =
@@ -876,6 +879,8 @@ pub fn bookmark_range(s: &mut Session, start: &Pos, end: &Pos, prefix: &str) -> 
 
 /// One authorities/index line: `citation`, a right tab, then page numbers as `PAGEREF` fields
 /// (or the word `passim` when `passim` is true and there are at least `passim_at` bookmarks).
+/// With `passim` printed the fields are kept but hidden, so their page numbers never show while
+/// the references still update and survive a round trip.
 pub fn paragraph_pageref_line(
     citation: &str,
     bookmarks: &[String],
@@ -896,28 +901,15 @@ pub fn paragraph_pageref_line(
     let use_passim = passim && unique_pages.len() >= passim_at as usize;
     if use_passim {
         para.insert_text(para.len(), "passim", &CharProps::default())?;
-    } else {
-        for (i, bm) in bookmarks.iter().enumerate() {
-            if i > 0 {
-                para.insert_text(para.len(), ", ", &CharProps::default())?;
-            }
-            let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
-            para.insert_object(
-                para.len(),
-                InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false },
-                &CharProps::default(),
-            )?;
-        }
     }
-    if use_passim {
-        for (i, bm) in bookmarks.iter().enumerate() {
-            let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
-            para.insert_object(
-                para.len(),
-                InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false },
-                &CharProps::default(),
-            )?;
+    let hidden = CharProps { hidden: Some(true), ..Default::default() };
+    for (i, bm) in bookmarks.iter().enumerate() {
+        if !use_passim && i > 0 {
+            para.insert_text(para.len(), ", ", &CharProps::default())?;
         }
+        let result = page_results.get(i).cloned().unwrap_or_else(|| "1".to_string());
+        let props = if use_passim { &hidden } else { &CharProps::default() };
+        para.insert_object(para.len(), InlineObject::Field { instr: format!("PAGEREF {bm} \\h"), result, locked: false, code: false }, props)?;
     }
     para.props.tabs = Some(vec![TabStop { pos: text_width - 0.5, align: TabAlign::Right, leader: TabLeader::Dot }]);
     Ok(para)
@@ -934,6 +926,21 @@ pub fn bookmark_text(doc: &wordcraft_doc::Document, name: &str) -> Option<String
         .find(|o| *o > start.off && matches!(para.object_at(*o), Some(InlineObject::BookmarkEnd { name: n }) if n == name))
         .unwrap_or(para.len());
     Some(doc.copy_range(&start, &Pos { off: end, ..start.clone() }).plain_text().trim().to_string())
+}
+
+/// The position of a bookmark's matching [`InlineObject::BookmarkEnd`], anywhere in the body.
+/// [`Document::bookmarks`] lists only the starts, so this finds the other end of a span that
+/// crosses paragraphs. `None` when there is no such bookmark end.
+pub fn bookmark_end_pos(doc: &wordcraft_doc::Document, name: &str) -> Option<Pos> {
+    for path in doc.para_paths(StoryRef::Body) {
+        let Some(para) = doc.para(StoryRef::Body, &path) else { continue };
+        for off in para.object_offsets() {
+            if matches!(para.object_at(off), Some(InlineObject::BookmarkEnd { name: n }) if n == name) {
+                return Some(Pos { story: StoryRef::Body, path, off });
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -983,6 +990,67 @@ mod tests {
             })
             .collect();
         assert!(fields.iter().any(|i| i.starts_with("PAGEREF ") && i.contains(&name)), "{fields:?}");
+    }
+
+    #[test]
+    fn bookmark_end_pos_finds_a_cross_paragraph_end() {
+        let mut s = Session::new(wordcraft_doc::Document::from_text("one\ntwo"));
+        let p0 = Path::top(0);
+        let p1 = Path::top(1);
+        s.doc
+            .insert_object(&Pos { story: StoryRef::Body, path: p0, off: 0 }, InlineObject::BookmarkStart { name: "B".into() }, &CharProps::default())
+            .expect("start");
+        s.doc
+            .insert_object(
+                &Pos { story: StoryRef::Body, path: p1.clone(), off: 3 },
+                InlineObject::BookmarkEnd { name: "B".into() },
+                &CharProps::default(),
+            )
+            .expect("end");
+        let end = bookmark_end_pos(&s.doc, "B").expect("end found");
+        assert_eq!((end.path, end.off), (p1, 3));
+        assert!(bookmark_end_pos(&s.doc, "missing").is_none());
+    }
+
+    /// Passim keeps the `PAGEREF` references (so they keep updating) but hides their results: the
+    /// line reads `cite<TAB>passim`, never `passim54321`, before and after a round trip.
+    #[test]
+    fn passim_pageref_fields_are_hidden() {
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        let name = "_LawToa000000001".to_string();
+        let line = paragraph_pageref_line(
+            "Thummel v. King, 570 S.W.2d 679",
+            std::slice::from_ref(&name),
+            true,
+            5,
+            &["1".into(), "2".into(), "3".into(), "4".into(), "5".into()],
+            400.0,
+            "Normal",
+        )
+        .expect("line");
+        assert!(
+            line.objects.iter().all(|o| matches!(o, InlineObject::Field { instr, .. } if instr.starts_with("PAGEREF "))),
+            "every object is a PAGEREF field: {:?}",
+            line.objects
+        );
+        for off in line.object_offsets() {
+            let hidden = line.run_ranges().find(|(r, _)| r.contains(&off)).map(|(_, p)| p.hidden);
+            assert_eq!(hidden, Some(Some(true)), "the page-number field at {off} must be hidden");
+        }
+        let visible: String = line.text.chars().filter(|c| *c != OBJ).collect();
+        assert_eq!(visible, "Thummel v. King, 570 S.W.2d 679\tpassim", "passim shows but the page numbers do not");
+        s.doc.insert_block(StoryRef::Body, &Path::top(0), Block::Para(line)).expect("insert");
+        let bytes = crate::io::save_bytes("passim.docx", &s.doc).expect("save");
+        let doc = crate::io::open_bytes("passim.docx", &bytes).expect("open");
+        let para = doc.body.iter().find_map(|b| b.as_para()).expect("paragraph");
+        assert!(
+            para.objects.iter().any(|o| matches!(o, InlineObject::Field { instr, .. } if instr.starts_with("PAGEREF "))),
+            "the hidden references survive a round trip"
+        );
+        for off in para.object_offsets() {
+            let hidden = para.run_ranges().find(|(r, _)| r.contains(&off)).map(|(_, p)| p.hidden);
+            assert_eq!(hidden, Some(Some(true)), "round trip keeps the hidden formatting at {off}");
+        }
     }
 
     /// #402: Custom Table of Contents settings become TOC switches, and updating honours them:
