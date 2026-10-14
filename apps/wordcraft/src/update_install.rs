@@ -57,7 +57,7 @@ pub fn sweep_stale_staging() {
 fn sweep_stale_staging_in(parent: &Path, retention: std::time::Duration, now: std::time::SystemTime) {
     let Ok(entries) = std::fs::read_dir(parent) else { return };
     for entry in entries.flatten() {
-        if !entry.file_name().to_string_lossy().starts_with(STAGING_PREFIX) {
+        if !is_staging_name(&entry.file_name().to_string_lossy()) {
             continue;
         }
         let Ok(meta) = entry.metadata() else { continue };
@@ -69,6 +69,14 @@ fn sweep_stale_staging_in(parent: &Path, retention: std::time::Duration, now: st
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
+}
+
+/// Whether a directory name is one this program generated: [`STAGING_PREFIX`] followed by exactly
+/// the 32 lowercase hex characters of [`random_hex`]`(16)`. Restricting the sweep to that exact
+/// format keeps an unrelated directory that merely shares the prefix from being removed.
+fn is_staging_name(name: &str) -> bool {
+    let Some(hex) = name.strip_prefix(STAGING_PREFIX) else { return false };
+    hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 fn install_into(job: &InstallHandoff, staging: &Path) -> Result<InstallOutcome, String> {
@@ -394,17 +402,22 @@ mod tests {
         let parent = std::env::temp_dir().join(format!("wordcraft-sweep-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&parent);
         std::fs::create_dir_all(&parent).unwrap();
-        let fresh = parent.join(format!("{STAGING_PREFIX}fresh"));
-        let old = parent.join(format!("{STAGING_PREFIX}old"));
+        let staging = |tag: char| parent.join(format!("{STAGING_PREFIX}{}", tag.to_string().repeat(32)));
+        let fresh = staging('a');
+        let old = staging('b');
         let foreign = parent.join("something-else");
+        // Shares the prefix but is not the generated format, so it is none of our business.
+        let prefix_only = parent.join(format!("{STAGING_PREFIX}not-a-staging"));
         std::fs::create_dir_all(&fresh).unwrap();
         std::fs::create_dir_all(&old).unwrap();
         std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::create_dir_all(&prefix_only).unwrap();
 
         // Nothing is old enough yet, and a non-staging directory is never touched.
         sweep_stale_staging_in(&parent, std::time::Duration::from_secs(3600), std::time::SystemTime::now());
         assert!(fresh.exists(), "a fresh download is left for Finder");
         assert!(foreign.exists(), "only update staging directories are swept");
+        assert!(prefix_only.exists(), "a directory sharing only the prefix is never swept");
 
         // Past the retention window the staging directories are stale and removed.
         let later = std::time::SystemTime::now() + std::time::Duration::from_secs(7200);
@@ -412,6 +425,7 @@ mod tests {
         assert!(!old.exists(), "a stale download is removed");
         assert!(!fresh.exists(), "a download past the retention is removed");
         assert!(foreign.exists(), "a foreign directory is never touched");
+        assert!(prefix_only.exists(), "a prefix-only directory is never touched even when old");
         let _ = std::fs::remove_dir_all(&parent);
     }
 

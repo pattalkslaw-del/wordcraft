@@ -1578,6 +1578,9 @@ impl WordApp {
         // the ribbon so they sit on top of it.
         crate::keytips::logic(self, &ctx);
         if self.ui.backstage {
+            // The restart banner also renders over Backstage, so an install that finished while
+            // File is open still gets its OK button before the app quits to restart (#15).
+            update::reboot_bar(self, ui);
             backstage::show(self, ui);
         } else {
             chrome::title_bar(self, ui);

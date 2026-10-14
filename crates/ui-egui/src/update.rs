@@ -295,8 +295,10 @@ pub fn apply_command_result(app: &mut WordApp, value: &Value) {
 }
 
 /// The restart instruction after a finished install: a durable bar, not a status message that
-/// vanishes before the app quits. Dismissed only when the user acknowledges it.
-fn reboot_bar(app: &mut WordApp, ui: &mut Ui) {
+/// vanishes before the app quits. Dismissed only when the user acknowledges it. Shown in the
+/// editor and in Backstage: an install finished while File is open must still show its OK button,
+/// because the pending quit is cancelled until the banner is acknowledged (#15 review).
+pub(crate) fn reboot_bar(app: &mut WordApp, ui: &mut Ui) {
     if !app.update.reboot_notice {
         return;
     }
@@ -633,5 +635,34 @@ mod tests {
         assert!(acted);
         assert!(commands.contains(&egui::ViewportCommand::Close), "after acknowledgement the close may proceed: {commands:?}");
         assert!(!app.update.quit_pending, "the pending quit was consumed");
+    }
+
+    /// An install that finishes while Backstage (File) is open must still show the restart
+    /// instruction and its OK button: the pending quit is cancelled until the banner is
+    /// acknowledged, so hiding the banner would leave the app unclosable (#15 review).
+    #[test]
+    fn restart_banner_is_visible_and_acknowledgeable_in_backstage() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
+        app.update.reboot_notice = true;
+        app.update.quit_pending = true;
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut crate::WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        assert!(
+            h.query_by_label("WordCraft was updated. Restart the computer to finish the update.").is_some(),
+            "the restart instruction is shown over Backstage"
+        );
+        assert!(h.query_by_label("OK").is_some(), "the restart banner's OK button is reachable in Backstage");
+        h.get_by_label("OK").click();
+        h.run_steps(4);
+        assert!(!h.state().update.reboot_notice, "OK acknowledges the restart banner");
     }
 }

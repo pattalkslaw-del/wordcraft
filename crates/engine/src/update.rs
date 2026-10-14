@@ -185,8 +185,8 @@ fn wait_with_deadline(mut child: std::process::Child, timeout: std::time::Durati
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            // Exited: collect the captured pipes.
-            Ok(Some(_)) => return child.wait_with_output().ok(),
+            // Exited: collect the captured pipes under their own deadline.
+            Ok(Some(_)) => return collect_output(child, timeout),
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
@@ -197,6 +197,26 @@ fn wait_with_deadline(mut child: std::process::Child, timeout: std::time::Durati
             }
             Err(_) => return None,
         }
+    }
+}
+
+/// Read a helper's captured pipes after it exits, but no longer than `timeout`. A helper that
+/// spawns a descendant inheriting our stdout/stderr can leave those pipes open after the helper
+/// itself is gone, so `wait_with_output()` alone could hang the update worker forever despite the
+/// child deadline (#15 review). The blocking read runs on its own thread so the deadline still
+/// applies; if it overruns, the result is dropped and `None` returned.
+#[cfg(any(target_os = "linux", target_os = "windows", test))]
+fn collect_output(child: std::process::Child, timeout: std::time::Duration) -> Option<std::process::Output> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("wordcraft-probe-read".into())
+        .spawn(move || {
+            let _ = tx.send(child.wait_with_output());
+        })
+        .ok()?;
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result.ok(),
+        Err(_) => None,
     }
 }
 
@@ -781,5 +801,17 @@ mod tests {
         let out = run_quiet("/bin/sh", &["-c", "sleep 30"], std::time::Duration::from_millis(300));
         assert!(out.is_none(), "a stuck probe is killed, not waited on forever");
         assert!(start.elapsed() < std::time::Duration::from_secs(10), "the deadline is enforced");
+    }
+
+    /// The child exits at once, but a descendant it spawned inherits the captured stdout/stderr
+    /// and keeps those pipes open. Collecting the output must still stop at the deadline rather
+    /// than hang on the pipes the descendant holds (#15 review).
+    #[cfg(unix)]
+    #[test]
+    fn exited_helper_with_a_pipe_holding_descendant_is_bounded() {
+        let start = std::time::Instant::now();
+        let out = run_quiet("/bin/sh", &["-c", "sleep 30 & exit 0"], std::time::Duration::from_millis(300));
+        assert!(out.is_none(), "pipe collection is bounded even when a descendant holds the pipes");
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "the deadline covers output collection");
     }
 }
