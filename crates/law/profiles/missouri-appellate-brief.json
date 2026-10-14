@@ -4,6 +4,7 @@
   "name": "Missouri appellate brief",
   "jurisdiction": "Missouri",
   "verified": true,
+  "citationPack": "missouri",
   "docs": {
     "appendix": {
       "label": "Appendix",

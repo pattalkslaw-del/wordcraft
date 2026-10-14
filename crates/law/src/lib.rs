@@ -37,6 +37,8 @@
 
 mod apply;
 pub mod checks;
+pub mod citation_pack;
+pub mod citations;
 pub mod cmd;
 pub mod profile;
 mod proofing;
@@ -81,3 +83,4 @@ mod tests_checks;
 #[cfg(test)]
 mod tests_proofing;
 mod tests_symbols;
+mod tests_citations;
