@@ -26,6 +26,7 @@ use crate::store::{LawError, Store};
 const LOC: &str = "Law › Court Profiles";
 const CHECKS_LOC: &str = "Law › Court Checks";
 const CITATIONS_LOC: &str = "Law › Citations";
+const TOA_LOC: &str = "Law › Table of Authorities";
 
 static PACKS: OnceLock<BTreeMap<String, CompiledPack>> = OnceLock::new();
 
@@ -33,7 +34,7 @@ fn packs() -> &'static BTreeMap<String, CompiledPack> {
     PACKS.get_or_init(crate::citation_pack::bundled_map)
 }
 
-fn pack_by_id(id: &str) -> Result<&'static CompiledPack, CmdError> {
+pub(crate) fn pack_by_id(id: &str) -> Result<&'static CompiledPack, CmdError> {
     packs().get(id).ok_or_else(|| CmdError::Failed(format!("no citation pack `{id}`")))
 }
 
@@ -222,6 +223,10 @@ pub fn specs() -> Vec<CommandSpec> {
             r#"{"pack"?: string (defaults to the applied court profile's citationPack), "store"?: bool (default true: show findings in Review › Proofing)} → {"pack", "findings": [{checkId, severity, message, start?, end?}]}"#,
         )
         .pure(),
+        CommandSpec::new("law.toa.build", "Build Table of Authorities", TOA_LOC, crate::toa::build)
+        .params(
+            r#"{"pack"?: string, "id"?: profile id, "doc"?: document type, "at"?: "cursor" (default: the profile's Table of Authorities section when present), "passim"?: bool (default true), "passimAt"?: number (default 5)} → {"pack", "entries", "blocks", "start"}"#,
+        ),
     ]
 }
 

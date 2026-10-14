@@ -27,6 +27,7 @@
       "detect": "\\b\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+\\b",
       "extendTail": true,
       "valid": "^\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+(?:,\\s*\\d+(?:[-–—]\\d+)?)?\\s+\\(\\s*Mo\\.\\s+(?:banc|App\\.\\s+(?:E\\.D\\.|W\\.D\\.|S\\.D\\.))\\s+\\d{4}\\s*\\)$",
+      "finder": true,
       "message": "A Missouri case citation with a S.W. reporter needs a court and year parenthetical, e.g. (Mo. banc 1978)."
     },
     {
@@ -70,6 +71,7 @@
       "source": "Show Me Citations (statutes)",
       "detect": "(?:\\b(?:Section|Sec\\.)|§)\\s*\\d+\\.\\d+(?:\\s*,\\s*|\\s+)RSMo\\b",
       "valid": "^(?:Section|§)\\s*\\d+\\.\\d+(?:,\\s*RSMo(?:\\s+\\d{4})?|\\s+RSMo(?:\\s+\\d{4})?)$",
+      "finder": true,
       "message": "Statute citations use Section or § with the RSMo year when given, e.g. Section 537.080, RSMo 2016 or § 537.080 RSMo."
     },
     {
@@ -78,6 +80,7 @@
       "source": "Mo. Sup. Ct. R. 84.04",
       "detect": "\\bRule\\s+\\d+\\.\\d+(?:\\([a-z]\\))?",
       "valid": "^Rule\\s+\\d{2}\\.\\d{2}(?:\\([a-z]\\))?$",
+      "finder": true,
       "message": "Supreme Court rule citations use Rule with two-part numbers, e.g. Rule 84.04(d)."
     },
     {

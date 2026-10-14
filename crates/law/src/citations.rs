@@ -1,9 +1,180 @@
 //! Citation finder and form checker (suggestions only; never claims an authority exists).
 
-use wordcraft_doc::{Document, Pos};
+use std::collections::HashMap;
+
+use wordcraft_doc::{Document, Pos, StoryRef};
+use wordcraft_engine::CmdError;
 use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 
 use crate::citation_pack::CompiledPack;
+
+/// Most citation occurrences a single finder scan may collect. The scan reads the document, which
+/// is input-derived and therefore hostile: it is bounded so a runaway or crafted document cannot
+/// make the table of authorities allocate without limit. Far above any real brief.
+pub const MAX_CITATION_OCCURRENCES: usize = 5_000;
+/// Most distinct authorities a single table may hold. Together with [`MAX_CITATION_OCCURRENCES`]
+/// this bounds the generated table: its lines, bookmarks and `PAGEREF` fields.
+pub const MAX_CITATION_ENTRIES: usize = 2_000;
+
+/// One logical authority in the document (first full cite + linked short forms).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CitationEntry {
+    pub id: u32,
+    pub kind: String,
+    /// Full citation text at first occurrence.
+    pub label: String,
+    /// Sort key (full citation text at first occurrence, same as the label for sorting).
+    pub sort_key: String,
+    pub occurrences: Vec<CitationOccurrence>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CitationOccurrence {
+    pub start: Pos,
+    pub end: Pos,
+}
+
+struct RawHit {
+    kind: String,
+    text: String,
+    start: Pos,
+    end: Pos,
+}
+
+/// Map a pack rule `kind` to a table-of-authorities group heading.
+pub fn group_heading(kind: &str) -> &'static str {
+    match kind {
+        "case" => "Cases",
+        "constitutional" | "constitution" => "Constitutional Provisions",
+        "statute" => "Statutes",
+        "rule" => "Rules",
+        _ => "Other Authorities",
+    }
+}
+
+/// Scan `doc` with `pack` and return authority entries, bounded by the production limits. The
+/// document is input-derived, so the result count is capped; see [`find_entries_limited`].
+///
+/// Every match the pack's existing finder rules report is used as-is: a hit is one authority, and
+/// hits whose text and kind are identical collapse into one entry (its first hit supplies the
+/// label). No new detection or linking happens here.
+pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usize, usize)>) -> Result<Vec<CitationEntry>, CmdError> {
+    find_entries_limited(doc, pack, exclude_blocks, MAX_CITATION_OCCURRENCES, MAX_CITATION_ENTRIES)
+}
+
+/// [`find_entries`] with explicit caps, so the bounds can be exercised without a huge document.
+///
+/// Paragraphs in `exclude_blocks` (inclusive top-level body block indices) are skipped — used to
+/// omit a generated table of authorities. When the scan collects more than `max_occurrences`
+/// matches, or the collapse leaves more than `max_entries` authorities, it stops with a clear
+/// error rather than allocating without limit. Nothing is written to the document.
+pub(crate) fn find_entries_limited(
+    doc: &Document,
+    pack: &CompiledPack,
+    exclude_blocks: Option<(usize, usize)>,
+    max_occurrences: usize,
+    max_entries: usize,
+) -> Result<Vec<CitationEntry>, CmdError> {
+    let mut raw = Vec::new();
+    for story in doc.counted_stories() {
+        for path in doc.para_paths(story) {
+            if story == StoryRef::Body
+                && let Some((lo, hi)) = exclude_blocks
+                && path.0.first().is_some_and(|b| (*b as usize) >= lo && (*b as usize) <= hi)
+            {
+                continue;
+            }
+            let Some(para) = doc.para(story, &path) else { continue };
+            let text = &para.text;
+            if text.is_empty() {
+                continue;
+            }
+            for rule in &pack.rules {
+                if !rule.finder {
+                    continue;
+                }
+                for m in rule.detect.find_iter(text) {
+                    let end = if rule.extend_tail { extend_span(text, m.end()) } else { m.end() };
+                    let slice = text.get(m.start()..end).map_or(m.as_str(), |s| s);
+                    if rule.valid.as_ref().is_some_and(|v| !v.is_match(slice)) {
+                        continue;
+                    }
+                    let start = Pos { story, path: path.clone(), off: m.start() };
+                    let end_pos = Pos { story, path: path.clone(), off: end };
+                    raw.push(RawHit { kind: rule.kind.clone(), text: slice.to_string(), start, end: end_pos });
+                    if raw.len() > max_occurrences {
+                        return Err(too_many("citation occurrences", raw.len(), max_occurrences));
+                    }
+                }
+            }
+        }
+    }
+    raw = dedupe_overlaps(raw);
+    raw.sort_by_key(|h| pos_order(&h.start));
+
+    let mut next_id = 1u32;
+    let mut key_to_id: HashMap<String, u32> = HashMap::new();
+    let mut map: HashMap<u32, CitationEntry> = HashMap::new();
+    for h in raw {
+        let key = format!("{}:{}", h.kind, h.text.trim().to_ascii_lowercase());
+        let id = *key_to_id.entry(key).or_insert_with(|| {
+            let id = next_id;
+            next_id += 1;
+            id
+        });
+        let entry = map.entry(id).or_insert_with(|| CitationEntry {
+            id,
+            kind: h.kind.clone(),
+            label: h.text.trim().to_string(),
+            sort_key: h.text.trim().to_string(),
+            occurrences: Vec::new(),
+        });
+        entry.occurrences.push(CitationOccurrence { start: h.start, end: h.end });
+    }
+    if map.len() > max_entries {
+        return Err(too_many("authorities", map.len(), max_entries));
+    }
+    let mut out: Vec<CitationEntry> = map.into_values().collect();
+    out.sort_by_key(|e| e.id);
+    Ok(out)
+}
+
+fn too_many(what: &str, got: usize, max: usize) -> CmdError {
+    CmdError::Failed(format!("too many {what} in the document ({got}, at most {max}); narrow the document or turn off the table of authorities"))
+}
+
+fn pos_order(start: &Pos) -> (i64, Vec<u32>, usize) {
+    (story_rank(start.story), start.path.0.clone(), start.off)
+}
+
+fn para_key(story: StoryRef, path: &wordcraft_doc::Path) -> (i64, Vec<u32>) {
+    (story_rank(story), path.0.clone())
+}
+
+fn story_rank(story: StoryRef) -> i64 {
+    match story {
+        StoryRef::Body => 0,
+        StoryRef::Part(id) => id as i64 + 1,
+    }
+}
+
+fn dedupe_overlaps(hits: Vec<RawHit>) -> Vec<RawHit> {
+    let mut hits = hits;
+    hits.sort_by(|a, b| b.text.len().cmp(&a.text.len()).then_with(|| pos_order(&a.start).cmp(&pos_order(&b.start))));
+    let mut taken: HashMap<(i64, Vec<u32>), Vec<(usize, usize)>> = HashMap::new();
+    let mut out = Vec::new();
+    for h in hits {
+        let key = para_key(h.start.story, &h.start.path);
+        let ranges = taken.entry(key).or_default();
+        if ranges.iter().any(|(a, b)| h.start.off < *b && h.end.off > *a) {
+            continue;
+        }
+        ranges.push((h.start.off, h.end.off));
+        out.push(h);
+    }
+    out.sort_by_key(|h| pos_order(&h.start));
+    out
+}
 
 /// Extend a match through optional pin cites (including page ranges) and a parenthetical so
 /// validation sees the full cite.
