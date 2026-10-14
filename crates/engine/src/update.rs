@@ -185,8 +185,12 @@ fn wait_with_deadline(mut child: std::process::Child, timeout: std::time::Durati
     let deadline = std::time::Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            // Exited: collect the captured pipes under their own deadline.
-            Ok(Some(_)) => return collect_output(child, timeout),
+            // Exited: collect the captured pipes under the time left, not a fresh deadline, so the
+            // whole probe stays within `timeout` even when the child runs close to the limit.
+            Ok(Some(_)) => {
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                return collect_output(child, remaining);
+            }
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();

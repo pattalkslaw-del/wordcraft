@@ -665,4 +665,39 @@ mod tests {
         h.run_steps(4);
         assert!(!h.state().update.reboot_notice, "OK acknowledges the restart banner");
     }
+
+    /// File ▸ Check for updates lives in Backstage, so a newer release must answer visibly there:
+    /// the version, release notes and the Update/Skip/Later actions all render over Backstage, and
+    /// Skip dismisses the notice (#15 review).
+    #[test]
+    fn release_notice_is_visible_and_actionable_in_backstage() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
+        app.update.notice = Some(Notice {
+            version: "9.0.0".into(),
+            notes: "Fixes and improvements".into(),
+            page_url: "https://github.com/storytold/wordcraft/releases/tag/v9.0.0".into(),
+            one_click: true,
+            verified_update: false,
+            external_updater: false,
+        });
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut crate::WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        assert!(h.query_by_label("WordCraft 9.0.0 is available.").is_some(), "the version is shown over Backstage");
+        assert!(h.query_by_label("Fixes and improvements").is_some(), "the release notes are shown over Backstage");
+        assert!(h.query_by_label("Update").is_some(), "the Update action is available in Backstage");
+        assert!(h.query_by_label("Skip this version").is_some(), "Skip is available in Backstage");
+        assert!(h.query_by_label("Later").is_some(), "Later is available in Backstage");
+        h.get_by_label("Skip this version").click();
+        h.run_steps(4);
+        assert!(h.state().update.notice.is_none(), "Skip dismisses the notice");
+    }
 }
