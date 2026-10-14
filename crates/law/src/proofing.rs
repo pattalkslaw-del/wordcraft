@@ -32,22 +32,21 @@ pub fn confusion_issues(text: &str) -> Vec<Issue> {
     let tokens: Vec<(usize, usize, String)> =
         wordcraft_proof::words(text).into_iter().filter_map(|(a, b)| text.get(a..b).map(|w| (a, b, w.to_lowercase()))).collect();
     let mut out = Vec::new();
-    for (idx, (a, b, lower)) in tokens.iter().enumerate() {
-        let surface = text.get(*a..*b).unwrap_or("");
-        for rule in CONFUSION_RULES {
-            if !lower.eq_ignore_ascii_case(rule.wrong) {
+    for start_idx in 0..tokens.len() {
+        for rule in CONFUSION_PHRASES {
+            let need = rule.words.len();
+            if start_idx + need > tokens.len() {
                 continue;
             }
-            if !phrase_follows(&tokens, idx, text, rule.following)
-                || !phrase_precedes(&tokens, idx, text, rule.preceding)
-                || !any_precedes(&tokens, idx, text, rule.preceding_any)
-                || !subject_any_before(&tokens, idx, text, rule.subject_any)
-            {
+            if !rule.words.iter().enumerate().all(|(n, want)| word_matches(want, &tokens[start_idx + n].2)) {
                 continue;
             }
+            let wrong = start_idx + rule.wrong_index;
+            let (a, b, _) = tokens[wrong];
+            let surface = text.get(a..b).unwrap_or("");
             out.push(Issue {
-                start: *a,
-                end: *b,
+                start: a,
+                end: b,
                 kind: IssueKind::Grammar,
                 message: rule.message.into(),
                 suggestions: vec![capitalize_like(surface, rule.right)],
@@ -55,6 +54,8 @@ pub fn confusion_issues(text: &str) -> Vec<Issue> {
             });
         }
     }
+    out.sort_by_key(|i| i.start);
+    out.dedup_by_key(|i| i.start);
     out
 }
 
@@ -89,284 +90,204 @@ pub fn run_confusion_checks(session: &mut Session, store: bool) -> Value {
     json!({"findings": items})
 }
 
-struct ConfusionRule {
-    wrong: &'static str,
+struct ConfusionPhrase {
+    /// Lowercase words in order (matched case-insensitively with plural/possessive variants).
+    words: &'static [&'static str],
+    /// Index into [`Self::words`] of the misspelled/confused token to highlight.
+    wrong_index: usize,
     right: &'static str,
     message: &'static str,
-    /// When non-empty, the words immediately after `wrong` in the same sentence.
-    following: &'static [&'static str],
-    /// When non-empty, the exact words immediately before `wrong` in the same sentence, in order.
-    preceding: &'static [&'static str],
-    /// When non-empty, any one of these words may sit immediately before `wrong`. Use for a
-    /// category (an auxiliary or `to` that only leads a verb) where the exact word varies but the
-    /// context it signals is the same.
-    preceding_any: &'static [&'static str],
-    /// When non-empty, any one of these words must appear somewhere before `wrong` in the same
-    /// sentence. Unlike [`Self::preceding_any`], the word need not be adjacent, so this reaches the
-    /// subject that selects the confused sense — for example a doctor before `proscribe medication`,
-    /// where the object alone cannot tell the physician's `prescribe` from the law's `proscribe`.
-    subject_any: &'static [&'static str],
 }
 
-/// Auxiliaries that only precede a *base verb*. A word after one of these is doing verb work, so
-/// `illicit` there is almost certainly the confused verb `elicit`; without one, `illicit
-/// testimony` ("unlawful testimony") is correct and must not fire. The infinitive/preposition `to`
-/// is deliberately absent: "objection to illicit testimony" is correct, and telling an infinitival
-/// `to` from a prepositional one needs part-of-speech context this checker doesn't have, so it is
-/// safer to drop `to` than to risk flagging correct prose.
-const VERB_LEADS: &[&str] = &["will", "would", "can", "could", "may", "might", "must", "shall", "should", "did", "does", "do"];
-
-/// People who order medical treatment. `proscribe medication` after one of these is almost
-/// certainly the confused `prescribe`; the same object after a law, regulator or rule is the
-/// correct `proscribe` (forbid), so requiring a medical subject keeps prohibitions quiet.
-const MEDICAL_ACTORS: &[&str] = &["doctor", "physician", "surgeon", "nurse", "clinician", "pharmacist", "dentist", "psychiatrist", "veterinarian"];
-
-/// Context-sensitive legal word-pair checks (original wording; no manual copied).
-const CONFUSION_RULES: &[ConfusionRule] = &[
-    ConfusionRule {
-        wrong: "statue",
+/// Fixed wrong phrases only — no single-token guesses or lookahead (original wording; no manual copied).
+const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
+    ConfusionPhrase {
+        words: &["statue", "of", "limitations"],
+        wrong_index: 0,
         right: "statute",
         message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of limitations?",
-        following: &["of", "limitations"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "principle",
+    ConfusionPhrase {
+        words: &["statue", "of", "frauds"],
+        wrong_index: 0,
+        right: "statute",
+        message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of frauds?",
+    },
+    ConfusionPhrase {
+        words: &["principle", "issue"],
+        wrong_index: 0,
         right: "principal",
         message: "In legal writing, the main claim or amount is usually \"principal\", not \"principle\".",
-        following: &["issue"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "principle",
+    ConfusionPhrase {
+        words: &["principle", "claim"],
+        wrong_index: 0,
         right: "principal",
         message: "The primary relief sought is the \"principal\" claim, not \"principle\".",
-        following: &["claim"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "principal",
+    ConfusionPhrase {
+        words: &["principle", "amount"],
+        wrong_index: 0,
+        right: "principal",
+        message: "The sum at stake is the \"principal\" amount, not \"principle\".",
+    },
+    ConfusionPhrase {
+        words: &["principle", "place", "of", "business"],
+        wrong_index: 0,
+        right: "principal",
+        message: "The main place of business is the \"principal\" place, not \"principle\".",
+    },
+    ConfusionPhrase {
+        words: &["principal", "of", "law"],
+        wrong_index: 0,
         right: "principle",
         message: "A rule of law is a \"principle\", not \"principal\".",
-        following: &["of", "law"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    // Note: `council for the …` is deliberately absent. "The city council for the district" is
-    // correct, and immediate adjacency to `for the` doesn't make `council` likely wrong. Only the
-    // unambiguous `council of record` fires below.
-    ConfusionRule {
-        wrong: "council",
+    ConfusionPhrase {
+        words: &["council", "for", "the", "plaintiff"],
+        wrong_index: 0,
         right: "counsel",
         message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
-        following: &["of", "record"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "affect",
+    ConfusionPhrase {
+        words: &["council", "for", "the", "defendant"],
+        wrong_index: 0,
+        right: "counsel",
+        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
+    },
+    ConfusionPhrase {
+        words: &["council", "for", "the", "appellant"],
+        wrong_index: 0,
+        right: "counsel",
+        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
+    },
+    ConfusionPhrase {
+        words: &["council", "for", "the", "respondent"],
+        wrong_index: 0,
+        right: "counsel",
+        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
+    },
+    ConfusionPhrase {
+        words: &["council", "of", "record"],
+        wrong_index: 0,
+        right: "counsel",
+        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
+    },
+    ConfusionPhrase {
+        words: &["opposing", "council"],
+        wrong_index: 1,
+        right: "counsel",
+        message: "The other side's lawyer is \"counsel\", not \"council\".",
+    },
+    ConfusionPhrase {
+        words: &["the", "affect", "of"],
+        wrong_index: 1,
         right: "effect",
         message: "A result or outcome is an \"effect\"; \"affect\" is usually the verb.",
-        following: &["of", "the"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "effect",
+    ConfusionPhrase {
+        words: &["affect", "a", "change"],
+        wrong_index: 0,
+        right: "effect",
+        message: "To bring about change is usually to \"effect\" it, not \"affect\".",
+    },
+    ConfusionPhrase {
+        words: &["will", "effect", "the", "outcome"],
+        wrong_index: 1,
         right: "affect",
         message: "To influence a ruling is to \"affect\" it, not \"effect\" (except \"effect change\").",
-        following: &["the", "outcome"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "precedence",
+    ConfusionPhrase {
+        words: &["binding", "precedence"],
+        wrong_index: 1,
         right: "precedent",
         message: "A prior appellate decision is \"precedent\", not \"precedence\" (priority).",
-        following: &[],
-        preceding: &["binding"],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "precedence",
+    ConfusionPhrase {
+        words: &["controlling", "precedence"],
+        wrong_index: 1,
         right: "precedent",
         message: "Controlling case law is \"precedent\", not \"precedence\".",
-        following: &[],
-        preceding: &["controlling"],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "proscribe",
+    ConfusionPhrase {
+        words: &["proscribe", "medication", "for"],
+        wrong_index: 0,
         right: "prescribe",
         message: "A doctor \"prescribes\" treatment; \"proscribe\" means to forbid.",
-        following: &["medication"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: MEDICAL_ACTORS,
     },
-    // Note: `prescribe such conduct` is deliberately absent. A rule can affirmatively *prescribe*
-    // conduct, so `prescribe` there is correct, not a reversed `proscribe`; adjacency to `such
-    // conduct` doesn't establish that the word is likely wrong. The clear `proscribe medication`
-    // case still fires below.
-    ConfusionRule {
-        wrong: "averse",
+    ConfusionPhrase {
+        words: &["averse", "possession"],
+        wrong_index: 0,
         right: "adverse",
         message: "An opposing party or interest is \"adverse\", not \"averse\" (unwilling).",
-        following: &["possession"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "adverse",
+    ConfusionPhrase {
+        words: &["adverse", "to", "risk"],
+        wrong_index: 0,
         right: "averse",
         message: "Being unwilling is \"averse\"; \"adverse\" describes harm or opposition.",
-        following: &["to", "risk"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "illicit",
+    ConfusionPhrase {
+        words: &["adverse", "to", "doing"],
+        wrong_index: 0,
+        right: "averse",
+        message: "Being unwilling is \"averse\"; \"adverse\" describes harm or opposition.",
+    },
+    ConfusionPhrase {
+        words: &["will", "illicit", "testimony"],
+        wrong_index: 1,
         right: "elicit",
         message: "To draw out testimony is to \"elicit\" it, not \"illicit\" (unlawful).",
-        following: &["testimony"],
-        preceding: &[],
-        preceding_any: VERB_LEADS,
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "illicit",
+    ConfusionPhrase {
+        words: &["illicit", "a", "response"],
+        wrong_index: 0,
         right: "elicit",
         message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
-        following: &["a", "response"],
-        preceding: &[],
-        preceding_any: VERB_LEADS,
-        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "compliment",
+    ConfusionPhrase {
+        words: &["could", "illicit", "a", "response"],
+        wrong_index: 1,
+        right: "elicit",
+        message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
+    },
+    ConfusionPhrase {
+        words: &["compliment", "the", "record"],
+        wrong_index: 0,
         right: "complement",
         message: "To complete or supplement the record is to \"complement\" it, not \"compliment\".",
-        following: &["the", "record"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    // Note: the reverse `complement the court` rule is deliberately absent. "The new tribunal will
-    // complement the court" is correct — `complement` legitimately takes a court as its object — so
-    // adjacency to `the court` doesn't make the word likely wrong. Only the clear
-    // `compliment the record` case above fires.
-    ConfusionRule {
-        wrong: "discreet",
+    ConfusionPhrase {
+        words: &["discreet", "issues"],
+        wrong_index: 0,
         right: "discrete",
         message: "Separate or distinct issues are \"discrete\", not \"discreet\" (tactful).",
-        following: &["issues"],
-        preceding: &[],
-        preceding_any: &[],
-        subject_any: &[],
     },
-    // Note: the reverse `discrete investigation` rule is deliberately absent. "A discrete
-    // investigation into each transaction" means separate investigations and is correct, and
-    // adjacency to `investigation` alone cannot tell it from a tactful `discreet` one, so the
-    // clearer `discreet issues` case above is the only direction that fires.
 ];
 
-fn is_sentence_end(c: char) -> bool {
-    matches!(c, '.' | '!' | '?')
-}
-
-/// Whether the raw text between two adjacent tokens holds a sentence end. Phrase words are
-/// immediate neighbours, so checking each gap keeps the work proportional to the phrase length
-/// instead of collecting every word in the sentence for every candidate token (which was
-/// quadratic on a long sentence with many candidates).
-fn gap_has_sentence_end(text: &str, from: usize, to: usize) -> bool {
-    text.get(from..to).is_some_and(|gap| gap.chars().any(is_sentence_end))
-}
-
-fn phrase_follows(tokens: &[(usize, usize, String)], idx: usize, text: &str, phrase: &[&str]) -> bool {
-    if phrase.is_empty() {
+/// Whether token `actual` matches the expected dictionary word (case-insensitive, plural/possessive).
+fn word_matches(expected: &str, actual: &str) -> bool {
+    if expected.eq_ignore_ascii_case(actual) {
         return true;
     }
-    let Some(first) = tokens.get(idx) else { return false };
-    let mut prev_end = first.1;
-    for (n, want) in phrase.iter().enumerate() {
-        let Some(t) = tokens.get(idx.saturating_add(1).saturating_add(n)) else { return false };
-        if t.2 != *want || gap_has_sentence_end(text, prev_end, t.0) {
-            return false;
-        }
-        prev_end = t.1;
-    }
-    true
-}
-
-fn phrase_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, phrase: &[&str]) -> bool {
-    if phrase.is_empty() {
+    let actual = actual.to_lowercase();
+    let expected = expected.to_lowercase();
+    if actual == expected {
         return true;
     }
-    let Some(first) = tokens.get(idx) else { return false };
-    let mut next_start = first.0;
-    for (n, want) in phrase.iter().rev().enumerate() {
-        let Some(i) = idx.checked_sub(n.saturating_add(1)) else { return false };
-        let Some(t) = tokens.get(i) else { return false };
-        if t.2 != *want || gap_has_sentence_end(text, t.1, next_start) {
-            return false;
-        }
-        next_start = t.0;
-    }
-    true
-}
-
-/// Whether any word in `set` sits immediately before the token at `idx`, with no sentence end
-/// between. A set (unlike [`phrase_precedes`]'s ordered phrase) matches any one member, so rules
-/// can name a category such as the auxiliaries and `to` that only lead a verb.
-fn any_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, set: &[&str]) -> bool {
-    if set.is_empty() {
+    if actual == format!("{expected}'s") || actual == format!("{expected}’s") {
         return true;
     }
-    let Some(i) = idx.checked_sub(1) else { return false };
-    let (Some(prev), Some(cur)) = (tokens.get(i), tokens.get(idx)) else { return false };
-    set.contains(&prev.2.as_str()) && !gap_has_sentence_end(text, prev.1, cur.0)
-}
-
-/// Whether any word in `set` appears shortly before the token at `idx` in the same sentence.
-/// Unlike [`any_precedes`] (the immediate neighbour), this reaches the subject that selects the
-/// confused sense, so a rule can require an actor rather than only a neighbouring word. The scan
-/// is capped at [`SUBJECT_LOOKBACK`] words, so a hostile sentence can't make it quadratic.
-fn subject_any_before(tokens: &[(usize, usize, String)], idx: usize, text: &str, set: &[&str]) -> bool {
-    if set.is_empty() {
+    if actual == format!("{expected}s") || actual == format!("{expected}es") {
         return true;
     }
-    let Some(cur) = tokens.get(idx) else { return false };
-    let mut bound = cur.0;
-    for i in (0..idx).rev().take(SUBJECT_LOOKBACK) {
-        let Some(t) = tokens.get(i) else { break };
-        if gap_has_sentence_end(text, t.1, bound) {
-            break;
-        }
-        if set.contains(&t.2.as_str()) {
-            return true;
-        }
-        bound = t.0;
+    if let Some(stem) = actual.strip_suffix('s')
+        && (stem == expected || format!("{stem}e") == expected)
+    {
+        return true;
     }
     false
 }
-
-/// How many words before a candidate [`subject_any_before`] looks. A subject that far back still
-/// counts; beyond it the check stops rather than scanning a whole (possibly hostile) sentence.
-const SUBJECT_LOOKBACK: usize = 32;
 
 fn capitalize_like(original: &str, replacement: &str) -> String {
     if original.chars().next().is_some_and(|c| c.is_uppercase()) {

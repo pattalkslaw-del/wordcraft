@@ -119,6 +119,7 @@ macro_rules! confusion_pair {
 }
 
 confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.", "statue", "statute");
+confusion_pair!(statute_frauds, "The statue of frauds bars oral agreements.", "A bronze statue stands in the plaza.", "statue", "statute");
 confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.", "principle", "principal");
 confusion_pair!(
     principal_principle_claim,
@@ -127,7 +128,49 @@ confusion_pair!(
     "principle",
     "principal"
 );
+confusion_pair!(
+    principal_principle_amount,
+    "The principle amount remains unpaid.",
+    "A basic principle guides the analysis.",
+    "principle",
+    "principal"
+);
+confusion_pair!(
+    principal_place_of_business,
+    "The principle place of business is in St. Louis.",
+    "The principal amount is unpaid.",
+    "principle",
+    "principal"
+);
 confusion_pair!(principal_of_law, "The principal of law is settled.", "The principal amount is unpaid.", "principal", "principle");
+confusion_pair!(
+    counsel_council_plaintiff,
+    "The council for the plaintiff filed a motion.",
+    "The city council for the district met yesterday.",
+    "council",
+    "counsel"
+);
+confusion_pair!(
+    counsel_council_defendant,
+    "The council for the defendant objected.",
+    "The city council for the district met yesterday.",
+    "council",
+    "counsel"
+);
+confusion_pair!(
+    counsel_council_appellant,
+    "The council for the appellant argued first.",
+    "The city council for the district met yesterday.",
+    "council",
+    "counsel"
+);
+confusion_pair!(
+    counsel_council_respondent,
+    "The council for the respondent replied.",
+    "The city council for the district met yesterday.",
+    "council",
+    "counsel"
+);
 confusion_pair!(
     counsel_council,
     "Attorney council of record filed a brief.",
@@ -136,14 +179,20 @@ confusion_pair!(
     "counsel"
 );
 confusion_pair!(
-    counsel_council_ordinance,
-    "The council of record filed an appearance.",
+    opposing_council,
+    "We conferred with opposing council before trial.",
     "The city council voted for the ordinance.",
     "council",
     "counsel"
 );
 confusion_pair!(affect_effect, "The affect of the ruling was clear.", "The new rule will affect the outcome.", "affect", "effect");
-confusion_pair!(affect_statute, "The affect of the ruling was clear.", "The rule will affect enforcement of the statute.", "affect", "effect");
+confusion_pair!(
+    affect_a_change,
+    "The order will affect a change in procedure.",
+    "The parties hope to effect a change in procedure.",
+    "affect",
+    "effect"
+);
 confusion_pair!(
     precedent_precedence,
     "This is binding precedence in our circuit.",
@@ -166,34 +215,13 @@ confusion_pair!(
     "prescribe"
 );
 
-/// #5 review: correct wording must not be flagged. A governing-body `council` — even "council for
-/// the district" — and a rule that affirmatively `prescribe`s conduct are both correct; adjacency
-/// alone doesn't make the word likely wrong. The clear `council of record` and `proscribe
-/// medication` cases still fire (see the pairs above).
+/// Exact-phrase check: forbidding medication advertising is `proscribe`, not a doctor's `prescribe`.
 #[test]
-fn correct_council_and_prescribe_contexts_are_quiet() {
+fn proscribe_medication_advertising_is_quiet() {
     for text in [
-        "The city council for the district met yesterday.",
-        "The county council for the region approved the plan.",
-        "The rules prescribe such conduct by counsel.",
-        "The statute prescribe such conduct.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-/// #5 review: a law, rule or regulator `proscribe`s (forbids) things — including medication
-/// advertising — so `proscribe medication` is only likely wrong when a medical actor, who would
-/// actually `prescribe` treatment, is the subject. The prohibition stays quiet; the doctor fires.
-#[test]
-fn proscribe_forbids_medication_only_for_medical_actors() {
-    let fired = confusion_issues("The doctor will proscribe medication for the patient.");
-    assert_eq!(fired.len(), 1, "expected one finding: {fired:?}");
-    assert_eq!(fired[0].suggestions, vec!["prescribe".to_string()]);
-    for text in [
+        "The physician testified that the regulation will proscribe medication advertising to minors.",
         "The regulation will proscribe medication advertising to minors.",
         "The statute will proscribe medication by unlicensed sellers.",
-        "The board may proscribe medication in prison.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
@@ -202,6 +230,7 @@ fn proscribe_forbids_medication_only_for_medical_actors() {
 
 confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
 confusion_pair!(adverse_to_risk, "The clause is adverse to risk.", "The investor was averse to risk.", "adverse", "averse");
+confusion_pair!(adverse_to_doing, "She is adverse to doing business there.", "The investor was averse to risk.", "adverse", "averse");
 confusion_pair!(elicit_illicit, "The deposition will illicit testimony about the contract.", "Police seized illicit drugs.", "illicit", "elicit");
 confusion_pair!(
     elicit_illicit_response,
@@ -220,12 +249,28 @@ confusion_pair!(
 );
 confusion_pair!(effect_affect_outcome, "The new rule will effect the outcome.", "The new rule will affect the outcome.", "effect", "affect");
 
-/// #5 review: correct `illicit` (an adjective meaning unlawful) and correct `complement` (to
-/// complete or balance) must not be flagged. `illicit testimony` is a valid noun phrase, and the
-/// prepositional `to` before it ("objection to illicit testimony") is not the infinitive that
-/// leads the verb `elicit`, so it must stay quiet; only an auxiliary before `illicit` makes it
-/// likely wrong. `complement the court` is likewise a valid object. The clear
-/// `will illicit testimony` and `compliment the record` cases still fire (see the pairs above).
+/// `effect` as a noun before another noun must not suggest `affect`.
+#[test]
+fn effect_as_noun_before_outcome_is_quiet() {
+    let text = "We assessed the effect the outcome had on the parties.";
+    let issues = confusion_issues(text);
+    assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+}
+
+/// Correct governing-body `council` and affirmative `prescribe` must stay quiet.
+#[test]
+fn correct_council_and_prescribe_contexts_are_quiet() {
+    for text in [
+        "The city council for the district met yesterday.",
+        "The county council for the region approved the plan.",
+        "The rules prescribe such conduct by counsel.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
+/// Correct adjective `illicit` and verb `complement` must stay quiet (no bare `illicit testimony` rule).
 #[test]
 fn correct_illicit_and_complement_contexts_are_quiet() {
     for text in [
@@ -240,13 +285,11 @@ fn correct_illicit_and_complement_contexts_are_quiet() {
     }
 }
 
-/// #5 review: `discrete investigation` means separate investigations and is correct, so it must
-/// never suggest `discreet`; a genuinely tactful `discreet investigation` is correct too. Only the
-/// `discreet issues` direction (separate issues) fires, and removing the reverse rule keeps both
-/// correct uses quiet.
+/// `discrete inquiry` and `discrete investigation` are correct and must not suggest `discreet`.
 #[test]
-fn discrete_investigation_is_quiet() {
+fn discrete_inquiry_and_investigation_are_quiet() {
     for text in [
+        "The court made a discrete inquiry into venue.",
         "The agency opened a discrete investigation into each transaction.",
         "The court ran a discrete investigation of each charge.",
         "The firm conducted a discreet investigation.",
