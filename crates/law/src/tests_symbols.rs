@@ -146,11 +146,44 @@ fn typing_section_uses_nbsp_and_sec_is_unchanged() {
     }
     let typed = s.doc.para_at(&s.sel.focus).unwrap().text.clone();
     assert_eq!(typed, format!("§{NBSP}1.010"));
+    // `sec.` typed one character at a time must survive the same single-character AutoFormat hook.
+    // (Word's own sentence capitalisation is turned off so the test isolates the legal spacing.)
     let mut s2 = law();
     s2.prefs.autocorrect.enabled = true;
-    run(&mut s2, "text.insert", json!({"text": "sec. 1.010"}));
+    s2.prefs.autocorrect.cap_sentences = false;
+    for ch in "sec. 1.010".chars() {
+        run(&mut s2, "text.insert", json!({"text": ch.to_string()}));
+    }
     let sec = s2.doc.para_at(&s2.sel.focus).unwrap().text.clone();
     assert_eq!(sec, "sec. 1.010");
+}
+
+#[test]
+fn fix_spacing_maps_the_selection_so_typing_replaces_it() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "§ 1"}));
+    run(&mut s, "select.all", json!({}));
+    run(&mut s, "law.symbols.fixSpacing", json!({"scope": "selection"}));
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, format!("§{NBSP}1"));
+    // The selection still covers the phrase even though the NBSP grew a byte: typing replaces it.
+    run(&mut s, "text.insert", json!({"text": "X"}));
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, "X", "typing replaces the whole selection");
+    // Undo restores the fixed phrase, redo replaces it again.
+    assert!(s.undo());
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, format!("§{NBSP}1"));
+    assert!(s.redo());
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, "X");
+}
+
+#[test]
+fn fix_spacing_document_scope_keeps_the_caret_after_changed_text() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "§ 1"}));
+    // A caret at the end of the paragraph must move past the wider NBSP, not slip inside it.
+    s.sel = Selection::caret(Pos::body(0, 4));
+    run(&mut s, "law.symbols.fixSpacing", json!({"scope": "document"}));
+    run(&mut s, "text.insert", json!({"text": "2"}));
+    assert_eq!(s.doc.para_at(&Pos::body(0, 0)).unwrap().text, format!("§{NBSP}12"));
 }
 
 #[test]

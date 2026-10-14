@@ -4,7 +4,7 @@ use std::sync::Once;
 
 use serde_json::{Value, json};
 use wordcraft_doc::para::NBSP;
-use wordcraft_doc::{Paragraph, Pos, StoryRef};
+use wordcraft_doc::{Paragraph, Path, Pos, StoryRef};
 use wordcraft_engine::cmd::{delete_selection, sel_result, type_text};
 use wordcraft_engine::{CmdError, CmdResult, CommandSpec, Selection, Session, p};
 
@@ -57,8 +57,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("law.symbols.nbsp", "Nonbreaking Space", LOC, nbsp),
         CommandSpec::new("law.symbols.nbHyphen", "Nonbreaking Hyphen", LOC, nb_hyphen),
         CommandSpec::new("law.symbols.fixSpacing", "Fix Legal Sign Spacing", LOC, fix_spacing)
-            .params(r#"{"scope"?: "selection" | "document"} — replace an ordinary space after § or ¶ before a digit with a non-breaking space; default is the selection, or the whole document when the selection is empty"#)
-            .pure(),
+            .params(r#"{"scope"?: "selection" | "document"} — replace an ordinary space after § or ¶ before a digit with a non-breaking space; default is the selection, or the whole document when the selection is empty"#),
     ]
 }
 
@@ -206,35 +205,50 @@ pub fn sign_spacing_space_ranges(text: &str, from: usize, to: usize) -> Vec<(usi
     out
 }
 
-fn fix_sign_spacing_in_para(para: &mut Paragraph, from: usize, to: usize) -> Result<bool, wordcraft_doc::DocError> {
+fn fix_sign_spacing_in_para(para: &mut Paragraph, from: usize, to: usize) -> Result<Vec<(usize, usize)>, wordcraft_doc::DocError> {
     let spaces = sign_spacing_space_ranges(&para.text, from, to);
     if spaces.is_empty() {
-        return Ok(false);
+        return Ok(Vec::new());
     }
-    for (space_start, space_end) in spaces.into_iter().rev() {
-        let props = para.props_of_char(space_start).clone();
-        para.delete(space_start, space_end)?;
+    for (space_start, space_end) in spaces.iter().rev() {
+        let props = para.props_of_char(*space_start).clone();
+        para.delete(*space_start, *space_end)?;
         let mut buf = [0u8; 4];
-        para.insert_text(space_start, NBSP.encode_utf8(&mut buf), &props)?;
+        para.insert_text(*space_start, NBSP.encode_utf8(&mut buf), &props)?;
     }
     para.touch();
-    Ok(true)
+    Ok(spaces)
+}
+
+/// Move a selection endpoint over each replaced space. Each `(start, end)` is a one-byte ASCII
+/// space that became a longer NBSP, so every offset after `start` grows by the difference. The
+/// anchor and focus are mapped independently, which preserves the selection's direction.
+fn map_selection_through(sel: &mut Selection, path: &Path, replaced: &[(usize, usize)]) {
+    let shift = |off: usize| off + replaced.iter().filter(|(start, _)| *start < off).count();
+    if sel.anchor.path == *path {
+        sel.anchor.off = shift(sel.anchor.off);
+    }
+    if sel.focus.path == *path {
+        sel.focus.off = shift(sel.focus.off);
+    }
 }
 
 fn fix_spacing(s: &mut Session, v: &Value) -> CmdResult {
     let scope = p::str(v, "scope");
     let whole = scope == Some("document") || (scope != Some("selection") && s.sel.is_collapsed());
+    let (a, b) = s.sel.ordered();
     let mut fixes = 0usize;
     if whole {
         for path in s.doc.para_paths(StoryRef::Body) {
             let para = s.doc.para_mut(StoryRef::Body, &path)?;
             let len = para.len();
-            if fix_sign_spacing_in_para(para, 0, len)? {
+            let replaced = fix_sign_spacing_in_para(para, 0, len)?;
+            if !replaced.is_empty() {
                 fixes += 1;
+                map_selection_through(&mut s.sel, &path, &replaced);
             }
         }
     } else {
-        let (a, b) = s.sel.ordered();
         for path in s.doc.paths_between(&a, &b) {
             let para = s.doc.para_mut(a.story, &path)?;
             let from = if path == a.path { a.off } else { 0 };
@@ -242,8 +256,10 @@ fn fix_spacing(s: &mut Session, v: &Value) -> CmdResult {
             if from >= to {
                 continue;
             }
-            if fix_sign_spacing_in_para(para, from, to)? {
+            let replaced = fix_sign_spacing_in_para(para, from, to)?;
+            if !replaced.is_empty() {
                 fixes += 1;
+                map_selection_through(&mut s.sel, &path, &replaced);
             }
         }
     }
@@ -359,6 +375,12 @@ mod tests {
         assert!(s.undo());
         let text = s.doc.para_at(&s.sel.focus).unwrap().text.clone();
         assert_eq!(text, "§ 1", "undo restores the ordinary space: {text:?}");
+        assert!(s.redo());
+        let text = s.doc.para_at(&s.sel.focus).unwrap().text.clone();
+        assert_eq!(text, format!("§{NBSP}1"), "redo re-applies the AutoFormat: {text:?}");
+        assert!(s.redo());
+        let text = s.doc.para_at(&s.sel.focus).unwrap().text.clone();
+        assert_eq!(text, format!("§{NBSP}10"), "redo replays the rest of the typing: {text:?}");
     }
 
     fn run(s: &mut Session, id: &str, v: serde_json::Value) {

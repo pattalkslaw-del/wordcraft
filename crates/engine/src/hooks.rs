@@ -37,3 +37,16 @@ pub(crate) fn run_on_text_autoformat(session: &mut Session, text: &str) -> Resul
     }
     Ok(false)
 }
+
+/// Serialises tests that register hooks: the registry is process-wide, so a test that needs to
+/// see only its own hooks takes this lock and empties the registry around itself.
+#[cfg(test)]
+pub(crate) static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Empty every hook registry. Tests use it (under [`HOOK_TEST_LOCK`]) so a hook one test registers
+/// can never run for another test's session; production never unregisters.
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    ON_DOCUMENT_LOADED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    ON_TEXT_AUTOFORMAT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
