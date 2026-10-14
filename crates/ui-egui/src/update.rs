@@ -385,6 +385,24 @@ pub fn bar(app: &mut WordApp, ui: &mut Ui) {
     }
 }
 
+/// Handle a pending update quit before the ordinary close logic, sending the viewport command
+/// itself. Returns true when it acted, so the host skips the ordinary close handling this frame.
+///
+/// A deferred quit (unsaved edits prompt to save, or the restart banner is still up) must cancel
+/// any window-close event already pending this frame: showing the prompt or banner does not cancel
+/// that event by itself, and returning without one would let the window close behind it (#15).
+pub fn handle_quit(app: &mut WordApp, ctx: &egui::Context) -> bool {
+    if !app.update.quit_pending {
+        return false;
+    }
+    if app.update_quit_requested() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    } else {
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    }
+    true
+}
+
 pub fn maybe_startup_prompt(app: &mut WordApp) {
     if !app.session.update_prefs.asked_startup {
         app.show_update_startup_prompt = true;
@@ -560,5 +578,60 @@ mod tests {
         assert!(app.update.quit_pending, "the quit stays pending until after acknowledgement");
         app.update.reboot_notice = false;
         assert!(app.update_quit_requested(), "after OK, the close may proceed");
+    }
+
+    /// Run `handle_quit` for one frame that also carries a window-close event, and return the
+    /// viewport commands it sent.
+    fn quit_commands(app: &mut WordApp, with_close_event: bool) -> (bool, Vec<egui::ViewportCommand>) {
+        let ctx = egui::Context::default();
+        let mut input = egui::RawInput::default();
+        if with_close_event {
+            input.viewports.entry(egui::ViewportId::ROOT).or_default().events.push(egui::ViewportEvent::Close);
+        }
+        let ctx2 = ctx.clone();
+        let acted = std::cell::Cell::new(false);
+        let out = ctx.run_ui(input, |_ui| {
+            if handle_quit(app, &ctx2) {
+                acted.set(true);
+            }
+        });
+        let commands: Vec<_> = out.viewport_output.values().flat_map(|v| v.commands.clone()).collect();
+        out.drop_without_applying_deltas();
+        (acted.get(), commands)
+    }
+
+    /// A window-close event can arrive in the same frame an update finishes. While the update quit
+    /// is deferred for a dirty document, the host must cancel that close so the save prompt is not
+    /// bypassed and the window does not shut behind it (#15).
+    #[test]
+    fn deferred_update_quit_cancels_a_simultaneous_window_close() {
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.update.quit_pending = true;
+        app.session.dirty = true;
+        let (acted, commands) = quit_commands(&mut app, true);
+        assert!(acted, "the pending update quit is handled");
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose), "the pending window close must be cancelled: {commands:?}");
+        assert!(!commands.contains(&egui::ViewportCommand::Close), "the window must not close under the save prompt");
+        assert!(matches!(app.dialog, Some(crate::dialogs::Dialog::SaveChanges { .. })), "the save prompt is shown");
+    }
+
+    /// The restart banner also defers the quit; a simultaneous window-close event must be
+    /// cancelled until the user acknowledges the banner, after which the close may go ahead (#15).
+    #[test]
+    fn restart_notice_defers_update_quit_and_cancels_a_pending_close() {
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.update.quit_pending = true;
+        app.update.reboot_notice = true;
+        let (acted, commands) = quit_commands(&mut app, true);
+        assert!(acted);
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose), "the restart banner must keep the window open: {commands:?}");
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        assert!(app.update.quit_pending, "the quit stays pending until the banner is acknowledged");
+
+        app.update.reboot_notice = false;
+        let (acted, commands) = quit_commands(&mut app, false);
+        assert!(acted);
+        assert!(commands.contains(&egui::ViewportCommand::Close), "after acknowledgement the close may proceed: {commands:?}");
+        assert!(!app.update.quit_pending, "the pending quit was consumed");
     }
 }

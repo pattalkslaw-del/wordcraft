@@ -64,7 +64,12 @@ fn run_update_check(http: wordcraft_engine::update::HttpGet, env: Option<wordcra
     let mut s = Session::new(wordcraft_doc::Document::new());
     s.update_http = Some(http);
     s.update_env = env;
-    if let Ok(exe) = std::env::current_exe() {
+    // A test hook (`WORDCRAFT_UPDATE_CHECK_EXE`) lets the subprocess test put the running path
+    // under `/usr/bin` so install detection actually probes `dpkg-query`; otherwise the CLI's own
+    // path is used.
+    if let Ok(exe) = std::env::var("WORDCRAFT_UPDATE_CHECK_EXE") {
+        s.update_exe = Some(exe);
+    } else if let Ok(exe) = std::env::current_exe() {
         s.update_exe = Some(exe.to_string_lossy().into_owned());
     }
     s.run("file.checkForUpdates", &serde_json::json!({"force": true})).map_err(|e| e.to_string())

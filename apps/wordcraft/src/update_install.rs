@@ -10,15 +10,65 @@ use std::process::Command;
 
 use wordcraft_engine::update::{InstallFn, InstallHandoff, InstallKind, InstallOutcome};
 
+/// Staging directories all share this prefix, so a later sweep can find them.
+const STAGING_PREFIX: &str = "wordcraft-update-";
+/// How long a download kept for the manual macOS install is left in place before a later sweep
+/// removes it. `open` returning does not mean Finder has finished mounting the disk image, so the
+/// verified file is kept; a leftover from a previous update is cleared once it is certainly idle.
+const STAGING_RETENTION: std::time::Duration = std::time::Duration::from_secs(3 * 24 * 60 * 60);
+
 pub fn handoff() -> InstallFn {
     std::sync::Arc::new(run)
 }
 
 fn run(job: InstallHandoff) -> Result<InstallOutcome, String> {
+    run_with(job, &install_into)
+}
+
+/// A platform handoff step: write the download into `staging` (done by [`install_into`]) and hand
+/// it off. Split out so tests can drive the staging lifetime with a fake handoff.
+type InstallAction<'a> = dyn Fn(&InstallHandoff, &Path) -> Result<InstallOutcome, String> + 'a;
+
+fn run_with(job: InstallHandoff, action: &InstallAction<'_>) -> Result<InstallOutcome, String> {
+    // Clear a leftover from an earlier manual install before creating this run's staging.
+    sweep_stale_staging();
     let staging = private_staging_dir()?;
-    let result = install_into(&job, &staging);
-    let _ = std::fs::remove_dir_all(&staging);
+    let result = action(&job, &staging);
+    finish_staging(job.kind, &staging, &result);
     result
+}
+
+/// Remove this run's staging unless a successful handoff still needs the download. A macOS `.dmg`
+/// opened in Finder may be read after `open` returns, so it is kept for the manual install; every
+/// other handoff (installer ran to completion, or failed) is done with the file.
+fn finish_staging(kind: InstallKind, staging: &Path, result: &Result<InstallOutcome, String>) {
+    if matches!(kind, InstallKind::MacDmg | InstallKind::MacApp) && result.is_ok() {
+        return;
+    }
+    let _ = std::fs::remove_dir_all(staging);
+}
+
+/// Remove staging directories from earlier manual installs once they are old enough that Finder is
+/// certainly done with the disk image. Called before each handoff and at start-up.
+pub fn sweep_stale_staging() {
+    sweep_stale_staging_in(&std::env::temp_dir(), STAGING_RETENTION, std::time::SystemTime::now());
+}
+
+fn sweep_stale_staging_in(parent: &Path, retention: std::time::Duration, now: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(parent) else { return };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(STAGING_PREFIX) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        let stale = meta.modified().ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age >= retention);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 fn install_into(job: &InstallHandoff, staging: &Path) -> Result<InstallOutcome, String> {
@@ -37,7 +87,7 @@ fn install_into(job: &InstallHandoff, staging: &Path) -> Result<InstallOutcome, 
 /// A private directory only this process can create (not a predictable shared path).
 pub fn private_staging_dir() -> Result<PathBuf, String> {
     let hex = random_hex(16)?;
-    let path = std::env::temp_dir().join(format!("wordcraft-update-{hex}"));
+    let path = std::env::temp_dir().join(format!("{STAGING_PREFIX}{hex}"));
     std::fs::create_dir(&path).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {
@@ -290,6 +340,79 @@ mod tests {
         let dmg = write_exclusive_file(&dir, "wordcraft.dmg", b"x").unwrap();
         let fake = FakeDmgOpener { opened: RefCell::new(None), err: Some("open failed".into()) };
         assert!(mac_open_dmg_with(&dmg, &fake).is_err());
+    }
+
+    fn job(kind: InstallKind, name: &str) -> InstallHandoff {
+        InstallHandoff { kind, file_name: name.into(), bytes: b"x".to_vec(), exe_path: String::new() }
+    }
+
+    /// The verified macOS download must outlive `run`: Finder may still be mounting the disk image
+    /// when `open` returns, so removing it immediately races. Other handoffs consume the file.
+    #[test]
+    fn macos_handoff_keeps_the_verified_download_while_others_remove_it() {
+        let seen = RefCell::new(None);
+        let record = |staging: &Path| {
+            *seen.borrow_mut() = Some(staging.to_path_buf());
+        };
+
+        // A successful macOS handoff keeps the staging directory (and the `.dmg` in it).
+        let mac_ok = |j: &InstallHandoff, staging: &Path| {
+            *seen.borrow_mut() = Some(staging.to_path_buf());
+            write_exclusive_file(staging, &j.file_name, &j.bytes)?;
+            Ok(InstallOutcome::default())
+        };
+        run_with(job(InstallKind::MacDmg, "wordcraft.dmg"), &mac_ok).unwrap();
+        let staging = seen.borrow().clone().expect("staging seen");
+        assert!(staging.join("wordcraft.dmg").exists(), "the verified dmg is kept for Finder");
+        assert!(staging.exists(), "the staging directory survives the handoff");
+        let _ = std::fs::remove_dir_all(&staging);
+
+        // A failed macOS handoff leaves nothing behind.
+        let mac_err = |_j: &InstallHandoff, staging: &Path| {
+            record(staging);
+            Err::<InstallOutcome, String>("open failed".into())
+        };
+        run_with(job(InstallKind::MacDmg, "wordcraft.dmg"), &mac_err).unwrap_err();
+        let staging = seen.borrow().clone().unwrap();
+        assert!(!staging.exists(), "a failed handoff removes its staging");
+        let _ = std::fs::remove_dir_all(&staging);
+
+        // A `.deb` handoff ran the installer to completion; the staging is removed.
+        let deb_ok = |j: &InstallHandoff, staging: &Path| {
+            record(staging);
+            write_exclusive_file(staging, &j.file_name, &j.bytes)?;
+            Ok(InstallOutcome::default())
+        };
+        run_with(job(InstallKind::LinuxDeb, "wordcraft.deb"), &deb_ok).unwrap();
+        let staging = seen.borrow().clone().unwrap();
+        assert!(!staging.exists(), "a consumed installer download is removed");
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+
+    #[test]
+    fn stale_staging_is_swept_but_fresh_and_foreign_entries_are_kept() {
+        let parent = std::env::temp_dir().join(format!("wordcraft-sweep-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let fresh = parent.join(format!("{STAGING_PREFIX}fresh"));
+        let old = parent.join(format!("{STAGING_PREFIX}old"));
+        let foreign = parent.join("something-else");
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&foreign).unwrap();
+
+        // Nothing is old enough yet, and a non-staging directory is never touched.
+        sweep_stale_staging_in(&parent, std::time::Duration::from_secs(3600), std::time::SystemTime::now());
+        assert!(fresh.exists(), "a fresh download is left for Finder");
+        assert!(foreign.exists(), "only update staging directories are swept");
+
+        // Past the retention window the staging directories are stale and removed.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(7200);
+        sweep_stale_staging_in(&parent, std::time::Duration::from_secs(3600), later);
+        assert!(!old.exists(), "a stale download is removed");
+        assert!(!fresh.exists(), "a download past the retention is removed");
+        assert!(foreign.exists(), "a foreign directory is never touched");
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     struct FakeMsi {

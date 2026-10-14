@@ -135,8 +135,9 @@ fn linux_system_install_path(lower_exe: &str) -> bool {
     lower_exe.starts_with("/usr/bin/") || lower_exe.starts_with("/usr/local/bin/") || lower_exe.contains("/opt/wordcraft/")
 }
 
-/// One-click macOS updates only replace a bundle in the system `/Applications` folder, not a copy
-/// in `~/Applications` or elsewhere (those users use the release page).
+/// macOS installs only get a verified download from the system `/Applications` bundle; a copy in
+/// `~/Applications` or elsewhere uses the release page. The `.dmg` is opened in Finder for a
+/// manual drag-install (no bundle replacement, no privilege escalation).
 fn mac_app_bundle_in_system_applications(lower_exe: &str) -> bool {
     lower_exe.starts_with("/applications/") && lower_exe.contains(".app/contents/macos/")
 }

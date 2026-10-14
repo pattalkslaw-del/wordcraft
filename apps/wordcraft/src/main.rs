@@ -57,12 +57,9 @@ impl eframe::App for App {
         // A finished update asks to quit through the same path, so a document edited after the
         // update worker finished is still checked for unsaved changes before the window closes.
         // Asking to close (rather than acting on the quit now) leaves the next frame's close
-        // handling free to see any edit made after this check.
-        if self.0.update.quit_pending {
-            if !self.0.update_quit_requested() {
-                return;
-            }
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        // handling free to see any edit made after this check. A deferred quit cancels any close
+        // event already pending this frame (see `update::handle_quit`).
+        if wordcraft_ui_egui::update::handle_quit(&mut self.0, ctx) {
             return;
         }
         if closing && !self.0.close_requested() {
@@ -255,6 +252,9 @@ fn main() -> eframe::Result {
     // First, so the panic hook and every start-up warning are recorded (`logging`).
     let logger = logging::install();
     logging::install_panic_hook();
+    // Clear a macOS update download Finder is done with from an earlier session (a retained `.dmg`
+    // is not removed at handoff time; see `update_install`).
+    update_install::sweep_stale_staging();
     let mut control_port: Option<u16> = std::env::var("WORDCRAFT_CONTROL_PORT").ok().and_then(|p| p.parse().ok());
     let mut files = Vec::new();
     let mut sample = false;
