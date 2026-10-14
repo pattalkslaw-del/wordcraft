@@ -3,9 +3,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use wordcraft_engine::update::HttpGet;
+use wordcraft_engine::update::{HttpGet, LATEST_API};
 
 pub fn http_get() -> HttpGet {
+    if let Ok(path) = std::env::var("WORDCRAFT_UPDATE_CHECK_FIXTURE") {
+        let body = std::fs::read(&path).map_err(|e| e.to_string());
+        return Arc::new(move |url, max_bytes| {
+            if url != LATEST_API {
+                return Err(format!("unexpected URL: {url}"));
+            }
+            let body = body.as_ref().map_err(|e| e.clone())?;
+            let end = body.len().min(max_bytes);
+            Ok(body[..end].to_vec())
+        });
+    }
     Arc::new(|url, max_bytes| {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(30)))

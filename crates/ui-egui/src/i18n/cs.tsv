@@ -2096,6 +2096,7 @@
 	Save or discard unsaved changes before updating.	Save or discard unsaved changes before updating.
 	Open the release page in your browser to update.	Open the release page in your browser to update.
 	Downloaded file does not match the published SHA-256 checksum.	Downloaded file does not match the published SHA-256 checksum.
+	Drag WordCraft into Applications, then reopen it.	Drag WordCraft into Applications, then reopen it.
 	The update check could not reach GitHub. Check your connection and try again.	The update check could not reach GitHub. Check your connection and try again.
 	GitHub returned an update WordCraft could not read.	GitHub returned an update WordCraft could not read.
 	This release has no installer for your system.	This release has no installer for your system.

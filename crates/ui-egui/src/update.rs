@@ -244,6 +244,13 @@ fn apply_worker_result(app: &mut WordApp, done: WorkerDone, manual: bool, apply:
     }
 }
 
+fn should_quit_after_successful_apply(v: &Value) -> bool {
+    if v.get("status").and_then(Value::as_str) != Some("available") {
+        return false;
+    }
+    v.get("release").and_then(|r| r.get("oneClick")).and_then(Value::as_bool) == Some(true)
+}
+
 fn apply_install_result(app: &mut WordApp, v: Result<Value, String>) -> bool {
     match v {
         Ok(v) => {
@@ -259,9 +266,8 @@ fn apply_install_result(app: &mut WordApp, v: Result<Value, String>) -> bool {
                 app.status(tl!("Save or discard unsaved changes before updating."));
                 false
             } else {
-                // Only a newer release that installed cleanly asks to quit; a re-check that now
-                // finds the current version must not close the window.
-                v.get("status").and_then(Value::as_str) == Some("available")
+                // Only MSI / .deb one-click handoffs quit; macOS opens the `.dmg` in Finder.
+                should_quit_after_successful_apply(&v)
             }
         }
         Err(e) => {
@@ -443,9 +449,13 @@ mod tests {
     #[test]
     fn update_quit_after_a_new_edit_still_prompts_and_cancel_keeps_the_document() {
         let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
-        let done = WorkerDone { result: Ok(json!({"status": "available"})), prefs: UpdatePrefs::default(), ui_requests: vec![json!({"quit": true})] };
+        let done = WorkerDone {
+            result: Ok(json!({"status": "available", "release": {"oneClick": true}})),
+            prefs: UpdatePrefs::default(),
+            ui_requests: vec![json!({"quit": true})],
+        };
         let _ = apply_worker_result(&mut app, done, false, true);
-        assert!(app.update.quit_pending, "a successful update asks to quit");
+        assert!(app.update.quit_pending, "a successful one-click update asks to quit");
         assert!(!app.quit_requested, "the quit goes through the close path, not straight to quit");
 
         // The user types before the host acts on the quit.
@@ -463,7 +473,11 @@ mod tests {
     #[test]
     fn update_quit_on_a_clean_document_closes() {
         let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
-        let done = WorkerDone { result: Ok(json!({"status": "available"})), prefs: UpdatePrefs::default(), ui_requests: vec![json!({"quit": true})] };
+        let done = WorkerDone {
+            result: Ok(json!({"status": "available", "release": {"oneClick": true}})),
+            prefs: UpdatePrefs::default(),
+            ui_requests: vec![json!({"quit": true})],
+        };
         let _ = apply_worker_result(&mut app, done, false, true);
         assert!(app.update_quit_requested(), "a clean document may close");
         assert!(!app.update.quit_pending, "the pending quit was consumed");
@@ -511,6 +525,29 @@ mod tests {
         assert!(app.quit_requested, "the update still asks to quit through the close path");
         app.update.reboot_notice = false;
         assert!(!app.update.reboot_notice, "acknowledging the banner clears it");
+    }
+
+    /// macOS verified download: drag instruction, no quit (#15 round 12).
+    #[test]
+    fn macos_dmg_handoff_shows_instruction_without_quit() {
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        let done = WorkerDone {
+            result: Ok(json!({
+                "status": "available",
+                "release": {
+                    "version": "9.0.0",
+                    "oneClick": false,
+                    "verifiedUpdate": true,
+                }
+            })),
+            prefs: UpdatePrefs::default(),
+            ui_requests: vec![json!({"updateMacDmg": true})],
+        };
+        let _ = apply_worker_result(&mut app, done, false, true);
+        assert!(!app.update.quit_pending, "macOS must not quit after opening the dmg");
+        assert!(!app.quit_requested);
+        let msg = app.status_msg.as_ref().map(|(s, _)| s.as_str()).unwrap_or("");
+        assert!(msg.contains("Drag WordCraft into Applications"), "expected drag instruction in status, got {msg:?}");
     }
 
     #[test]
