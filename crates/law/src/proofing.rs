@@ -38,7 +38,7 @@ pub fn confusion_issues(text: &str) -> Vec<Issue> {
             if !lower.eq_ignore_ascii_case(rule.wrong) {
                 continue;
             }
-            if !phrase_follows(&tokens, idx, text, rule.following)
+            if !phrase_follows(&tokens, idx, text, rule.following, rule.following_any)
                 || !phrase_precedes(&tokens, idx, text, rule.preceding)
                 || !any_precedes(&tokens, idx, text, rule.preceding_any)
                 || !medical_subject_before(&tokens, idx, text, rule.requires_medical_subject)
@@ -95,9 +95,14 @@ struct ConfusionRule {
     wrong: &'static str,
     right: &'static str,
     message: &'static str,
-    /// When non-empty, the words immediately after `wrong` in the same sentence.
+    /// When non-empty, the words immediately after `wrong` in the same phrase.
     following: &'static [&'static str],
-    /// When non-empty, the exact words immediately before `wrong` in the same sentence, in order.
+    /// When non-empty, the one word that must follow the [`Self::following`] phrase, chosen from
+    /// this set. Used for a category — a party role after `council for the` — where the phrase is
+    /// the same but the word that completes it varies. The gap before it must be bare, like every
+    /// other phrase word.
+    following_any: &'static [&'static str],
+    /// When non-empty, the exact words immediately before `wrong` in the same phrase, in order.
     preceding: &'static [&'static str],
     /// When non-empty, any one of these words may sit immediately before `wrong`. Use for a
     /// category (an auxiliary or `to` that only leads a verb) where the exact word varies but the
@@ -110,57 +115,90 @@ struct ConfusionRule {
 }
 
 /// Auxiliaries that only precede a *base verb*. A word after one of these is doing verb work, so
-/// `illicit` there is almost certainly the confused verb `elicit`; without one, `illicit
-/// testimony` ("unlawful testimony") is correct and must not fire. The infinitive/preposition `to`
-/// is deliberately absent: "objection to illicit testimony" is correct, and telling an infinitival
-/// `to` from a prepositional one needs part-of-speech context this checker doesn't have, so it is
-/// safer to drop `to` than to risk flagging correct prose.
+/// the following word is almost certainly the confused verb (`effect` → `affect`, `illicit` →
+/// `elicit`). The `illicit a response` rule needs one; the bare `illicit testimony` phrase the
+/// issue names does not. The infinitive/preposition `to` is deliberately absent: telling an
+/// infinitival `to` from a prepositional one needs part-of-speech context this checker doesn't
+/// have, so it is safer to drop `to` than to risk flagging correct prose.
 const VERB_LEADS: &[&str] = &["will", "would", "can", "could", "may", "might", "must", "shall", "should", "did", "does", "do"];
 
 /// People who order medical treatment.
 const MEDICAL_ACTORS: &[&str] = &["doctor", "physician", "surgeon", "nurse", "clinician", "pharmacist", "dentist", "psychiatrist", "veterinarian"];
 
 /// Context-sensitive legal word-pair checks (original wording; no manual copied).
+///
+/// Every entry fires on the phrase in [`Self::following`] / [`Self::preceding`] and nowhere else,
+/// so a clean sentence that merely uses the right word stays quiet. A flag is a suggestion for the
+/// writer to accept or dismiss; it never changes text. The phrases come from common legal typos
+/// (statute/statue, principle/principal, counsel/council, affect/effect, precedent/precedence,
+/// prescribe/proscribe, adverse/averse, elicit/illicit, complement/compliment, discrete/discreet).
 const CONFUSION_RULES: &[ConfusionRule] = &[
     ConfusionRule {
         wrong: "statue",
         right: "statute",
         message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of limitations?",
         following: &["of", "limitations"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
     },
-    // `statue of frauds` is omitted: `frauds` can mean impostors, so a sculptor's "statue of frauds"
-    // is correct English (see tests).
+    ConfusionRule {
+        wrong: "statue",
+        right: "statute",
+        message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of frauds?",
+        following: &["of", "frauds"],
+        following_any: &[],
+        preceding: &[],
+        preceding_any: &[],
+        requires_medical_subject: false,
+    },
     ConfusionRule {
         wrong: "principle",
         right: "principal",
         message: "In legal writing, the main issue is usually the \"principal\" issue, not \"principle\".",
         following: &["issue"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
     },
-    // `principle claim` and `principle amount` are omitted: `claim` and `amount` are often verbs
-    // after the correct noun `principle` ("Does the principle claim our attention?").
+    ConfusionRule {
+        wrong: "principle",
+        right: "principal",
+        message: "The main office is the \"principal\" place of business, not \"principle\".",
+        following: &["place", "of", "business"],
+        following_any: &[],
+        preceding: &[],
+        preceding_any: &[],
+        requires_medical_subject: false,
+    },
+    ConfusionRule {
+        wrong: "principle",
+        right: "principal",
+        message: "The main sum is the \"principal\" amount, not \"principle\".",
+        following: &["amount"],
+        following_any: &[],
+        preceding: &[],
+        preceding_any: &[],
+        requires_medical_subject: false,
+    },
     ConfusionRule {
         wrong: "principal",
         right: "principle",
         message: "A rule of law is a \"principle\", not \"principal\".",
         following: &["of", "law"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
     },
-    // Note: `council for the …` is deliberately absent. "The city council for the district" is
-    // correct, and immediate adjacency to `for the` doesn't make `council` likely wrong. Only the
-    // unambiguous `council of record` fires below.
     ConfusionRule {
         wrong: "council",
         right: "counsel",
         message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
         following: &["of", "record"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
@@ -170,7 +208,18 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "counsel",
         message: "Opposing representation is \"counsel\", not \"council\" (a governing body).",
         following: &[],
+        following_any: &[],
         preceding: &["opposing"],
+        preceding_any: &[],
+        requires_medical_subject: false,
+    },
+    ConfusionRule {
+        wrong: "council",
+        right: "counsel",
+        message: "A party's lawyer is \"counsel\", not \"council\" (a governing body).",
+        following: &["for", "the"],
+        following_any: &["plaintiff", "defendant", "appellant", "respondent", "petitioner", "movant"],
+        preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
     },
@@ -179,6 +228,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "effect",
         message: "A result or outcome is an \"effect\"; \"affect\" is usually the verb.",
         following: &["of", "the"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
@@ -188,6 +238,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "affect",
         message: "To influence an outcome is to \"affect\" it, not \"effect\" (except \"effect change\").",
         following: &["the", "outcome"],
+        following_any: &[],
         preceding: &[],
         preceding_any: VERB_LEADS,
         requires_medical_subject: false,
@@ -197,6 +248,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "precedent",
         message: "A prior appellate decision is \"precedent\", not \"precedence\" (priority).",
         following: &[],
+        following_any: &[],
         preceding: &["binding"],
         preceding_any: &[],
         requires_medical_subject: false,
@@ -206,6 +258,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "precedent",
         message: "Controlling case law is \"precedent\", not \"precedence\".",
         following: &[],
+        following_any: &[],
         preceding: &["controlling"],
         preceding_any: &[],
         requires_medical_subject: false,
@@ -215,17 +268,27 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "prescribe",
         message: "A doctor \"prescribes\" treatment; \"proscribe\" means to forbid.",
         following: &["medication"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: true,
     },
-    // `averse possession` is omitted: "He was so averse that possession …" can omit `that`, so the
-    // phrase is ambiguous. Only `adverse to risk` → `averse` fires in the adverse/averse pair.
     ConfusionRule {
         wrong: "adverse",
         right: "averse",
         message: "Being unwilling is \"averse\"; \"adverse\" describes harm or opposition.",
         following: &["to", "risk"],
+        following_any: &[],
+        preceding: &[],
+        preceding_any: &[],
+        requires_medical_subject: false,
+    },
+    ConfusionRule {
+        wrong: "averse",
+        right: "adverse",
+        message: "A hostile claim to land is \"adverse possession\", not \"averse\" (unwilling).",
+        following: &["possession"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
@@ -235,8 +298,9 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "elicit",
         message: "To draw out testimony is to \"elicit\" it, not \"illicit\" (unlawful).",
         following: &["testimony"],
+        following_any: &[],
         preceding: &[],
-        preceding_any: VERB_LEADS,
+        preceding_any: &[],
         requires_medical_subject: false,
     },
     ConfusionRule {
@@ -244,6 +308,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "elicit",
         message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
         following: &["a", "response"],
+        following_any: &[],
         preceding: &[],
         preceding_any: VERB_LEADS,
         requires_medical_subject: false,
@@ -253,6 +318,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "complement",
         message: "To complete or supplement the record is to \"complement\" it, not \"compliment\".",
         following: &["the", "record"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
@@ -262,6 +328,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         right: "discrete",
         message: "Separate or distinct issues are \"discrete\", not \"discreet\" (tactful).",
         following: &["issues"],
+        following_any: &[],
         preceding: &[],
         preceding_any: &[],
         requires_medical_subject: false,
@@ -272,26 +339,42 @@ fn is_sentence_end(c: char) -> bool {
     matches!(c, '.' | '!' | '?')
 }
 
-/// Whether the raw text between two adjacent tokens holds a sentence end. Phrase words are
-/// immediate neighbours, so checking each gap keeps the work proportional to the phrase length
-/// instead of collecting every word in the sentence for every candidate token (which was
-/// quadratic on a long sentence with many candidates).
+/// Whether the raw text between two adjacent tokens holds a sentence end. Used by
+/// [`medical_subject_before`], whose backward scan may cross the words between subject and verb.
 fn gap_has_sentence_end(text: &str, from: usize, to: usize) -> bool {
     text.get(from..to).is_some_and(|gap| gap.chars().any(is_sentence_end))
 }
 
-fn phrase_follows(tokens: &[(usize, usize, String)], idx: usize, text: &str, phrase: &[&str]) -> bool {
-    if phrase.is_empty() {
-        return true;
-    }
+/// Whether the gap between two phrase words is bare: only whitespace, no punctuation. A comma,
+/// dash, parenthesis or the like means the words are not one phrase — "the governing principle,
+/// issue preclusion, bars relitigation" must not read as "principle issue", and "the city council,
+/// for the plaintiff, met" must not read as "council for the plaintiff". A sentence end is a strict
+/// subset of non-whitespace, so requiring a bare gap also keeps the old no-crossing-sentences rule.
+/// Like [`gap_has_sentence_end`], it looks at only the gap, so the work stays proportional to the
+/// phrase length instead of collecting a whole sentence per candidate.
+fn gap_is_bare(text: &str, from: usize, to: usize) -> bool {
+    text.get(from..to).is_some_and(|gap| gap.chars().all(char::is_whitespace))
+}
+
+/// Whether `phrase` immediately follows the token at `idx`, then (when `any` is non-empty) the one
+/// word after it is a member of `any`. Every step must sit across a bare gap.
+fn phrase_follows(tokens: &[(usize, usize, String)], idx: usize, text: &str, phrase: &[&str], any: &[&str]) -> bool {
     let Some(first) = tokens.get(idx) else { return false };
     let mut prev_end = first.1;
-    for (n, want) in phrase.iter().enumerate() {
-        let Some(t) = tokens.get(idx.saturating_add(1).saturating_add(n)) else { return false };
-        if t.2 != *want || gap_has_sentence_end(text, prev_end, t.0) {
+    let mut i = idx.saturating_add(1);
+    for want in phrase {
+        let Some(t) = tokens.get(i) else { return false };
+        if t.2 != *want || !gap_is_bare(text, prev_end, t.0) {
             return false;
         }
         prev_end = t.1;
+        i = i.saturating_add(1);
+    }
+    if !any.is_empty() {
+        let Some(t) = tokens.get(i) else { return false };
+        if !any.contains(&t.2.as_str()) || !gap_is_bare(text, prev_end, t.0) {
+            return false;
+        }
     }
     true
 }
@@ -305,7 +388,7 @@ fn phrase_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, ph
     for (n, want) in phrase.iter().rev().enumerate() {
         let Some(i) = idx.checked_sub(n.saturating_add(1)) else { return false };
         let Some(t) = tokens.get(i) else { return false };
-        if t.2 != *want || gap_has_sentence_end(text, t.1, next_start) {
+        if t.2 != *want || !gap_is_bare(text, t.1, next_start) {
             return false;
         }
         next_start = t.0;
@@ -313,16 +396,16 @@ fn phrase_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, ph
     true
 }
 
-/// Whether any word in `set` sits immediately before the token at `idx`, with no sentence end
-/// between. A set (unlike [`phrase_precedes`]'s ordered phrase) matches any one member, so rules
-/// can name a category such as the auxiliaries and `to` that only lead a verb.
+/// Whether any word in `set` sits immediately before the token at `idx`, across a bare gap. A set
+/// (unlike [`phrase_precedes`]'s ordered phrase) matches any one member, so rules can name a
+/// category such as the auxiliaries that only lead a verb.
 fn any_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, set: &[&str]) -> bool {
     if set.is_empty() {
         return true;
     }
     let Some(i) = idx.checked_sub(1) else { return false };
     let (Some(prev), Some(cur)) = (tokens.get(i), tokens.get(idx)) else { return false };
-    set.contains(&prev.2.as_str()) && !gap_has_sentence_end(text, prev.1, cur.0)
+    set.contains(&prev.2.as_str()) && gap_is_bare(text, prev.1, cur.0)
 }
 
 /// Whether a medical professional is the immediate subject of the verb at `idx`: skip auxiliaries

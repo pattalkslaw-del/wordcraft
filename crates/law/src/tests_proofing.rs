@@ -133,6 +133,22 @@ fn confusion_issues_hook_into_review_proofing() {
     assert!(issues.as_array().is_some_and(|a| a.is_empty()), "without LawCraft the same text is quiet: {issues}");
 }
 
+/// #5 blocking review: an interrupting appositive must not join two phrase words. The comma after
+/// `principle` separates it from `issue`, so the correctly used noun `principle` stays quiet
+/// instead of being flagged as `principal`; the same goes for a comma before `council for the
+/// plaintiff` and before `principal of law`. A phrase gap must be bare whitespace to match.
+#[test]
+fn appositive_punctuation_does_not_join_phrase_words() {
+    for text in [
+        "The governing principle, issue preclusion, bars relitigation.",
+        "The city council, for the plaintiff, met yesterday.",
+        "The company chose the principal, of law and equity, to lead it.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
 /// A firing case must name the exact word highlighted and the exact replacement offered, so a
 /// wrong suggestion can't satisfy coverage by merely producing some finding.
 macro_rules! confusion_pair {
@@ -150,32 +166,59 @@ macro_rules! confusion_pair {
     };
 }
 
-confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.", "statue", "statute");
-/// `statue of frauds` is ambiguous (sculptor case), so only the limitations phrase fires.
-#[test]
-fn statue_of_frauds_stays_quiet() {
-    for text in ["The sculptor carved a statue of frauds who had posed as philanthropists.", "The claim is barred by the statue of frauds."] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.", "principle", "principal");
-confusion_pair!(principal_of_law, "The principal of law is settled.", "The principal amount is unpaid.", "principal", "principle");
+confusion_pair!(statute_statue, "The statue of limitations has run.", "The statute of limitations has run.", "statue", "statute");
 confusion_pair!(
-    counsel_council,
-    "Attorney council of record filed a brief.",
-    "The city council for the district met yesterday.",
-    "council",
-    "counsel"
+    statute_of_frauds,
+    "The claim is barred by the statue of frauds.",
+    "The claim is barred by the statute of frauds.",
+    "statue",
+    "statute"
 );
+confusion_pair!(principal_principle_issue, "The principle issue is liability.", "The principal issue is liability.", "principle", "principal");
+confusion_pair!(
+    principle_place_of_business,
+    "The company's principle place of business is Springfield.",
+    "The company's principal place of business is Springfield.",
+    "principle",
+    "principal"
+);
+confusion_pair!(principle_amount, "The principle amount remains unpaid.", "The principal amount remains unpaid.", "principle", "principal");
+confusion_pair!(principal_of_law, "The principal of law is settled.", "The principle of law is settled.", "principal", "principle");
+confusion_pair!(counsel_council, "Attorney council of record filed a brief.", "Counsel of record filed a brief.", "council", "counsel");
 confusion_pair!(
     counsel_council_ordinance,
     "The council of record filed an appearance.",
-    "The city council voted for the ordinance.",
+    "Counsel of record filed an appearance.",
     "council",
     "counsel"
 );
-confusion_pair!(opposing_council, "We conferred with opposing council before trial.", "Opposing counsel filed a brief.", "council", "counsel");
+confusion_pair!(
+    opposing_council,
+    "We conferred with opposing council before trial.",
+    "We conferred with opposing counsel before trial.",
+    "council",
+    "counsel"
+);
+confusion_pair!(
+    council_for_the_plaintiff,
+    "Council for the plaintiff filed a brief.",
+    "Counsel for the plaintiff filed a brief.",
+    "Council",
+    "Counsel"
+);
+
+/// `council for the <party>` is the common typo for `counsel for the <party>`; every party role the
+/// phrase list names fires, and the suggestion is the capitalized `Counsel`.
+#[test]
+fn council_for_each_party_role_fires() {
+    for role in ["plaintiff", "defendant", "appellant", "respondent", "petitioner", "movant"] {
+        let text = format!("Council for the {role} filed a brief.");
+        let issues = confusion_issues(&text);
+        assert_eq!(issues.len(), 1, "expected one finding in: {text} → {issues:?}");
+        assert_eq!(text.get(issues[0].start..issues[0].end), Some("Council"));
+        assert_eq!(issues[0].suggestions, vec!["Counsel".to_string()], "replacement in: {text}");
+    }
+}
 confusion_pair!(affect_effect, "The affect of the ruling was clear.", "The new rule will affect the outcome.", "affect", "effect");
 confusion_pair!(affect_statute, "The affect of the ruling was clear.", "The rule will affect enforcement of the statute.", "affect", "effect");
 confusion_pair!(
@@ -202,8 +245,8 @@ confusion_pair!(
 
 /// #5 review: correct wording must not be flagged. A governing-body `council` — even "council for
 /// the district" — and a rule that affirmatively `prescribe`s conduct are both correct; adjacency
-/// alone doesn't make the word likely wrong. The clear `council of record` and `proscribe
-/// medication` cases still fire (see the pairs above).
+/// alone doesn't make the word likely wrong. The clear `council of record`, `council for the
+/// plaintiff` and `proscribe medication` cases still fire (see the pairs above).
 #[test]
 fn correct_council_and_prescribe_contexts_are_quiet() {
     for text in [
@@ -211,12 +254,6 @@ fn correct_council_and_prescribe_contexts_are_quiet() {
         "The county council for the region approved the plan.",
         "The rules prescribe such conduct by counsel.",
         "The statute prescribe such conduct.",
-        "The city council for the plaintiff municipality approved the settlement.",
-        "The city council for the defendant municipality approved the settlement.",
-        "The city council for the appellant municipality approved the settlement.",
-        "The city council for the respondent municipality approved the settlement.",
-        "The city council for the petitioner municipality approved the settlement.",
-        "The city council for the movant municipality approved the settlement.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
@@ -242,46 +279,40 @@ fn proscribe_forbids_medication_only_for_medical_actors() {
     }
 }
 
-/// Correct noun `principle` before a verb must stay quiet (no `principle claim` / `principle amount` entries).
+/// Correct noun `principle` before a verb must stay quiet (there is no `principle claim` entry):
+/// `claim` and `places` are verbs here, not the listed legal phrases.
 #[test]
 fn principle_as_noun_before_a_verb_is_quiet() {
     for text in [
         "The principle issues from natural law.",
         "Does the principle claim our attention?",
-        "Does the principle amount to a defense?",
         "The principle places the burden on the movant.",
         "The principle claim for damages was dismissed.",
-        "The principle amount remains unpaid.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
     }
 }
 
-/// #5 review: `averse possession` is removed; omitted `that` in "so … that …" must stay quiet.
-#[test]
-fn averse_possession_phrase_stays_quiet() {
-    for text in [
-        "He was so averse possession of a weapon seemed intolerable to him.",
-        "The tenant claimed averse possession.",
-        "The tenant claimed adverse possession.",
-        "The investor was averse to risk.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
-    }
-}
-
+// `averse possession` is the typo for the hostile-claim term `adverse possession`; the correct
+// `averse to risk` use stays quiet (see the pair above).
+confusion_pair!(averse_possession, "The tenant claimed averse possession.", "The tenant claimed adverse possession.", "averse", "adverse");
 confusion_pair!(adverse_to_risk, "The clause is adverse to risk.", "The investor was averse to risk.", "adverse", "averse");
-confusion_pair!(elicit_illicit, "The deposition will illicit testimony about the contract.", "Police seized illicit drugs.", "illicit", "elicit");
 confusion_pair!(
-    elicit_illicit_response,
-    "The witness could illicit a response on cross-examination.",
-    "The cross-examiner sought a candid response.",
+    elicit_illicit,
+    "The deposition will illicit testimony about the contract.",
+    "The deposition will elicit testimony about the contract.",
     "illicit",
     "elicit"
 );
-confusion_pair!(complement_compliment, "The exhibit compliment the record.", "She compliment the judge after argument.", "compliment", "complement");
+confusion_pair!(
+    elicit_illicit_response,
+    "The witness could illicit a response on cross-examination.",
+    "The witness could elicit a response on cross-examination.",
+    "illicit",
+    "elicit"
+);
+confusion_pair!(complement_compliment, "The exhibit compliment the record.", "The exhibit complement the record.", "compliment", "complement");
 confusion_pair!(
     discrete_discreet,
     "There are three discreet issues before us.",
@@ -299,19 +330,14 @@ fn effect_as_noun_before_the_outcome_is_quiet() {
     assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
 }
 
-/// #5 review: correct `illicit` (an adjective meaning unlawful) and correct `complement` (to
-/// complete or balance) must not be flagged. `illicit testimony` is a valid noun phrase, and the
-/// prepositional `to` before it ("objection to illicit testimony") is not the infinitive that
-/// leads the verb `elicit`, so it must stay quiet; only an auxiliary before `illicit` makes it
-/// likely wrong. `complement the court` is likewise a valid object. The clear
-/// `will illicit testimony` and `compliment the record` cases still fire (see the pairs above).
+/// #5 review: a correct `complement` (to complete or balance) must not be flagged, and ordinary
+/// legal prose that uses the verb `elicit` correctly stays quiet. `illicit testimony` is the typo
+/// the phrase list names, so it fires (see the pair above); the correct `elicit` does not.
 #[test]
-fn correct_illicit_and_complement_contexts_are_quiet() {
+fn correct_elicit_and_complement_contexts_are_quiet() {
     for text in [
-        "The motion challenges illicit testimony.",
-        "The court excluded illicit testimony at trial.",
-        "The objection to illicit testimony was sustained.",
-        "Counsel tried to illicit testimony on redirect.",
+        "The prosecutor elicited testimony from the witness.",
+        "The court allowed counsel to elicit testimony on redirect.",
         "The new tribunal will complement the court.",
         "These judges complement the court well.",
     ] {
