@@ -13,7 +13,7 @@ use wordcraft_engine::cmd::references::{bookmark_end_pos, bookmark_range, paragr
 use wordcraft_engine::{CmdError, Session, p};
 
 use crate::checks;
-use crate::citations::{CitationEntry, find_citations, group_heading};
+use crate::citations::{CitationEntry, find_entries, group_heading};
 use crate::profile::{DocSpec, Profile};
 
 const PROP_TOA_START_BM: &str = "LAW_TOA_START_BM";
@@ -41,7 +41,7 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
     {
         return Err(CmdError::Failed("stored table of authorities bounds are invalid".into()));
     }
-    let entries = find_citations(&s.doc, pack, replace);
+    let entries = find_entries(&s.doc, pack, replace);
 
     // Source bookmarks are created while the old table is still in the document, so every
     // occurrence path is current; they then move with their text when its blocks are removed.
@@ -62,22 +62,7 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
 
     let width = page::sect(s).text_width();
     let lang = wordcraft_engine::cmd::default_lang(s);
-    let mut blocks: Vec<Block> = Vec::new();
-    let mut entry_lines: Vec<(String, Vec<String>)> = Vec::new();
-    for group in group_order() {
-        let mut in_group: Vec<&CitationEntry> = entries.iter().filter(|e| group_heading(&e.kind) == group).collect();
-        in_group.sort_by_key(|e| sort_key(&e.sort_key, lang.as_deref()));
-        if in_group.is_empty() {
-            continue;
-        }
-        blocks.push(Block::Para(Paragraph::with_text(group, Default::default()).styled("Heading")));
-        for e in in_group {
-            let bms = bookmarks.get(&e.id).cloned().unwrap_or_default();
-            let para = paragraph_pageref_line(&e.label, &bms, false, passim_at, &[], width, "Normal")?;
-            entry_lines.push((e.label.clone(), bms));
-            blocks.push(Block::Para(para));
-        }
-    }
+    let (blocks, entry_lines) = table_blocks(&entries, &bookmarks, lang.as_deref(), width, passim_at)?;
 
     for (k, block) in blocks.iter().enumerate() {
         s.doc.insert_block(StoryRef::Body, &Path::top(insert_at + k), block.clone())?;
@@ -100,6 +85,35 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
 
 fn group_order() -> [&'static str; 5] {
     ["Cases", "Constitutional Provisions", "Statutes", "Rules", "Other Authorities"]
+}
+
+/// The table's blocks in group order: a `Heading`-styled group heading followed by one
+/// page-reference line per authority, with empty groups omitted. Returns each entry line's
+/// `(label, bookmarks)` in the same order for the later page-number pass.
+pub(crate) fn table_blocks(
+    entries: &[CitationEntry],
+    bookmarks: &BTreeMap<u32, Vec<String>>,
+    lang: Option<&str>,
+    width: f32,
+    passim_at: u32,
+) -> Result<(Vec<Block>, Vec<(String, Vec<String>)>), CmdError> {
+    let mut blocks = Vec::new();
+    let mut entry_lines: Vec<(String, Vec<String>)> = Vec::new();
+    for group in group_order() {
+        let mut in_group: Vec<&CitationEntry> = entries.iter().filter(|e| group_heading(&e.kind) == group).collect();
+        in_group.sort_by_key(|e| sort_key(&e.sort_key, lang));
+        if in_group.is_empty() {
+            continue;
+        }
+        blocks.push(Block::Para(Paragraph::with_text(group, Default::default()).styled("Heading")));
+        for e in in_group {
+            let bms = bookmarks.get(&e.id).cloned().unwrap_or_default();
+            let para = paragraph_pageref_line(&e.label, &bms, false, passim_at, &[], width, "Normal")?;
+            entry_lines.push((e.label.clone(), bms));
+            blocks.push(Block::Para(para));
+        }
+    }
+    Ok((blocks, entry_lines))
 }
 
 fn pack_id(s: &Session, v: &Value) -> Result<String, CmdError> {
@@ -299,8 +313,11 @@ fn stored_passim_at(s: &Session) -> u32 {
 
 /// After field results change, redraw every table entry line from its cached page numbers so the
 /// distinct pages shown, and whether the line reads `passim`, stay current. The entry's paragraph
-/// is rebuilt in place: its other inline objects (the table's boundary bookmarks) and its
-/// formatting are kept, so the stored table range survives and rebuilding still replaces it.
+/// is rebuilt in place: its paragraph formatting and mark are kept, and every inline object the
+/// page-reference builder does not own (the table's boundary bookmarks) is reinserted at its
+/// offset with its own character formatting. The rebuilt page-reference fields and citation text
+/// take the builder's default character formatting. Keeping the objects is what keeps the stored
+/// table range, so rebuilding still replaces it.
 pub fn refresh(s: &mut Session) -> Result<(), CmdError> {
     let passim = stored_passim(s);
     let passim_at = stored_passim_at(s);

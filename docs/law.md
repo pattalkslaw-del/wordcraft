@@ -151,26 +151,26 @@ findings are reported, not blocking.
 ## The table of authorities
 
 `law.toa.build` builds a table from the **citation finder** and nothing else. The finder runs the
-citation pack's rules over the document once; `law.citations.check` reports the matches that are
-not a rule's accepted form, and the table collects the accepted ones. A citation is whatever a
-rule reports — the table adds no detection and no short-form linking, so the same citation
-reported twice is one entry.
+citation pack's rules over the document and keeps the matches that are a rule's accepted form;
+`law.citations.check` reports the ones that are not. A citation is whatever a rule reports — the
+table adds no detection and no short-form linking, so the same citation reported twice is one
+entry.
 
 Entries are grouped in order — **Cases**, **Constitutional Provisions**, **Statutes**, **Rules**,
-**Other Authorities** — by the `kind` the rule reports, and sorted alphabetically by the full
-citation as written at its first occurrence (the case name included). Page references are the same
-bookmarks and `PAGEREF` fields the table of contents uses, so the numbers update on layout and
-survive a `.docx` round trip; an entry on five or more pages prints **passim** (a profile's
-`toaPassim`/`toaPassimAt` set the switch and the threshold). Rebuilding replaces the previous table
-in place, and undo restores it. The command inserts at the profile's `tableOfAuthorities` section
-when there is one, otherwise at the caret (`at: "cursor"`), splitting the paragraph if the caret is
-part-way through it.
+**Other Authorities** — by the `kind` the rule reports, and sorted alphabetically by the citation
+as the finder's rule reports it at its first occurrence (no case-name extraction is added here).
+Page references are the same bookmarks and `PAGEREF` fields the table of contents uses, so the
+numbers update on layout and survive a `.docx` round trip; an entry on five or more pages prints
+**passim** (a profile's `toaPassim`/`toaPassimAt` set the switch and the threshold). Rebuilding
+replaces the previous table in place, and undo restores it. The command inserts at the profile's
+`tableOfAuthorities` section when there is one, otherwise at the caret (`at: "cursor"`), splitting
+the paragraph if the caret is part-way through it.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
-| 2026-10-14 | minor | Table of authorities: `law.toa.build` groups the citation finder's accepted matches, sorts them by the full citation as written (case names included), and lists pages with bookmarks and `PAGEREF` fields (`passim` at five or more pages); rebuilding replaces the table in place and undo restores it |
+| 2026-10-14 | minor | Table of authorities: `law.toa.build` groups the citation finder's accepted matches, sorts them by the citation as the finder reports it at first occurrence, and lists pages with bookmarks and `PAGEREF` fields (`passim` at five or more pages); rebuilding replaces the table in place and undo restores it |
 | 2026-10-14 | patch | `textSearchablePdf` now names the page for a picture-dominated page even when the document has no substantive text: an image-only scan and a scan with only a caption or page-number footer are a page-specific warning, not a document-wide "not searchable" error |
 | 2026-10-13 | minor | Court-profile checks engine: `law.checks.run`, pre-export checks through the engine's export-check hook, text-box-aware line spacing, and a PDF searchability verdict that no longer passes a scan with a caption |
 

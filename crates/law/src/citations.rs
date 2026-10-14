@@ -1,10 +1,4 @@
 //! Citation finder and form checker (suggestions only; never claims an authority exists).
-//!
-//! One detection pass, [`scan_matches`], runs a citation pack's rules over the document. The form
-//! checker ([`check_document`]) reports the matches that are not in a rule's accepted form; the
-//! finder ([`find_citations`]), which the table of authorities uses, groups the accepted matches
-//! into the authorities a document cites. Neither adds detection of its own: a citation is
-//! whatever a pack rule reports, and the same citation reported twice is one entry.
 
 use std::collections::HashMap;
 
@@ -13,15 +7,14 @@ use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 
 use crate::citation_pack::CompiledPack;
 
-/// One authority the finder reports: the citation as it was written at its first occurrence, and
-/// every place it occurs.
+/// One logical authority in the document (first full cite + linked short forms).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CitationEntry {
     pub id: u32,
     pub kind: String,
-    /// The citation as written at its first occurrence.
+    /// Full citation text at first occurrence.
     pub label: String,
-    /// The key entries sort by within a group (the full citation at first occurrence).
+    /// Sort key (full citation text at first occurrence, same as the label for sorting).
     pub sort_key: String,
     pub occurrences: Vec<CitationOccurrence>,
 }
@@ -32,17 +25,11 @@ pub struct CitationOccurrence {
     pub end: Pos,
 }
 
-/// One rule match in the document: the raw result of the finder's single detection pass.
-struct CitationMatch {
-    /// Index into [`CompiledPack::rules`].
-    rule: usize,
+struct RawHit {
     kind: String,
     text: String,
     start: Pos,
     end: Pos,
-    /// Whether the matched text is the rule's accepted form (`valid`). A rule with no `valid`
-    /// pattern accepts nothing: its match is a violation by definition.
-    accepted: bool,
 }
 
 /// Map a pack rule `kind` to a table-of-authorities group heading.
@@ -56,15 +43,14 @@ pub fn group_heading(kind: &str) -> &'static str {
     }
 }
 
-/// The finder's single detection pass: every citation-pack rule match in `doc`, in document order.
+/// Scan `doc` with `pack` and return authority entries. Paragraphs in `exclude_blocks` (inclusive
+/// top-level body block indices) are skipped — used to omit a generated table of authorities.
 ///
-/// Paragraphs in `exclude_blocks` (inclusive top-level body block indices) are skipped — used to
-/// omit a generated table of authorities. For each rule, `detect` finds a span, `extend_tail`
-/// grows it through an optional pin cite and parenthetical, and `valid` says whether the matched
-/// text is the rule's accepted form. This is the only place a citation is detected; the form
-/// checker and the table of authorities both read its results.
-fn scan_matches(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usize, usize)>) -> Vec<CitationMatch> {
-    let mut out = Vec::new();
+/// Every match the pack's existing finder rules report is used as-is: a hit is one authority, and
+/// hits whose text and kind are identical collapse into one entry (its first hit supplies the
+/// label). No new detection or linking happens here.
+pub fn find_entries(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usize, usize)>) -> Vec<CitationEntry> {
+    let mut raw = Vec::new();
     for story in doc.counted_stories() {
         for path in doc.para_paths(story) {
             if story == StoryRef::Body
@@ -78,39 +64,31 @@ fn scan_matches(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usi
             if text.is_empty() {
                 continue;
             }
-            for (rule, r) in pack.rules.iter().enumerate() {
-                for m in r.detect.find_iter(text) {
-                    let end = if r.extend_tail { extend_span(text, m.end()) } else { m.end() };
+            for rule in &pack.rules {
+                if !rule.finder {
+                    continue;
+                }
+                for m in rule.detect.find_iter(text) {
+                    let end = if rule.extend_tail { extend_span(text, m.end()) } else { m.end() };
                     let slice = text.get(m.start()..end).map_or(m.as_str(), |s| s);
-                    let accepted = r.valid.as_ref().is_some_and(|v| v.is_match(slice));
+                    if rule.valid.as_ref().is_some_and(|v| !v.is_match(slice)) {
+                        continue;
+                    }
                     let start = Pos { story, path: path.clone(), off: m.start() };
                     let end_pos = Pos { story, path: path.clone(), off: end };
-                    out.push(CitationMatch { rule, kind: r.kind.clone(), text: slice.to_string(), start, end: end_pos, accepted });
+                    raw.push(RawHit { kind: rule.kind.clone(), text: slice.to_string(), start, end: end_pos });
                 }
             }
         }
     }
-    out
-}
-
-/// The finder: the document's authorities, from the pack rules' accepted matches only.
-///
-/// Matches are used exactly as the rules report them. This groups them into entries and nothing
-/// else: a match another accepted match covers is dropped (a full case citation wins over the bare
-/// reporter it contains), and matches with the same kind and text are one entry whose first
-/// occurrence supplies the label and sort key. No detection and no short-form linking is added
-/// here, so whatever a rule reports is what the table shows.
-pub fn find_citations(doc: &Document, pack: &CompiledPack, exclude_blocks: Option<(usize, usize)>) -> Vec<CitationEntry> {
-    let mut matches: Vec<CitationMatch> = scan_matches(doc, pack, exclude_blocks).into_iter().filter(|m| m.accepted).collect();
-    matches = dedupe_overlaps(matches);
-    matches.sort_by_key(|m| pos_order(&m.start));
+    raw = dedupe_overlaps(raw);
+    raw.sort_by_key(|h| pos_order(&h.start));
 
     let mut next_id = 1u32;
-    let mut key_to_id: HashMap<(String, String), u32> = HashMap::new();
+    let mut key_to_id: HashMap<String, u32> = HashMap::new();
     let mut map: HashMap<u32, CitationEntry> = HashMap::new();
-    for m in matches {
-        let text = m.text.trim().to_string();
-        let key = (m.kind.clone(), text.clone());
+    for h in raw {
+        let key = format!("{}:{}", h.kind, h.text.trim().to_ascii_lowercase());
         let id = *key_to_id.entry(key).or_insert_with(|| {
             let id = next_id;
             next_id += 1;
@@ -118,12 +96,12 @@ pub fn find_citations(doc: &Document, pack: &CompiledPack, exclude_blocks: Optio
         });
         let entry = map.entry(id).or_insert_with(|| CitationEntry {
             id,
-            kind: m.kind.clone(),
-            label: text.clone(),
-            sort_key: text.clone(),
+            kind: h.kind.clone(),
+            label: h.text.trim().to_string(),
+            sort_key: h.text.trim().to_string(),
             occurrences: Vec::new(),
         });
-        entry.occurrences.push(CitationOccurrence { start: m.start, end: m.end });
+        entry.occurrences.push(CitationOccurrence { start: h.start, end: h.end });
     }
     let mut out: Vec<CitationEntry> = map.into_values().collect();
     out.sort_by_key(|e| e.id);
@@ -145,7 +123,7 @@ fn story_rank(story: StoryRef) -> i64 {
     }
 }
 
-fn dedupe_overlaps(hits: Vec<CitationMatch>) -> Vec<CitationMatch> {
+fn dedupe_overlaps(hits: Vec<RawHit>) -> Vec<RawHit> {
     let mut hits = hits;
     hits.sort_by(|a, b| b.text.len().cmp(&a.text.len()).then_with(|| pos_order(&a.start).cmp(&pos_order(&b.start))));
     let mut taken: HashMap<(i64, Vec<u32>), Vec<(usize, usize)>> = HashMap::new();
@@ -230,18 +208,32 @@ fn extend_page_range(bytes: &[u8], from: usize) -> usize {
     if i == digit_start { from } else { i }
 }
 
-/// Report every rule match that is not in the rule's accepted form as a proofing finding.
+/// Scan the document with `pack` and return form suggestions.
 pub fn check_document(doc: &Document, pack: &CompiledPack) -> Vec<Finding> {
     let mut out = Vec::new();
-    for m in scan_matches(doc, pack, None) {
-        if m.accepted {
-            continue;
-        }
-        let rule = &pack.rules[m.rule];
-        let msg = format!("{} ({})", rule.message, rule.source);
-        out.push(Finding::at(rule.id.clone(), "warning", msg, m.start, m.end));
-        if out.len() >= MAX_FINDINGS {
-            break;
+    for story in doc.counted_stories() {
+        for path in doc.para_paths(story) {
+            let Some(para) = doc.para(story, &path) else { continue };
+            let text = &para.text;
+            if text.is_empty() {
+                continue;
+            }
+            for rule in &pack.rules {
+                for m in rule.detect.find_iter(text) {
+                    let end = if rule.extend_tail { extend_span(text, m.end()) } else { m.end() };
+                    let slice = text.get(m.start()..end).map_or(m.as_str(), |s| s);
+                    if rule.valid.as_ref().is_some_and(|v| v.is_match(slice)) {
+                        continue;
+                    }
+                    let start = Pos { story, path: path.clone(), off: m.start() };
+                    let end_pos = Pos { story, path: path.clone(), off: end };
+                    let msg = format!("{} ({})", rule.message, rule.source);
+                    out.push(Finding::at(rule.id.clone(), "warning", msg, start, end_pos));
+                    if out.len() >= MAX_FINDINGS {
+                        return out;
+                    }
+                }
+            }
         }
     }
     out

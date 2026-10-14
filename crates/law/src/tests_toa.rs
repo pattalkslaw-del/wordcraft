@@ -4,7 +4,7 @@ use serde_json::json;
 use wordcraft_doc::para::{InlineObject, OBJ};
 use wordcraft_doc::{Block, Path, StoryRef};
 
-use crate::citations::{find_citations, group_heading};
+use crate::citations::{find_entries, group_heading};
 use crate::cmd::pack_by_id;
 use crate::tests::{MISSOURI, law, roundtrip, run};
 use crate::toa::{PROP_TOA_PASSIM, PROP_TOA_PASSIM_AT};
@@ -92,13 +92,13 @@ fn toa_lists_grouped_sorted_citations_with_pageref_fields() {
     let rules = table.find("Rules").expect("Rules group");
     assert!(cases < statutes && statutes < rules, "groups must appear in order: {table}");
 
-    // Two cases, sorted alphabetically by the full citation as written at first occurrence:
-    // "Smith v. Jones…" before "Thummel v. King…", even though Thummel was cited first.
-    let a = table.find("Thummel v. King, 570 S.W.2d 679").expect("case A in the table");
-    let b = table.find("Smith v. Jones, 600 S.W.3d 100").expect("case B in the table");
-    assert!(b < a && b > cases && a < statutes, "cases must be sorted by case name: {table}");
-    // The repeated case is one line, so its full citation appears exactly once in the table.
-    assert_eq!(table.matches("Thummel v. King, 570 S.W.2d 679").count(), 1, "the repeated case must collapse: {table}");
+    // Two cases, sorted alphabetically by the citation as the finder reports it at first
+    // occurrence: 570 before 600 even though 600 was cited first.
+    let a = table.find("570 S.W.2d 679").expect("case A in the table");
+    let b = table.find("600 S.W.3d 100").expect("case B in the table");
+    assert!(a < b && a > cases && b < statutes, "cases must be sorted: {table}");
+    // The repeated case is one line, so its citation appears exactly once in the table.
+    assert_eq!(table.matches("570 S.W.2d 679").count(), 1, "the repeated case must collapse: {table}");
     assert!(table.contains("Section 537.080"), "statute in the table");
     assert!(table.contains("Rule 84.04(d)"), "rule in the table");
 
@@ -279,14 +279,27 @@ fn repeated_full_citations_keep_the_first_occurrence_label() {
     // The same reporter with a pin cite is a distinct finding text here.
     run(&mut s, "text.insert", json!({"text": "Thummel v. King, 570 S.W.2d 679, 680 (Mo. banc 1978). "}));
     let pack = pack_by_id("missouri").expect("missouri pack");
-    let entries = find_citations(&s.doc, pack, None);
+    let entries = find_entries(&s.doc, pack, None);
     let first = entries.iter().find(|e| !e.occurrences.is_empty() && e.label.contains("S.W.2d 679")).expect("first case");
-    assert!(first.label.starts_with("Thummel v. King, 570 S.W.2d 679"), "the label is the full first occurrence: {}", first.label);
-    // The pin-cite cite is a distinct full cite here; both keep the case name as written.
+    assert!(first.label.starts_with("570 S.W.2d 679"), "the label is the first occurrence: {}", first.label);
     for e in &entries {
-        assert!(e.label.starts_with("Thummel v. King, 570 S.W.2d 679"), "no later text overwrites a label: {}", e.label);
-        assert!(e.sort_key.starts_with("Thummel v. King, 570 S.W.2d 679"), "the sort key follows the first label: {}", e.sort_key);
+        assert!(e.label.starts_with("570 S.W.2d 679"), "no later text overwrites a label: {}", e.label);
+        assert!(e.sort_key.starts_with("570 S.W.2d 679"), "the sort key follows the first label: {}", e.sort_key);
     }
+}
+
+/// Regression: a citation in a sentence with multi-word party names (`Bank of America v. Smith`)
+/// is kept whole. The finder reports the citation exactly as its rule matched it at first
+/// occurrence — never a truncated middle of the party names — and the label is that citation.
+#[test]
+fn finder_keeps_the_whole_citation_for_multi_word_party_names() {
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "Bank of America v. Smith, 570 S.W.2d 679 (Mo. banc 1978)."}));
+    let pack = pack_by_id("missouri").expect("missouri pack");
+    let entries = find_entries(&s.doc, pack, None);
+    let e = entries.iter().find(|e| e.label.contains("S.W.2d 679")).expect("the citation is found");
+    assert_eq!(e.label, "570 S.W.2d 679 (Mo. banc 1978)", "the whole citation is kept, not a truncated middle");
+    assert_eq!(e.sort_key, e.label, "the sort key is the full first-occurrence citation");
 }
 
 /// Citations in separate table cells are distinct paragraphs: neither suppresses the other.
@@ -298,7 +311,7 @@ fn citations_in_separate_cells_are_distinct() {
     run(&mut s, "text.tab", json!({}));
     run(&mut s, "text.insert", json!({"text": "Smith v. Jones, 600 S.W.3d 100 (Mo. App. E.D. 2020)"}));
     let pack = pack_by_id("missouri").expect("missouri pack");
-    let entries = find_citations(&s.doc, pack, None);
+    let entries = find_entries(&s.doc, pack, None);
     assert!(entries.iter().any(|e| e.label.contains("S.W.2d 679")), "first cell's citation is found: {entries:?}");
     assert!(entries.iter().any(|e| e.label.contains("S.W.3d 100")), "second cell's citation is found: {entries:?}");
 }
@@ -357,27 +370,38 @@ fn toa_build_at_cursor_splits_the_paragraph_at_the_caret() {
 
     let first = s.doc.para(StoryRef::Body, &Path::top(0)).expect("the first half").plain_text();
     assert_eq!(first, "lead ", "the text before the caret stays in its own paragraph");
-    assert!(table_text(&s).contains("Thummel v. King, 570 S.W.2d 679"), "the citation still reaches the table");
+    assert!(table_text(&s).contains("570 S.W.2d 679"), "the citation still reaches the table");
     assert!(s.doc.plain_text(StoryRef::Body).contains(CASE_A), "the text after the caret is kept");
 }
 
-/// A citation kind with no bundled rule still sorts into its group: the table maps every kind the
-/// finder reports (here a constitutional provision and a treatise) to its group heading.
+/// Every citation kind the finder reports maps to its group, and the rendered table lists the
+/// group headings in the required order — Cases, Constitutional Provisions, Statutes, Rules,
+/// Other Authorities — skipping groups with no entries.
 #[test]
-fn toa_groups_constitutional_provisions_and_other_authorities() {
+fn toa_renders_group_headings_in_order() {
     let rules = concat!(
-        r#"{"id":"constProvision","kind":"constitutional","source":"Test","detect":"\\bTest\\s+Const\\.\\s+art\\.\\s+I\\b","valid":"^Test\\s+Const\\.\\s+art\\.\\s+I$","message":"test"},"#,
-        r#"{"id":"treatise","kind":"treatise","source":"Test","detect":"\\b\\d+\\s+Test\\s+Treatise\\s+\\d+\\b","valid":"^\\d+\\s+Test\\s+Treatise\\s+\\d+$","message":"test"}"#,
+        r#"{"id":"case","kind":"case","source":"Test","detect":"\\b\\d+\\s+Test\\s+Rep\\s+\\d+\\b","valid":"^\\d+\\s+Test\\s+Rep\\s+\\d+$","finder":true,"message":"test"},"#,
+        r#"{"id":"constProvision","kind":"constitutional","source":"Test","detect":"\\bTest\\s+Const\\.\\s+art\\.\\s+I\\b","valid":"^Test\\s+Const\\.\\s+art\\.\\s+I$","finder":true,"message":"test"},"#,
+        r#"{"id":"statute","kind":"statute","source":"Test","detect":"\\bSection\\s+\\d+\\b","valid":"^Section\\s+\\d+$","finder":true,"message":"test"},"#,
+        r#"{"id":"rule","kind":"rule","source":"Test","detect":"\\bRule\\s+\\d+\\.\\d+\\b","valid":"^Rule\\s+\\d+\\.\\d+$","finder":true,"message":"test"},"#,
+        r#"{"id":"treatise","kind":"treatise","source":"Test","detect":"\\b\\d+\\s+Test\\s+Treatise\\s+\\d+\\b","valid":"^\\d+\\s+Test\\s+Treatise\\s+\\d+$","finder":true,"message":"test"}"#,
     );
     let json = format!(r#"{{"schema":1,"id":"test-pack","name":"Test pack","jurisdiction":"Test","rules":[{rules}]}}"#);
     let pack = crate::citation_pack::CitationPack::from_json(&json).unwrap_or_else(|e| panic!("{e:?}")).compile().unwrap_or_else(|e| panic!("{e:?}"));
 
     let mut s = law();
-    run(&mut s, "text.insert", json!({"text": "Test Const. art. I and 5 Test Treatise 10"}));
-    let entries = find_citations(&s.doc, &pack, None);
+    run(&mut s, "text.insert", json!({"text": "1 Test Rep 2 and Test Const. art. I and Section 3 and Rule 4.5 and 6 Test Treatise 7"}));
+    let entries = find_entries(&s.doc, &pack, None);
     let groups: Vec<&str> = entries.iter().map(|e| group_heading(&e.kind)).collect();
-    assert!(groups.contains(&"Constitutional Provisions"), "{entries:?}");
-    assert!(groups.contains(&"Other Authorities"), "{entries:?}");
+    for want in ["Cases", "Constitutional Provisions", "Statutes", "Rules", "Other Authorities"] {
+        assert!(groups.contains(&want), "the finder reports a `{want}` kind: {entries:?}");
+    }
+
+    // Render the table's blocks: the group headings must appear in the required order.
+    let (blocks, _) = crate::toa::table_blocks(&entries, &std::collections::BTreeMap::new(), None, 400.0, 5).expect("table blocks");
+    let headings: Vec<String> =
+        blocks.iter().filter_map(|b| b.as_para()).filter(|p| p.props.style.as_deref() == Some("Heading")).map(|p| p.plain_text()).collect();
+    assert_eq!(headings, ["Cases", "Constitutional Provisions", "Statutes", "Rules", "Other Authorities"], "headings must render in order");
 }
 
 /// Two cites of the same case on one page collapse to one page reference until an edit separates them.
@@ -488,7 +512,7 @@ fn table_exclusion_uses_the_top_level_block() {
     run(&mut s, "text.insert", json!({"text": "Smith v. Jones, 600 S.W.3d 100 (Mo. App. E.D. 2020)."}));
     let pack = pack_by_id("missouri").expect("missouri pack");
     // Exclude body block 0 only: the table (a later block) must still be scanned.
-    let entries = find_citations(&s.doc, pack, Some((0, 0)));
+    let entries = find_entries(&s.doc, pack, Some((0, 0)));
     assert!(entries.iter().all(|e| !e.label.contains("S.W.2d 679")), "the excluded paragraph is skipped: {entries:?}");
     assert!(entries.iter().any(|e| e.label.contains("S.W.3d 100")), "the table cell is kept: {entries:?}");
 }
