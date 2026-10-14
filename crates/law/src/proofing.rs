@@ -65,7 +65,7 @@ pub fn confusion_findings(doc: &Document) -> Vec<Finding> {
     let mut out = Vec::new();
     for path in doc.para_paths(StoryRef::Body) {
         let Some(para) = doc.para(StoryRef::Body, &path) else { continue };
-        let text = para.plain_text();
+        let text = para.proof_text();
         if text.trim().is_empty() || text.len() > 100_000 {
             continue;
         }

@@ -1,12 +1,12 @@
 //! Legal spelling supplement and confusion-pair proofing.
 
 use serde_json::json;
-use wordcraft_doc::Document;
+use wordcraft_doc::{CharProps, Document, InlineObject, Paragraph, Pos, StoryRef, para_block};
 use wordcraft_engine::Session;
 use wordcraft_proof::{ModuleEn, Options, ProofLang, check_spelling_with_module, check_text_with, is_correct_with_module};
 
 use crate::install;
-use crate::proofing::{confusion_issues, legal_words};
+use crate::proofing::{confusion_findings, confusion_issues, legal_words};
 use crate::tests::{law, run};
 
 #[test]
@@ -69,6 +69,38 @@ fn law_words_list_command() {
     let words: Vec<&str> = list.as_array().expect("array").iter().filter_map(|v| v.as_str()).collect();
     assert!(words.contains(&"demurrer"));
     assert!(words.windows(2).all(|p| p[0] < p[1]));
+}
+
+/// Inline field results expand in [`Paragraph::plain_text`] but not in [`Paragraph::proof_text`],
+/// so confusion findings must use proof text or highlights drift.
+#[test]
+fn confusion_offsets_survive_inline_fields_and_markers() {
+    let mut doc = Document::new();
+    let mut p = Paragraph::with_text("The statue of limitations has run.", CharProps::default());
+    p.insert_object(0, InlineObject::Field { instr: "PAGE".into(), result: "99999".into(), locked: false, code: false }, &CharProps::default())
+        .unwrap();
+    let statue_off = p.text.find("statue").expect("statue in storage");
+    let statue_end = statue_off + "statue".len();
+    doc.body = vec![para_block(p)];
+
+    let findings = confusion_findings(&doc);
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    let start = findings[0].start.clone().expect("start");
+    let end = findings[0].end.clone().expect("end");
+    assert_eq!((start.story, start.off), (StoryRef::Body, statue_off));
+    assert_eq!((end.story, end.off), (StoryRef::Body, statue_end));
+    assert_eq!(doc.copy_range(&start, &end).plain_text(), "statue");
+
+    let mut s = law();
+    s.doc.body = doc.body.clone();
+    let r = run(&mut s, "law.proof.confusions", json!({"store": false}));
+    let f = r["findings"].as_array().expect("findings").first().expect("one finding");
+    let cmd_start = f["start"]["off"].as_u64().expect("start off") as usize;
+    let cmd_end = f["end"]["off"].as_u64().expect("end off") as usize;
+    assert_eq!((cmd_start, cmd_end), (statue_off, statue_end));
+    let start = Pos::body(0, cmd_start);
+    let end = Pos::body(0, cmd_end);
+    assert_eq!(s.doc.copy_range(&start, &end).plain_text(), "statue");
 }
 
 #[test]
