@@ -55,9 +55,9 @@ fn law_proofing_does_not_leak_between_sessions() {
     assert_eq!(install(&mut disabled), 0);
     assert!(is_correct_with_module("rsmo", &opts, enabled.module_en));
     assert!(!is_correct_with_module("rsmo", &opts, disabled.module_en));
-    let text = "The tenant claimed averse possession.";
+    let text = "The statue of limitations has run.";
     let on = check_text_with(text, &[(0..text.len(), ProofLang::En)], &opts, true, enabled.module_en);
-    assert!(on.iter().any(|i| i.message.contains("adverse")));
+    assert!(on.iter().any(|i| i.message.contains("statute")));
     let off = check_text_with(text, &[(0..text.len(), ProofLang::En)], &opts, true, disabled.module_en);
     assert!(off.is_empty());
 }
@@ -72,12 +72,12 @@ fn law_words_list_command() {
 }
 
 #[test]
-fn confusion_check_command_finds_averse_adverse() {
+fn confusion_check_command_finds_statute_statue() {
     let mut s = law();
-    run(&mut s, "text.insert", json!({"text": "The tenant claimed averse possession."}));
+    run(&mut s, "text.insert", json!({"text": "The statue of limitations has run."}));
     let r = run(&mut s, "law.proof.confusions", json!({"store": false}));
     let findings = r["findings"].as_array().expect("findings");
-    assert!(findings.iter().any(|f| f["message"].as_str().is_some_and(|m| m.contains("adverse"))));
+    assert!(findings.iter().any(|f| f["message"].as_str().is_some_and(|m| m.contains("statute"))));
 }
 
 /// The confusion check reaches the real Review › Proofing path: an enabled session's module hook
@@ -85,12 +85,12 @@ fn confusion_check_command_finds_averse_adverse() {
 /// pane and F7 read) reports it — and an uninstalled session does not.
 #[test]
 fn confusion_issues_hook_into_review_proofing() {
-    let text = "The tenant claimed averse possession.";
+    let text = "The statue of limitations has run.";
     let mut s = law();
     run(&mut s, "text.insert", json!({"text": text}));
     let issues = run(&mut s, "review.issues", json!({}));
     assert!(
-        issues.as_array().is_some_and(|a| a.iter().any(|i| i["message"].as_str().is_some_and(|m| m.contains("adverse")))),
+        issues.as_array().is_some_and(|a| a.iter().any(|i| i["message"].as_str().is_some_and(|m| m.contains("statute")))),
         "review.issues should report the confusion: {issues}"
     );
 
@@ -118,92 +118,186 @@ macro_rules! confusion_pair {
     };
 }
 
-/// Phrase matching must not join tokens across a sentence-ending period.
+confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.", "statue", "statute");
+/// `statue of frauds` is ambiguous (sculptor case), so only the limitations phrase fires.
 #[test]
-fn confusion_phrase_does_not_cross_sentence_boundary() {
-    let quiet = "They remained averse. Possession was never disputed.";
-    assert!(confusion_issues(quiet).is_empty(), "cross-sentence match: {quiet}");
-    let fired = confusion_issues("The tenant claimed averse possession.");
-    assert_eq!(fired.len(), 1);
-    assert_eq!(fired[0].suggestions, vec!["adverse".to_string()]);
-}
-
-/// #5 review: only plain whitespace may join the words of a confusion phrase. Intervening
-/// punctuation (semicolon, colon, comma, parentheses, dash, quotes) must break the match, so
-/// `averse; possession` never fires even though the words are adjacent in token order.
-#[test]
-fn confusion_phrase_requires_plain_whitespace_between_words() {
-    for text in [
-        "They remained averse; possession was never disputed.",
-        "They remained averse: possession was never disputed.",
-        "They remained averse, possession was never disputed.",
-        "They remained averse (possession was never disputed).",
-        "They remained averse - possession was never disputed.",
-        "They remained averse \"possession\" was never disputed.",
-        "They remained averse-possession was never disputed.",
-    ] {
-        let issues = confusion_issues(text);
-        assert!(issues.is_empty(), "punctuation joined a phrase in: {text} → {issues:?}");
-    }
-    let fired = confusion_issues("The tenant claimed adverse possession.");
-    assert!(fired.is_empty(), "correct usage must stay quiet: {fired:?}");
-}
-
-/// The suggestion keeps the case of the wrong word.
-#[test]
-fn confusion_suggestion_matches_case() {
-    let lower = confusion_issues("The tenant claimed averse possession.");
-    assert_eq!(lower.len(), 1);
-    assert_eq!(lower[0].suggestions, vec!["adverse".to_string()]);
-    let upper = confusion_issues("Averse possession was claimed.");
-    assert_eq!(upper.len(), 1);
-    assert_eq!(upper[0].suggestions, vec!["Adverse".to_string()]);
-}
-
-confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
-
-/// #5 review: `principle place of business` is removed. "Under this principle" is an introductory
-/// prepositional phrase whose comma is optional, so this correct sentence must stay quiet.
-#[test]
-fn removed_principle_place_of_business_stays_quiet() {
-    for text in [
-        "Under this principle place of business determines jurisdiction.",
-        "Under this principle, place of business determines jurisdiction.",
-        "The principle place so designated governs.",
-        "The principal place of business is in St. Louis.",
-    ] {
+fn statue_of_frauds_stays_quiet() {
+    for text in ["The sculptor carved a statue of frauds who had posed as philanthropists.", "The claim is barred by the statue of frauds."] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
     }
 }
+confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.", "principle", "principal");
+confusion_pair!(principal_of_law, "The principal of law is settled.", "The principal amount is unpaid.", "principal", "principle");
+confusion_pair!(
+    counsel_council,
+    "Attorney council of record filed a brief.",
+    "The city council for the district met yesterday.",
+    "council",
+    "counsel"
+);
+confusion_pair!(
+    counsel_council_ordinance,
+    "The council of record filed an appearance.",
+    "The city council voted for the ordinance.",
+    "council",
+    "counsel"
+);
+confusion_pair!(opposing_council, "We conferred with opposing council before trial.", "Opposing counsel filed a brief.", "council", "counsel");
+confusion_pair!(affect_effect, "The affect of the ruling was clear.", "The new rule will affect the outcome.", "affect", "effect");
+confusion_pair!(affect_statute, "The affect of the ruling was clear.", "The rule will affect enforcement of the statute.", "affect", "effect");
+confusion_pair!(
+    precedent_precedence,
+    "This is binding precedence in our circuit.",
+    "Federal law takes precedence over state law.",
+    "precedence",
+    "precedent"
+);
+confusion_pair!(
+    controlling_precedence,
+    "This decision is controlling precedence here.",
+    "The statute takes precedence over the rule.",
+    "precedence",
+    "precedent"
+);
+confusion_pair!(
+    prescribe_proscribe,
+    "The doctor proscribe medication for the patient.",
+    "The rules prescribe such conduct by counsel.",
+    "proscribe",
+    "prescribe"
+);
 
-/// Removed phrases must stay quiet (regression guard).
+/// #5 review: correct wording must not be flagged. A governing-body `council` — even "council for
+/// the district" — and a rule that affirmatively `prescribe`s conduct are both correct; adjacency
+/// alone doesn't make the word likely wrong. The clear `council of record` and `proscribe
+/// medication` cases still fire (see the pairs above).
 #[test]
-fn removed_confusion_phrases_stay_quiet() {
+fn correct_council_and_prescribe_contexts_are_quiet() {
     for text in [
-        // `statue of limitations` is ambiguous: a statue may depict limitations, so the phrase is
-        // removed even though the legal usage is far more common.
-        "The sculptor carved a statue of limitations, depicting the constraints imposed on human freedom.",
-        // `statue of frauds` is ambiguous (`frauds` = impostors), so the phrase is removed.
-        "The sculptor carved a statue of frauds who had posed as philanthropists.",
-        "The principle claim for damages was dismissed.",
-        "The principle amount remains unpaid.",
-        "The affect of the ruling was clear.",
-        "The order will affect a change in procedure.",
-        "This is binding precedence in our circuit.",
-        "We conferred with opposing council before trial.",
-        "Counsel tried to illicit testimony on redirect.",
-        "There are three discreet issues before us.",
-        "We assessed the effect the outcome had on the parties.",
-        "The physician testified that the regulation will proscribe medication advertising to minors.",
-        // `council for the <role>` is ambiguous: here `council` correctly names the
-        // municipality's governing body, with the role word modifying `municipality`.
+        "The city council for the district met yesterday.",
+        "The county council for the region approved the plan.",
+        "The rules prescribe such conduct by counsel.",
+        "The statute prescribe such conduct.",
         "The city council for the plaintiff municipality approved the settlement.",
         "The city council for the defendant municipality approved the settlement.",
         "The city council for the appellant municipality approved the settlement.",
         "The city council for the respondent municipality approved the settlement.",
         "The city council for the petitioner municipality approved the settlement.",
         "The city council for the movant municipality approved the settlement.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
+/// #5 review: a law, rule or regulator `proscribe`s (forbids) things — including medication
+/// advertising — so `proscribe medication` is only likely wrong when a medical actor is the
+/// immediate subject. The prohibition stays quiet; the doctor fires.
+#[test]
+fn proscribe_forbids_medication_only_for_medical_actors() {
+    let fired = confusion_issues("The doctor will proscribe medication for the patient.");
+    assert_eq!(fired.len(), 1, "expected one finding: {fired:?}");
+    assert_eq!(fired[0].suggestions, vec!["prescribe".to_string()]);
+    for text in [
+        "The regulation will proscribe medication advertising to minors.",
+        "The statute will proscribe medication by unlicensed sellers.",
+        "The board may proscribe medication in prison.",
+        "The physician testified that the regulation will proscribe medication advertising to minors.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
+/// Correct noun `principle` before a verb must stay quiet (no `principle claim` / `principle amount` entries).
+#[test]
+fn principle_as_noun_before_a_verb_is_quiet() {
+    for text in [
+        "The principle issues from natural law.",
+        "Does the principle claim our attention?",
+        "Does the principle amount to a defense?",
+        "The principle places the burden on the movant.",
+        "The principle claim for damages was dismissed.",
+        "The principle amount remains unpaid.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
+/// #5 review: `averse possession` is removed; omitted `that` in "so … that …" must stay quiet.
+#[test]
+fn averse_possession_phrase_stays_quiet() {
+    for text in [
+        "He was so averse possession of a weapon seemed intolerable to him.",
+        "The tenant claimed averse possession.",
+        "The tenant claimed adverse possession.",
+        "The investor was averse to risk.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
+confusion_pair!(adverse_to_risk, "The clause is adverse to risk.", "The investor was averse to risk.", "adverse", "averse");
+confusion_pair!(elicit_illicit, "The deposition will illicit testimony about the contract.", "Police seized illicit drugs.", "illicit", "elicit");
+confusion_pair!(
+    elicit_illicit_response,
+    "The witness could illicit a response on cross-examination.",
+    "The cross-examiner sought a candid response.",
+    "illicit",
+    "elicit"
+);
+confusion_pair!(complement_compliment, "The exhibit compliment the record.", "She compliment the judge after argument.", "compliment", "complement");
+confusion_pair!(
+    discrete_discreet,
+    "There are three discreet issues before us.",
+    "The agency opened a discrete investigation into each transaction.",
+    "discreet",
+    "discrete"
+);
+confusion_pair!(effect_affect_outcome, "The new rule will effect the outcome.", "The new rule will affect the outcome.", "effect", "affect");
+
+/// #5 review: noun `effect` before another noun phrase must not suggest `affect`.
+#[test]
+fn effect_as_noun_before_the_outcome_is_quiet() {
+    let text = "We assessed the effect the outcome had on the parties.";
+    let issues = confusion_issues(text);
+    assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+}
+
+/// #5 review: correct `illicit` (an adjective meaning unlawful) and correct `complement` (to
+/// complete or balance) must not be flagged. `illicit testimony` is a valid noun phrase, and the
+/// prepositional `to` before it ("objection to illicit testimony") is not the infinitive that
+/// leads the verb `elicit`, so it must stay quiet; only an auxiliary before `illicit` makes it
+/// likely wrong. `complement the court` is likewise a valid object. The clear
+/// `will illicit testimony` and `compliment the record` cases still fire (see the pairs above).
+#[test]
+fn correct_illicit_and_complement_contexts_are_quiet() {
+    for text in [
+        "The motion challenges illicit testimony.",
+        "The court excluded illicit testimony at trial.",
+        "The objection to illicit testimony was sustained.",
+        "Counsel tried to illicit testimony on redirect.",
+        "The new tribunal will complement the court.",
+        "These judges complement the court well.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
+/// #5 review: `discrete investigation` means separate investigations and is correct, so it must
+/// never suggest `discreet`; a genuinely tactful `discreet investigation` is correct too. Only the
+/// `discreet issues` direction (separate issues) fires, and removing the reverse rule keeps both
+/// correct uses quiet.
+#[test]
+fn discrete_investigation_is_quiet() {
+    for text in [
+        "The agency opened a discrete investigation into each transaction.",
+        "The court ran a discrete investigation of each charge.",
+        "The firm conducted a discreet investigation.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
