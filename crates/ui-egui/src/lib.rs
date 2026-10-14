@@ -973,7 +973,7 @@ impl WordApp {
             self.update.reboot_notice = true;
         }
         if req.get("updateMacDmg").and_then(Value::as_bool) == Some(true) {
-            self.status(tl!("Drag WordCraft into Applications, then reopen it."));
+            self.update_feedback(tl!("Drag WordCraft into Applications, then reopen it."));
         }
     }
 
@@ -1246,6 +1246,17 @@ impl WordApp {
 
     pub fn status(&mut self, s: impl Into<String>) {
         self.status_msg = Some((s.into(), now_ms()));
+    }
+
+    /// A one-line update answer: the status bar in the editor, plus a durable bar over Backstage,
+    /// whose status bar is hidden. A manual check runs from File ▸ Check for updates, and the macOS
+    /// handoff instruction and install errors must stay visible there (#15 review).
+    pub(crate) fn update_feedback(&mut self, s: impl Into<String>) {
+        let text = s.into();
+        self.status(text.clone());
+        if self.ui.backstage {
+            self.update.message = Some(text);
+        }
     }
 
     /// Media key of the selected picture, if any.

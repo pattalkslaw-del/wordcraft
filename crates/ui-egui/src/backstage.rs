@@ -142,22 +142,23 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
 pub(crate) fn report_update_check(app: &mut WordApp, result: Result<serde_json::Value, String>) {
     match result {
         Ok(v) => match v.get("status").and_then(serde_json::Value::as_str) {
-            // `available` draws the update notice through the command's UI request.
-            Some("available") => {}
+            // `available` draws the update notice through the command's UI request; drop any answer
+            // bar left by a previous check so the two never sit together.
+            Some("available") => app.update.message = None,
             Some("error") => {
                 let key = v.get("error").and_then(serde_json::Value::as_str).unwrap_or("");
                 if let Some(detail) = v.get("errorDetail").and_then(serde_json::Value::as_str) {
                     log::warn!("update check failed: {detail}");
                 }
                 let text = if key.is_empty() { tl!(wordcraft_engine::update::MSG_CHECK_FAILED) } else { tl!(key) };
-                app.status(text);
+                app.update_feedback(text);
             }
             // `current`, or a throttled automatic check that the user forced past: say so.
-            _ => app.status(tl!("WordCraft is up to date.")),
+            _ => app.update_feedback(tl!("WordCraft is up to date.")),
         },
         Err(e) => {
             log::warn!("update check failed: {e}");
-            app.status(tl!(wordcraft_engine::update::MSG_CHECK_FAILED));
+            app.update_feedback(tl!(wordcraft_engine::update::MSG_CHECK_FAILED));
         }
     }
 }
@@ -430,8 +431,9 @@ mod tests {
     use super::{matching_templates, report_update_check};
     use crate::{Services, WordApp};
 
-    /// #15 review: a manual check that finds nothing new, or cannot reach GitHub, must say so in
-    /// the status bar; only an available update draws its own notice.
+    /// #15 review: a manual check that finds nothing new, or cannot reach GitHub, must say so; only
+    /// an available update draws its own notice. Backstage's status bar is hidden, so the answer is
+    /// rendered in the update bar too (asserted below).
     #[test]
     fn manual_update_check_reports_current_error_and_failure() {
         let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
@@ -444,6 +446,27 @@ mod tests {
         a.status_msg = None;
         report_update_check(&mut a, Ok(json!({"status": "available"})));
         assert!(a.status_msg.is_none(), "the notice bar speaks for itself: {:?}", a.status_msg);
+        assert!(a.update.message.is_none(), "an available update draws its own notice, not the bar message");
+    }
+
+    /// #15 review: File ▸ Check for updates runs from Backstage, whose status bar is hidden, so the
+    /// "up to date" answer must render in the update bar there.
+    #[test]
+    fn manual_update_check_answer_is_rendered_in_backstage() {
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+        a.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
+        report_update_check(&mut a, Ok(json!({"status": "current", "current": "0.6.1"})));
+        assert!(a.update.message.as_deref().is_some_and(|m| m.contains("up to date")), "{:?}", a.update.message);
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            a,
+        );
+        h.run_steps(4);
+        assert!(h.query_by_label("WordCraft is up to date.").is_some(), "the answer is rendered over Backstage");
     }
 
     #[test]

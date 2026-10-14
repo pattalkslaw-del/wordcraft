@@ -24,6 +24,11 @@ pub struct UpdateCheck {
     /// A finished install needs a restart to complete (Windows MSI 3010/1641). Kept visible until
     /// acknowledged, so the instruction is not lost when the app quits to let the restart happen.
     pub reboot_notice: bool,
+    /// A durable one-line answer shown over Backstage: the macOS "drag into Applications" handoff
+    /// and the "up to date" / "could not reach GitHub" answers to a manual check. The status bar
+    /// that carries these in the editor is hidden while Backstage (File) is open, where a check
+    /// started from File ▸ Check for updates runs (#15 review).
+    pub message: Option<String>,
 }
 
 struct PendingWorker {
@@ -260,10 +265,10 @@ fn apply_install_result(app: &mut WordApp, v: Result<Value, String>) -> bool {
                 if let Some(detail) = v.get("errorDetail").and_then(Value::as_str) {
                     log::warn!("update failed: {detail}");
                 }
-                app.status(text);
+                app.update_feedback(text);
                 false
             } else if app.session.dirty {
-                app.status(tl!("Save or discard unsaved changes before updating."));
+                app.update_feedback(tl!("Save or discard unsaved changes before updating."));
                 false
             } else {
                 // Only MSI / .deb one-click handoffs quit; macOS opens the `.dmg` in Finder.
@@ -272,7 +277,7 @@ fn apply_install_result(app: &mut WordApp, v: Result<Value, String>) -> bool {
         }
         Err(e) => {
             log::warn!("update failed: {e}");
-            app.status(tl!(wordcraft_engine::update::MSG_START_FAILED));
+            app.update_feedback(tl!(wordcraft_engine::update::MSG_START_FAILED));
             false
         }
     }
@@ -290,6 +295,8 @@ pub fn worker_busy(app: &WordApp) -> bool {
 /// Manual check or command-driven notice (`file.checkForUpdates` ui_request).
 pub fn apply_command_result(app: &mut WordApp, value: &Value) {
     if let Some(n) = notice_from_payload(value) {
+        // The notice speaks for itself; drop any answer bar left by a previous check.
+        app.update.message = None;
         app.update.notice = Some(n);
     }
 }
@@ -321,8 +328,37 @@ pub(crate) fn reboot_bar(app: &mut WordApp, ui: &mut Ui) {
     }
 }
 
+/// A durable one-line update answer, drawn over Backstage: the macOS handoff instruction after a
+/// verified download, or the "up to date" / "could not reach GitHub" answer to a manual check. The
+/// status bar cannot carry these while File is open (#15 review).
+fn message_bar(app: &mut WordApp, ui: &mut Ui) {
+    // The status bar already carries these in the editor; the bar is only needed over Backstage,
+    // whose status bar is hidden (#15 review).
+    if !app.ui.backstage {
+        return;
+    }
+    let Some(message) = app.update.message.clone() else { return };
+    let t = Tokens::get(ui.ctx());
+    let mut dismissed = false;
+    egui::Panel::top("update_message_notice")
+        .frame(egui::Frame::NONE.fill(t.panel).inner_margin(egui::Margin::symmetric(12, 6)).stroke(Stroke::new(1.0, t.border)))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
+                ui.label(egui::RichText::new(&message).font(TypeRung::Control.medium()).color(t.text));
+                if ui.button(tl!("OK")).clicked() {
+                    dismissed = true;
+                }
+            });
+        });
+    if dismissed {
+        app.update.message = None;
+    }
+}
+
 pub fn bar(app: &mut WordApp, ui: &mut Ui) {
     reboot_bar(app, ui);
+    message_bar(app, ui);
     let Some(notice) = app.update.notice.clone() else { return };
     let t = Tokens::get(ui.ctx());
     let mut close = false;
@@ -568,6 +604,43 @@ mod tests {
         assert!(!app.quit_requested);
         let msg = app.status_msg.as_ref().map(|(s, _)| s.as_str()).unwrap_or("");
         assert!(msg.contains("Drag WordCraft into Applications"), "expected drag instruction in status, got {msg:?}");
+    }
+
+    /// The macOS handoff is started from Backstage (File ▸ Check for updates, after the Update
+    /// click), where the status bar is hidden. Applying the worker result must leave the drag
+    /// instruction somewhere visible there, not only in the off-screen status message (#15 review).
+    #[test]
+    fn macos_handoff_instruction_is_rendered_in_backstage() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.run("ui.backstage", json!({"value": true, "page": "home"})).unwrap();
+        let done = WorkerDone {
+            result: Ok(json!({
+                "status": "available",
+                "release": { "version": "9.0.0", "oneClick": false, "verifiedUpdate": true }
+            })),
+            prefs: UpdatePrefs::default(),
+            ui_requests: vec![json!({"updateMacDmg": true})],
+        };
+        let _ = apply_worker_result(&mut app, done, false, true);
+        assert!(
+            app.update.message.as_deref().is_some_and(|m| m.contains("Drag WordCraft into Applications")),
+            "the handoff instruction is kept for Backstage: {:?}",
+            app.update.message
+        );
+        let mut h = egui_kittest::Harness::builder().with_size(egui::vec2(1440.0, 900.0)).build_ui_state(
+            |ui, app: &mut crate::WordApp| {
+                let ctx = ui.ctx().clone();
+                app.logic(&ctx);
+                app.ui(ui);
+            },
+            app,
+        );
+        h.run_steps(4);
+        assert!(
+            h.query_by_label("Drag WordCraft into Applications, then reopen it.").is_some(),
+            "the macOS handoff instruction is rendered over Backstage"
+        );
     }
 
     #[test]
