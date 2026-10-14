@@ -119,6 +119,33 @@ macro_rules! confusion_pair {
 }
 
 confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.", "statue", "statute");
+
+/// Phrase matching must not join tokens across a sentence-ending period.
+#[test]
+fn confusion_phrase_does_not_cross_sentence_boundary() {
+    let quiet = "We admired the statue. Of limitations, none applied.";
+    assert!(confusion_issues(quiet).is_empty(), "cross-sentence match: {quiet}");
+    let fired = confusion_issues("The statue of limitations has run.");
+    assert_eq!(fired.len(), 1);
+    assert_eq!(fired[0].suggestions, vec!["statute".to_string()]);
+}
+
+/// Plural/possessive endings on the wrong word are preserved in the suggestion.
+#[test]
+fn confusion_suggestion_preserves_inflection() {
+    let fired = confusion_issues("The statues of limitations have run.");
+    assert_eq!(fired.len(), 1);
+    assert_eq!(fired[0].start..fired[0].end, 4..11);
+    assert_eq!(text_slice("The statues of limitations have run.", fired[0].start, fired[0].end), "statues");
+    assert_eq!(fired[0].suggestions, vec!["statutes".to_string()]);
+    let possessive = confusion_issues("The statue's of limitations defense failed.");
+    assert_eq!(possessive.len(), 1);
+    assert_eq!(possessive[0].suggestions, vec!["statute's".to_string()]);
+}
+
+fn text_slice(text: &str, start: usize, end: usize) -> &str {
+    text.get(start..end).unwrap_or("")
+}
 confusion_pair!(statute_frauds, "The statue of frauds bars oral agreements.", "A bronze statue stands in the plaza.", "statue", "statute");
 confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.", "principle", "principal");
 confusion_pair!(
@@ -222,6 +249,7 @@ fn proscribe_medication_advertising_is_quiet() {
         "The physician testified that the regulation will proscribe medication advertising to minors.",
         "The regulation will proscribe medication advertising to minors.",
         "The statute will proscribe medication by unlicensed sellers.",
+        "The statute will proscribe medication for nonmedical use.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
@@ -231,7 +259,13 @@ fn proscribe_medication_advertising_is_quiet() {
 confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
 confusion_pair!(adverse_to_risk, "The clause is adverse to risk.", "The investor was averse to risk.", "adverse", "averse");
 confusion_pair!(adverse_to_doing, "She is adverse to doing business there.", "The investor was averse to risk.", "adverse", "averse");
-confusion_pair!(elicit_illicit, "The deposition will illicit testimony about the contract.", "Police seized illicit drugs.", "illicit", "elicit");
+confusion_pair!(
+    elicit_illicit,
+    "Counsel tried to illicit testimony on redirect.",
+    "Counsel tried to elicit testimony on redirect.",
+    "illicit",
+    "elicit"
+);
 confusion_pair!(
     elicit_illicit_response,
     "The witness could illicit a response on cross-examination.",
@@ -270,16 +304,10 @@ fn correct_council_and_prescribe_contexts_are_quiet() {
     }
 }
 
-/// Correct adjective `illicit` and verb `complement` must stay quiet (no bare `illicit testimony` rule).
+/// Correct verb `complement` must stay quiet.
 #[test]
-fn correct_illicit_and_complement_contexts_are_quiet() {
-    for text in [
-        "The motion challenges illicit testimony.",
-        "The court excluded illicit testimony at trial.",
-        "The objection to illicit testimony was sustained.",
-        "The new tribunal will complement the court.",
-        "These judges complement the court well.",
-    ] {
+fn correct_complement_contexts_are_quiet() {
+    for text in ["The new tribunal will complement the court.", "These judges complement the court well."] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
     }

@@ -41,15 +41,19 @@ pub fn confusion_issues(text: &str) -> Vec<Issue> {
             if !rule.words.iter().enumerate().all(|(n, want)| word_matches(want, &tokens[start_idx + n].2)) {
                 continue;
             }
+            if !(0..need - 1).all(|n| gap_allows_phrase_join(text, tokens[start_idx + n].1, tokens[start_idx + n + 1].0)) {
+                continue;
+            }
             let wrong = start_idx + rule.wrong_index;
             let (a, b, _) = tokens[wrong];
             let surface = text.get(a..b).unwrap_or("");
+            let wrong_base = rule.words[rule.wrong_index];
             out.push(Issue {
                 start: a,
                 end: b,
                 kind: IssueKind::Grammar,
                 message: rule.message.into(),
-                suggestions: vec![capitalize_like(surface, rule.right)],
+                suggestions: vec![inflected_replacement(surface, wrong_base, rule.right)],
                 lang: ProofLang::En,
             });
         }
@@ -210,8 +214,8 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "Controlling case law is \"precedent\", not \"precedence\".",
     },
     ConfusionPhrase {
-        words: &["proscribe", "medication", "for"],
-        wrong_index: 0,
+        words: &["doctor", "proscribe", "medication"],
+        wrong_index: 1,
         right: "prescribe",
         message: "A doctor \"prescribes\" treatment; \"proscribe\" means to forbid.",
     },
@@ -234,8 +238,8 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "Being unwilling is \"averse\"; \"adverse\" describes harm or opposition.",
     },
     ConfusionPhrase {
-        words: &["will", "illicit", "testimony"],
-        wrong_index: 1,
+        words: &["illicit", "testimony"],
+        wrong_index: 0,
         right: "elicit",
         message: "To draw out testimony is to \"elicit\" it, not \"illicit\" (unlawful).",
     },
@@ -264,6 +268,17 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "Separate or distinct issues are \"discrete\", not \"discreet\" (tactful).",
     },
 ];
+
+/// Gaps between phrase tokens must not cross sentence boundaries (e.g. `statue.` … `Of`).
+fn gap_allows_phrase_join(text: &str, end_a: usize, start_b: usize) -> bool {
+    let Some(gap) = text.get(end_a..start_b) else {
+        return false;
+    };
+    if gap.contains(['\n', '\r']) {
+        return false;
+    }
+    gap.chars().all(|c| !matches!(c, '.' | '!' | '?'))
+}
 
 /// Whether token `actual` matches the expected dictionary word (case-insensitive, plural/possessive).
 fn word_matches(expected: &str, actual: &str) -> bool {
@@ -299,4 +314,40 @@ fn capitalize_like(original: &str, replacement: &str) -> String {
     } else {
         replacement.to_string()
     }
+}
+
+/// Build a suggestion that keeps plural/possessive endings from the matched wrong word.
+fn inflected_replacement(surface: &str, wrong_base: &str, right_base: &str) -> String {
+    let suffix = inflection_suffix(surface, wrong_base);
+    let combined = match suffix {
+        Some(suf) => format!("{right_base}{suf}"),
+        None => right_base.to_string(),
+    };
+    capitalize_like(surface, &combined)
+}
+
+/// Suffix on `surface` after the inflected form of `base` (e.g. `statues` → `"s"`).
+fn inflection_suffix(surface: &str, base: &str) -> Option<String> {
+    let lower = surface.to_lowercase();
+    let base_lower = base.to_lowercase();
+    if lower == base_lower {
+        return Some(String::new());
+    }
+    for apost in ["'s", "’s"] {
+        if lower == format!("{base_lower}{apost}") {
+            return Some(apost.to_string());
+        }
+    }
+    if lower == format!("{base_lower}s") {
+        return Some("s".to_string());
+    }
+    if lower == format!("{base_lower}es") {
+        return Some("es".to_string());
+    }
+    if let Some(stem) = lower.strip_suffix('s')
+        && (stem == base_lower || format!("{stem}e") == base_lower)
+    {
+        return Some("s".to_string());
+    }
+    None
 }
