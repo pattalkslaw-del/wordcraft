@@ -43,6 +43,11 @@ dictionary lives beside), one file per profile.
 | `law.checks.run` | `{"id"?, "doc"?, "forExport"?, "format"?, "store"?}`: run the profile's checks for a document type and return `{"profile", "doc", "findings": [{checkId, severity, message, start?, end?}]}`; it never edits the document |
 | `law.words.list` | `{}`: every legal term added to English spelling while LawCraft is on |
 | `law.proof.confusions` | `{"store"?}`: scan the open document for context-sensitive legal word-pair mistakes (suggestions, not hard errors); default stores findings in Review › Proofing |
+| `law.symbols.*` | Insert legal symbols (§, ¶, ©, dashes, non-breaking space, …); shortcuts on § and ¶; `law.symbols.fixSpacing` fixes an ordinary space after § or ¶ before a digit |
+
+With LawCraft on, **Insert › Legal Symbols** lists the same symbols as the `law.symbols.*` commands.
+Typing `§ 1.010` with AutoCorrect on turns the space before the number into a non-breaking space
+(undo restores the ordinary space); `sec.` is left alone.
 
 Applying a profile runs WordCraft's own commands (`layout.size`, `layout.margins`,
 `layout.lineNumbers`, `insert.pageNumber`, `layout.pageNumberFormat`, `styles.create`,

@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use crate::Session;
+use crate::{CmdError, Session};
 
 static ON_DOCUMENT_LOADED: Mutex<Vec<fn(&mut Session)>> = Mutex::new(Vec::new());
 
@@ -17,4 +17,36 @@ pub(crate) fn run_on_document_loaded(session: &mut Session) {
     for f in hooks.iter() {
         f(session);
     }
+}
+
+static ON_TEXT_AUTOFORMAT: Mutex<Vec<fn(&mut Session, &str) -> Result<bool, CmdError>>> = Mutex::new(Vec::new());
+
+/// Run from [`crate::cmd::text::insert`] after built-in AutoFormat on a single typed character.
+/// Return `Ok(true)` when the hook changed the document (undo is handled there).
+pub fn register_on_text_autoformat(f: fn(&mut Session, &str) -> Result<bool, CmdError>) {
+    let mut hooks = ON_TEXT_AUTOFORMAT.lock().unwrap_or_else(|e| e.into_inner());
+    hooks.push(f);
+}
+
+pub(crate) fn run_on_text_autoformat(session: &mut Session, text: &str) -> Result<bool, CmdError> {
+    let hooks = ON_TEXT_AUTOFORMAT.lock().unwrap_or_else(|e| e.into_inner());
+    for f in hooks.iter() {
+        if f(session, text)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Serialises tests that register hooks: the registry is process-wide, so a test that needs to
+/// see only its own hooks takes this lock and empties the registry around itself.
+#[cfg(test)]
+pub(crate) static HOOK_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// Empty every hook registry. Tests use it (under [`HOOK_TEST_LOCK`]) so a hook one test registers
+/// can never run for another test's session; production never unregisters.
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    ON_DOCUMENT_LOADED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    ON_TEXT_AUTOFORMAT.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }

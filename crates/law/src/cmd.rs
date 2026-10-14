@@ -19,6 +19,7 @@ use crate::checks;
 use crate::profile::{Patch, Profile};
 use crate::proofing;
 use crate::store::{LawError, Store};
+use crate::symbols;
 
 /// Where the profile commands live in the ribbon.
 const LOC: &str = "Law › Court Profiles";
@@ -46,7 +47,8 @@ pub fn settings_dir() -> Option<PathBuf> {
 
 /// The commands, for [`wordcraft_engine::Session::install_commands`].
 pub fn specs() -> Vec<CommandSpec> {
-    vec![
+    let mut v = symbols::specs();
+    v.extend([
         CommandSpec::new("law.profiles.list", "Court Profiles", LOC, |_, _| {
             let store = store();
             Ok(Value::Array(store.list().iter().map(|p| p.summary()).collect()))
@@ -194,6 +196,8 @@ pub fn specs() -> Vec<CommandSpec> {
         .params(r#"{"store"?: bool (default true: show findings in Review › Proofing)} → {"findings": [{checkId, severity, message, start?, end?}]}"#)
         .pure(),
     ]
+    ]);
+    v
 }
 
 fn not_found(id: &str) -> CmdError {
