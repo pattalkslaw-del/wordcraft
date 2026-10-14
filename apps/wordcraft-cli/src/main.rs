@@ -57,6 +57,29 @@ fn set_author(s: &mut Session, name: &str) -> Result<(), String> {
     s.run("file.setAuthor", &json!({"name": name})).map(|_| ()).map_err(|e| format!("--author: {e}"))
 }
 
+/// Build the headless MCP session, wiring the same update HTTP hook the desktop app uses so
+/// `file.checkForUpdates` is reachable through MCP too (#15). `http` is injected so tests run with
+/// an offline fake and no request ever leaves the machine.
+fn headless_session(
+    http: wordcraft_engine::update::HttpGet,
+    author: Option<String>,
+    roots: Option<std::sync::Arc<wordcraft_engine::file_access::AutomationRoots>>,
+) -> Result<wordcraft_mcp::Headless, String> {
+    let mut headless = wordcraft_mcp::Headless::default();
+    headless.session.update_http = Some(http);
+    if let Some(roots) = roots {
+        // Every thread of this process, not only the server's: nothing reaches past the roots.
+        wordcraft_engine::file_access::confine_process(roots.clone());
+        let show = |root: Option<&std::path::Path>| root.map_or_else(|| "none".to_string(), |r| r.display().to_string());
+        eprintln!("wordcraft-cli: files confined: read root {}, write root {}", show(roots.read_root()), show(roots.write_root()));
+        headless = headless.with_automation_roots(Some(roots));
+    }
+    if let Some(name) = author {
+        set_author(&mut headless.session, &name)?;
+    }
+    Ok(headless)
+}
+
 fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
 }
@@ -331,20 +354,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
                     }
                     Box::new(remote)
                 }
-                None => {
-                    let mut headless = wordcraft_mcp::Headless::default();
-                    if let Some(roots) = roots {
-                        // Every thread of this process, not only the server's: nothing reaches past the roots.
-                        wordcraft_engine::file_access::confine_process(roots.clone());
-                        let show = |root: Option<&std::path::Path>| root.map_or_else(|| "none".to_string(), |r| r.display().to_string());
-                        eprintln!("wordcraft-cli: files confined: read root {}, write root {}", show(roots.read_root()), show(roots.write_root()));
-                        headless = headless.with_automation_roots(Some(roots));
-                    }
-                    if let Some(name) = author {
-                        set_author(&mut headless.session, &name)?;
-                    }
-                    Box::new(headless)
-                }
+                None => Box::new(headless_session(update_check::http_get(), author, roots)?),
             };
             let mut server = wordcraft_mcp::Server::new(backend);
             let stdin = std::io::stdin();
@@ -540,5 +550,25 @@ mod tests {
         let dir = std::env::temp_dir().to_string_lossy().into_owned();
         let e = run(&args(&["mcp", "--connect", "127.0.0.1:9", "--automation-read-root", &dir])).unwrap_err().to_string();
         assert!(e.contains("--automation-read-root") && e.contains("headless"), "{e}");
+    }
+
+    /// #15: the headless MCP backend must carry the update HTTP hook, so `file.checkForUpdates`
+    /// works through MCP. The injected fake proves it with no real request.
+    #[test]
+    fn headless_mcp_checks_for_updates_offline() {
+        use std::sync::{Arc, Mutex};
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let c = Arc::clone(&calls);
+        let http: wordcraft_engine::update::HttpGet = Arc::new(move |url, _max| {
+            c.lock().unwrap_or_else(|e| e.into_inner()).push(url.to_string());
+            Ok(br#"{"tag_name":"v0.0.1","draft":false,"prerelease":false,"assets":[]}"#.to_vec())
+        });
+        let mut h = headless_session(http, None, None).expect("headless backend");
+        assert!(h.session.update_http.is_some(), "the hook is installed");
+        let r = wordcraft_mcp::Backend::call(&mut h, "engine.execute", json!({"command": "file.checkForUpdates", "params": {"force": true}}))
+            .expect("mcp call");
+        assert_eq!(r["status"], "current");
+        let seen = calls.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert_eq!(seen, vec![wordcraft_engine::update::LATEST_API.to_string()], "exactly one offline release request");
     }
 }

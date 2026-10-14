@@ -4,7 +4,7 @@ WordCraft checks [GitHub Releases](https://github.com/storytold/wordcraft/releas
 
 ## What is sent
 
-When you choose **Check for updates** (Help ribbon, File backstage, `file.checkForUpdates`, or `wordcraft-cli update --check`), WordCraft makes a single anonymous HTTPS `GET` to:
+When you choose **Check for updates** (Help ribbon, File backstage, `file.checkForUpdates` — including through the MCP server — or `wordcraft-cli update --check`), WordCraft makes a single anonymous HTTPS `GET` to:
 
 `https://api.github.com/repos/storytold/wordcraft/releases/latest`
 
@@ -18,7 +18,7 @@ No account, identifier, document content, or telemetry is sent. GitHub sees a no
 
 ## One-click update
 
-For `.msi`, portable `.zip`, `.deb`, and macOS `.dmg` installs, **Update** downloads the matching release asset, verifies it against `SHA256SUMS.txt` on the release, then starts the platform installer (`msiexec`, `dpkg` via `pkexec`, disk image copy, or portable replace-and-relaunch). If the document has unsaved changes, WordCraft asks you to save first.
+For `.msi`, portable `.zip`, `.deb`, and macOS `.dmg` installs, **Update** downloads the matching release asset, verifies it against `SHA256SUMS.txt` on the release, then starts the platform installer (`msiexec`, `dpkg` via `pkexec`, disk image copy, or portable replace-and-relaunch). If the document has unsaved changes, WordCraft asks you to save first, and the download does not start until it is saved. The macOS swap validates the downloaded bundle (`Contents/`, `Info.plist`, and the executable) before replacing anything, keeping the previous installation when validation fails. Staged downloads are removed after use, including failed attempts.
 
 Unknown or development installs open the release page in your browser instead. On Linux, only `.deb` packages installed under system paths (verified with `dpkg-query`) use one-click install; RPM and unpackaged `/usr/bin` copies fall back to the release page.
 

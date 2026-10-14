@@ -52,6 +52,12 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
     let last_check = s.update_prefs.last_check_unix;
     let skipped_ver = s.update_prefs.skipped_version.clone();
 
+    // Asking to install with unsaved work must never reach the network: the interface prompts to
+    // save first, and this is the backstop for programmatic callers.
+    if apply && s.dirty {
+        return Err(CmdError::Failed("Save or discard unsaved changes before updating.".into()));
+    }
+
     if startup && env_of(s).no_update_check() {
         return Ok(json_result(throttled(&current_text)));
     }
@@ -99,9 +105,6 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
     let offer = offer(release.clone(), &skipped_ver, kind);
 
     if apply {
-        if s.dirty {
-            return Err(CmdError::Failed("Save or discard unsaved changes before updating.".into()));
-        }
         if kind.external_updater() || kind == crate::update::InstallKind::Unknown {
             return Err(CmdError::Failed("Open the release page in your browser to update.".into()));
         }
@@ -456,16 +459,13 @@ mod tests {
     }
 
     #[test]
-    fn dirty_session_downloads_nothing_and_never_invokes_installer() {
+    fn dirty_session_makes_no_request_and_never_invokes_installer() {
         let installs = Arc::new(Mutex::new(0));
-        let downloads = Arc::new(Mutex::new(0));
+        let requests = Arc::new(Mutex::new(0));
         let i = Arc::clone(&installs);
-        let d = Arc::clone(&downloads);
-        let mut s = session_with(Arc::new(move |u, _| {
-            // The release metadata check is fine; no *asset* may be fetched once dirty.
-            if u != LATEST_API {
-                *d.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-            }
+        let r = Arc::clone(&requests);
+        let mut s = session_with(Arc::new(move |_, _| {
+            *r.lock().unwrap_or_else(|e| e.into_inner()) += 1;
             Ok(LATEST.as_bytes().to_vec())
         }));
         s.dirty = true;
@@ -476,7 +476,7 @@ mod tests {
         let err = check(&mut s, &json!({"force": true, "apply": true})).unwrap_err();
         assert!(err.to_string().contains("unsaved"));
         assert_eq!(*installs.lock().unwrap_or_else(|e| e.into_inner()), 0);
-        assert_eq!(*downloads.lock().unwrap_or_else(|e| e.into_inner()), 0, "no asset download before the save prompt");
+        assert_eq!(*requests.lock().unwrap_or_else(|e| e.into_inner()), 0, "not even the release metadata is fetched before the save prompt");
     }
 
     #[test]

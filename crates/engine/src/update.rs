@@ -203,8 +203,9 @@ impl EnvRead for SystemEnv {
         cfg!(all(unix, not(target_os = "macos")))
     }
     fn no_update_check(&self) -> bool {
-        // Build-time (a packager ships updates another way) or a single run's environment.
-        if option_env!("WORDCRAFT_NO_UPDATE_CHECK").is_some() {
+        // Build-time (a packager ships updates another way) or a single run's environment. An
+        // empty value or `0` (as in the runtime variable) does not disable the check.
+        if matches!(option_env!("WORDCRAFT_NO_UPDATE_CHECK"), Some(v) if !v.is_empty() && v != "0") {
             return true;
         }
         matches!(std::env::var("WORDCRAFT_NO_UPDATE_CHECK"), Ok(v) if !v.is_empty() && v != "0")

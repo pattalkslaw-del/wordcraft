@@ -18,14 +18,25 @@ pub fn handoff() -> InstallFn {
 }
 
 fn run(job: InstallHandoff) -> Result<(), String> {
+    let kind = job.kind;
     let staging = private_staging_dir()?;
+    let result = install_into(&job, &staging);
+    // The portable helper still needs the staged extract after we exit; it removes it when done.
+    // Every other outcome (including a failed attempt) can drop its staging right away.
+    if !(result.is_ok() && kind == InstallKind::WindowsPortableZip) {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+fn install_into(job: &InstallHandoff, staging: &Path) -> Result<(), String> {
     let file_name = safe_name(&job.file_name);
-    let path = write_exclusive_file(&staging, &file_name, &job.bytes)?;
+    let path = write_exclusive_file(staging, &file_name, &job.bytes)?;
     match job.kind {
         InstallKind::WindowsMsi => windows_msi(&path),
-        InstallKind::WindowsPortableZip => windows_portable(&path, &job.exe_path, &staging),
+        InstallKind::WindowsPortableZip => windows_portable(&path, &job.exe_path, staging),
         InstallKind::LinuxDeb => linux_deb(&path),
-        InstallKind::MacDmg | InstallKind::MacApp => mac_dmg(&path, &staging, &job.exe_path),
+        InstallKind::MacDmg | InstallKind::MacApp => mac_dmg(&path, staging, &job.exe_path),
         InstallKind::Flatpak | InstallKind::AppImage | InstallKind::Unknown => Err("This install type must use the release page.".into()),
     }
 }
@@ -135,6 +146,7 @@ Wait-Process -Id $WaitPid -ErrorAction SilentlyContinue
 robocopy $Src $Dest /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
 if ($LASTEXITCODE -ge 8) { exit 1 }
 Start-Process -FilePath $Exe
+Remove-Item -Recurse -Force (Split-Path -Parent $Src) -ErrorAction SilentlyContinue
 "#;
     std::fs::write(&script, ps).map_err(|e| e.to_string())?;
     let args = portable_helper_args(
@@ -186,16 +198,47 @@ pub fn app_bundle_for(exe: &str) -> Option<PathBuf> {
 #[cfg(any(target_os = "macos", test))]
 pub trait BundleOps {
     fn is_dir(&self, path: &Path) -> bool;
+    fn is_file(&self, path: &Path) -> bool;
+    /// True when `path` is a regular file with an executable bit set.
+    fn is_executable(&self, path: &Path) -> bool;
     fn exists(&self, path: &Path) -> bool;
     fn copy_tree(&self, from: &Path, to: &Path) -> Result<(), String>;
     fn move_path(&self, from: &Path, to: &Path) -> Result<(), String>;
     fn remove_tree(&self, path: &Path) -> Result<(), String>;
 }
 
-/// Copy `staged` beside `dest`, validate the copy, then swap it in. The previous bundle is kept
-/// until the new one is in place, so a failed copy or move leaves the installation as it was.
+/// A `.app` is only acceptable when it is a real bundle: `Contents/`, the `Info.plist` metadata and
+/// the executable we are currently running. A checksummed DMG can still hold a truncated or
+/// otherwise broken bundle, and swapping one in would replace a working installation.
 #[cfg(any(target_os = "macos", test))]
-pub fn replace_bundle(ops: &dyn BundleOps, staged: &Path, dest: &Path) -> Result<(), String> {
+pub fn validate_bundle(ops: &dyn BundleOps, root: &Path, exe_name: &str) -> Result<(), String> {
+    if !ops.is_dir(root) {
+        return Err("the downloaded update is not an application bundle".into());
+    }
+    if !ops.is_dir(&root.join("Contents")) {
+        return Err("the downloaded application bundle is incomplete".into());
+    }
+    if !ops.is_file(&root.join("Contents/Info.plist")) {
+        return Err("the downloaded application bundle is missing its Info.plist".into());
+    }
+    if !ops.is_dir(&root.join("Contents/MacOS")) {
+        return Err("the downloaded application bundle is missing its executable folder".into());
+    }
+    if exe_name.is_empty() {
+        return Err("could not find the running executable name".into());
+    }
+    let exe = root.join("Contents/MacOS").join(exe_name);
+    if !ops.is_file(&exe) || !ops.is_executable(&exe) {
+        return Err("the downloaded application bundle has no runnable executable".into());
+    }
+    Ok(())
+}
+
+/// Copy `staged` beside `dest`, validate the copy, then swap it in. The previous bundle is kept
+/// until a complete new one is in place, so a failed copy, an incomplete bundle or a failed move
+/// leaves the installation exactly as it was.
+#[cfg(any(target_os = "macos", test))]
+pub fn replace_bundle(ops: &dyn BundleOps, staged: &Path, dest: &Path, exe_name: &str) -> Result<(), String> {
     let parent = dest.parent().ok_or("could not find the install folder")?;
     if !ops.is_dir(staged) {
         return Err("the downloaded update is not an application bundle".into());
@@ -205,9 +248,9 @@ pub fn replace_bundle(ops: &dyn BundleOps, staged: &Path, dest: &Path) -> Result
         let _ = ops.remove_tree(&tmp);
         return Err(e);
     }
-    if !ops.is_dir(&tmp.join("Contents")) {
+    if let Err(e) = validate_bundle(ops, &tmp, exe_name) {
         let _ = ops.remove_tree(&tmp);
-        return Err("the downloaded application bundle is incomplete".into());
+        return Err(e);
     }
     if ops.exists(dest) {
         let backup = parent.join(format!(".wordcraft-previous-{}", random_hex(8)?));
@@ -236,6 +279,16 @@ struct RealBundleOps;
 impl BundleOps for RealBundleOps {
     fn is_dir(&self, path: &Path) -> bool {
         path.is_dir()
+    }
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+    fn is_executable(&self, path: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path) {
+            Ok(m) => m.is_file() && m.permissions().mode() & 0o111 != 0,
+            Err(_) => false,
+        }
     }
     fn exists(&self, path: &Path) -> bool {
         path.exists()
@@ -290,10 +343,11 @@ fn mac_dmg(dmg: &Path, staging: &Path, exe: &str) -> Result<(), String> {
         return Err("Could not open the disk image.".into());
     }
     let app_src = mount.join("WordCraft.app");
+    let exe_name = Path::new(exe).file_name().and_then(|n| n.to_str()).unwrap_or("");
     let result = if !app_src.is_dir() {
         Err("The disk image does not contain WordCraft.app.".into())
     } else {
-        replace_bundle(&RealBundleOps, &app_src, &dest)
+        replace_bundle(&RealBundleOps, &app_src, &dest, exe_name)
     };
     // Detaching a read-only image never touches what was already copied; a failed detach must not
     // mask a successful (or failed) install.
@@ -360,37 +414,55 @@ mod tests {
         assert_eq!(app_bundle_for(""), None);
     }
 
-    /// A fake bundle filesystem: records moves and can fail copying or the final swap.
+    /// A fake bundle filesystem: records moves and can fail copying, produce an incomplete bundle
+    /// or fail the final swap.
     #[derive(Default)]
     struct FakeOps {
-        nodes: RefCell<HashSet<PathBuf>>,
+        dirs: RefCell<HashSet<PathBuf>>,
+        files: RefCell<HashSet<PathBuf>>,
+        execs: RefCell<HashSet<PathBuf>>,
         moves: RefCell<Vec<(PathBuf, PathBuf)>>,
         fail_copy: bool,
-        fail_contents: bool,
+        /// A copied bundle whose `Contents/` is present but has no `Info.plist`/executable.
+        empty_contents: bool,
+        /// A copied bundle with metadata and a `MacOS/` folder but no runnable executable.
+        no_executable: bool,
         fail_swap: bool,
     }
 
     impl FakeOps {
         fn with_dir(self, path: &str) -> Self {
-            self.nodes.borrow_mut().insert(PathBuf::from(path));
+            self.dirs.borrow_mut().insert(PathBuf::from(path));
             self
         }
     }
 
     impl BundleOps for FakeOps {
         fn is_dir(&self, path: &Path) -> bool {
-            self.nodes.borrow().contains(path)
+            self.dirs.borrow().contains(path)
+        }
+        fn is_file(&self, path: &Path) -> bool {
+            self.files.borrow().contains(path)
+        }
+        fn is_executable(&self, path: &Path) -> bool {
+            self.execs.borrow().contains(path)
         }
         fn exists(&self, path: &Path) -> bool {
-            self.nodes.borrow().contains(path)
+            self.dirs.borrow().contains(path) || self.files.borrow().contains(path)
         }
         fn copy_tree(&self, _from: &Path, to: &Path) -> Result<(), String> {
             if self.fail_copy {
                 return Err("copy failed".into());
             }
-            self.nodes.borrow_mut().insert(to.to_path_buf());
-            if !self.fail_contents {
-                self.nodes.borrow_mut().insert(to.join("Contents"));
+            self.dirs.borrow_mut().insert(to.to_path_buf());
+            self.dirs.borrow_mut().insert(to.join("Contents"));
+            if !self.empty_contents {
+                self.files.borrow_mut().insert(to.join("Contents/Info.plist"));
+                self.dirs.borrow_mut().insert(to.join("Contents/MacOS"));
+                if !self.no_executable {
+                    self.files.borrow_mut().insert(to.join("Contents/MacOS/wordcraft"));
+                    self.execs.borrow_mut().insert(to.join("Contents/MacOS/wordcraft"));
+                }
             }
             Ok(())
         }
@@ -399,13 +471,23 @@ mod tests {
             if self.fail_swap && from.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".wordcraft-update-")) {
                 return Err("swap failed".into());
             }
-            self.nodes.borrow_mut().retain(|p| p != from && !p.starts_with(from));
-            self.nodes.borrow_mut().insert(to.to_path_buf());
+            self.retain_not_under(from);
+            self.dirs.borrow_mut().insert(to.to_path_buf());
             Ok(())
         }
         fn remove_tree(&self, path: &Path) -> Result<(), String> {
-            self.nodes.borrow_mut().retain(|p| p != path && !p.starts_with(path));
+            self.retain_not_under(path);
             Ok(())
+        }
+    }
+
+    impl FakeOps {
+        /// Drop every entry at or below `root` (a real move/remove follows the whole tree).
+        fn retain_not_under(&self, root: &Path) {
+            let keep = |p: &PathBuf| p != root && !p.starts_with(root);
+            self.dirs.borrow_mut().retain(keep);
+            self.files.borrow_mut().retain(|p| keep(p));
+            self.execs.borrow_mut().retain(|p| keep(p));
         }
     }
 
@@ -417,48 +499,77 @@ mod tests {
         PathBuf::from("/apps/WordCraft.app")
     }
 
+    fn run_replace(ops: &FakeOps) -> Result<(), String> {
+        replace_bundle(ops, &staged(), &dest(), "wordcraft")
+    }
+
     #[test]
     fn replace_bundle_swaps_and_clears_the_backup() {
         let ops = FakeOps::default().with_dir("/stage/WordCraft.app").with_dir("/apps/WordCraft.app");
-        replace_bundle(&ops, &staged(), &dest()).unwrap();
+        run_replace(&ops).unwrap();
         assert!(ops.is_dir(&dest()), "new bundle is in place");
-        assert!(!ops.nodes.borrow().iter().any(|p| p.to_string_lossy().contains(".wordcraft-previous-")), "backup removed");
-        assert!(!ops.nodes.borrow().iter().any(|p| p.to_string_lossy().contains(".wordcraft-update-")), "staging removed");
+        assert!(
+            !ops.dirs.borrow().iter().chain(ops.files.borrow().iter()).any(|p| p.to_string_lossy().contains(".wordcraft-previous-")),
+            "backup removed"
+        );
+        assert!(
+            !ops.dirs.borrow().iter().chain(ops.files.borrow().iter()).any(|p| p.to_string_lossy().contains(".wordcraft-update-")),
+            "staging removed"
+        );
     }
 
     #[test]
     fn replace_bundle_keeps_install_when_copy_fails() {
         let ops = FakeOps { fail_copy: true, ..FakeOps::default() }.with_dir("/stage/WordCraft.app").with_dir("/apps/WordCraft.app");
-        assert!(replace_bundle(&ops, &staged(), &dest()).is_err());
+        assert!(run_replace(&ops).is_err());
         assert!(ops.is_dir(&dest()), "the installed bundle is untouched");
     }
 
+    /// The regression for #15: `Contents/` exists but the bundle is broken (no Info.plist and no
+    /// executable). It must not replace the working installation.
     #[test]
-    fn replace_bundle_rejects_incomplete_copy() {
-        let ops = FakeOps { fail_contents: true, ..FakeOps::default() }.with_dir("/stage/WordCraft.app").with_dir("/apps/WordCraft.app");
-        assert!(replace_bundle(&ops, &staged(), &dest()).is_err());
+    fn replace_bundle_rejects_a_present_but_incomplete_bundle() {
+        let ops = FakeOps { empty_contents: true, ..FakeOps::default() }.with_dir("/stage/WordCraft.app").with_dir("/apps/WordCraft.app");
+        let err = run_replace(&ops).unwrap_err();
+        assert!(err.contains("incomplete") || err.contains("Info.plist") || err.contains("executable"), "{err}");
+        assert!(ops.is_dir(&dest()), "the installed bundle is untouched");
+        assert!(
+            !ops.dirs.borrow().iter().chain(ops.files.borrow().iter()).any(|p| p.to_string_lossy().contains(".wordcraft-update-")),
+            "staging removed"
+        );
+    }
+
+    #[test]
+    fn replace_bundle_rejects_a_bundle_without_a_runnable_executable() {
+        // Metadata and `Contents/MacOS/` are present, but the executable file is missing.
+        let ops = FakeOps { no_executable: true, ..FakeOps::default() }.with_dir("/stage/WordCraft.app").with_dir("/apps/WordCraft.app");
+        let err = run_replace(&ops).unwrap_err();
+        assert!(err.contains("runnable executable"), "{err}");
         assert!(ops.is_dir(&dest()), "the installed bundle is untouched");
     }
 
     #[test]
     fn replace_bundle_restores_previous_on_swap_failure() {
         let ops = FakeOps { fail_swap: true, ..FakeOps::default() }.with_dir("/stage/WordCraft.app").with_dir("/apps/WordCraft.app");
-        assert!(replace_bundle(&ops, &staged(), &dest()).is_err());
+        assert!(run_replace(&ops).is_err());
         assert!(ops.is_dir(&dest()), "the previous bundle is restored");
-        assert!(!ops.nodes.borrow().iter().any(|p| p.to_string_lossy().contains(".wordcraft-update-")), "staging removed");
+        assert!(
+            !ops.dirs.borrow().iter().chain(ops.files.borrow().iter()).any(|p| p.to_string_lossy().contains(".wordcraft-update-")),
+            "staging removed"
+        );
     }
 
     #[test]
     fn replace_bundle_creates_a_fresh_install() {
         let ops = FakeOps::default().with_dir("/stage/WordCraft.app");
-        replace_bundle(&ops, &staged(), &dest()).unwrap();
+        run_replace(&ops).unwrap();
         assert!(ops.is_dir(&dest()), "installed where none existed");
     }
 
     #[test]
     fn replace_bundle_refuses_a_non_bundle() {
         let ops = FakeOps::default().with_dir("/apps/WordCraft.app");
-        assert!(replace_bundle(&ops, &staged(), &dest()).is_err());
+        assert!(run_replace(&ops).is_err());
         assert!(ops.is_dir(&dest()), "the installed bundle is untouched");
     }
 }
