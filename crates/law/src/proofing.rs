@@ -102,10 +102,13 @@ struct ConfusionRule {
     preceding_any: &'static [&'static str],
 }
 
-/// Words that only precede a *verb*: auxiliaries and the infinitive `to`. A word after one of
-/// these is doing verb work, so `illicit` there is almost certainly the confused verb `elicit`.
-/// Without one, `illicit testimony` ("unlawful testimony") is correct and must not fire.
-const VERB_LEADS: &[&str] = &["to", "will", "would", "can", "could", "may", "might", "must", "shall", "should", "did", "does", "do"];
+/// Auxiliaries that only precede a *base verb*. A word after one of these is doing verb work, so
+/// `illicit` there is almost certainly the confused verb `elicit`; without one, `illicit
+/// testimony` ("unlawful testimony") is correct and must not fire. The infinitive/preposition `to`
+/// is deliberately absent: "objection to illicit testimony" is correct, and telling an infinitival
+/// `to` from a prepositional one needs part-of-speech context this checker doesn't have, so it is
+/// safer to drop `to` than to risk flagging correct prose.
+const VERB_LEADS: &[&str] = &["will", "would", "can", "could", "may", "might", "must", "shall", "should", "did", "does", "do"];
 
 /// Context-sensitive legal word-pair checks (original wording; no manual copied).
 const CONFUSION_RULES: &[ConfusionRule] = &[

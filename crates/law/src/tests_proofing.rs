@@ -3,7 +3,7 @@
 use serde_json::json;
 use wordcraft_doc::Document;
 use wordcraft_engine::Session;
-use wordcraft_proof::{Options, ProofLang, check_text_with, is_correct_with_module};
+use wordcraft_proof::{ModuleEn, Options, ProofLang, check_spelling_with_module, check_text_with, is_correct_with_module};
 
 use crate::install;
 use crate::proofing::{confusion_issues, legal_words};
@@ -27,6 +27,23 @@ fn legal_terms_spell_check_depends_on_lawcraft() {
     assert!(!is_correct_with_module("rsmo", &opts, s.module_en));
     assert_eq!(install(&mut s), 0);
     assert!(is_correct_with_module("rsmo", &opts, s.module_en));
+}
+
+/// Reporter and court abbreviations (`S.W.3d`, `F.4th`, `Mo. App.`) reach proofing through the
+/// real spelling path: the tokenizer splits them at their periods, and the resulting pieces are
+/// recognised — single letters and digit-bearing tokens by the defaults, the rest by the
+/// dictionary — so none is flagged. `RSMo`, a single token the base dictionary does not have, is
+/// the term the LawCraft list itself supplies: quiet with the module on, flagged without it.
+#[test]
+fn reporter_and_court_abbreviations_spell_clean() {
+    let opts = Options::default();
+    let s = law();
+    for text in ["S.W.3d 679", "F.4th 1184", "Mo. App. E.D. 2020"] {
+        let issues = check_spelling_with_module(text, &opts, s.module_en);
+        assert!(issues.is_empty(), "LawCraft should not flag `{text}`: {issues:?}");
+    }
+    assert!(!is_correct_with_module("rsmo", &opts, ModuleEn::default()), "RSMo is not plain English");
+    assert!(is_correct_with_module("rsmo", &opts, s.module_en), "the legal list supplies RSMo");
 }
 
 #[test]
@@ -104,6 +121,14 @@ macro_rules! confusion_pair {
 confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.", "statue", "statute");
 confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.", "principle", "principal");
 confusion_pair!(
+    principal_principle_claim,
+    "The principle claim for damages was dismissed.",
+    "A basic principle guides the analysis.",
+    "principle",
+    "principal"
+);
+confusion_pair!(principal_of_law, "The principal of law is settled.", "The principal amount is unpaid.", "principal", "principle");
+confusion_pair!(
     counsel_council,
     "Attorney council of record filed a brief.",
     "The city council for the district met yesterday.",
@@ -123,6 +148,13 @@ confusion_pair!(
     precedent_precedence,
     "This is binding precedence in our circuit.",
     "Federal law takes precedence over state law.",
+    "precedence",
+    "precedent"
+);
+confusion_pair!(
+    controlling_precedence,
+    "This decision is controlling precedence here.",
+    "The statute takes precedence over the rule.",
     "precedence",
     "precedent"
 );
@@ -151,20 +183,31 @@ fn correct_council_and_prescribe_contexts_are_quiet() {
     }
 }
 confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
-confusion_pair!(elicit_illicit, "The lawyer attempted to illicit testimony from the witness.", "Police seized illicit drugs.", "illicit", "elicit");
+confusion_pair!(adverse_to_risk, "The clause is adverse to risk.", "The investor was averse to risk.", "adverse", "averse");
+confusion_pair!(elicit_illicit, "The deposition will illicit testimony about the contract.", "Police seized illicit drugs.", "illicit", "elicit");
+confusion_pair!(
+    elicit_illicit_response,
+    "The witness could illicit a response on cross-examination.",
+    "The cross-examiner sought a candid response.",
+    "illicit",
+    "elicit"
+);
 confusion_pair!(complement_compliment, "The exhibit compliment the record.", "She compliment the judge after argument.", "compliment", "complement");
 confusion_pair!(discrete_discreet, "There are three discreet issues before us.", "A discreet investigation continued.", "discreet", "discrete");
+confusion_pair!(effect_affect_outcome, "The new rule will effect the outcome.", "The new rule will affect the outcome.", "effect", "affect");
 
 /// #5 review: correct `illicit` (an adjective meaning unlawful) and correct `complement` (to
-/// complete or balance) must not be flagged. Only a verb context — after an auxiliary or `to` —
-/// makes `illicit` likely wrong, and `complement the court` is a valid object; adjacency alone
-/// doesn't establish a mistake. The clear `to illicit testimony` and `compliment the record` cases
-/// still fire (see the pairs above).
+/// complete or balance) must not be flagged. `illicit testimony` is a valid noun phrase, and the
+/// prepositional `to` before it ("objection to illicit testimony") is not the infinitive that
+/// leads the verb `elicit`, so it must stay quiet; only an auxiliary before `illicit` makes it
+/// likely wrong. `complement the court` is likewise a valid object. The clear
+/// `will illicit testimony` and `compliment the record` cases still fire (see the pairs above).
 #[test]
 fn correct_illicit_and_complement_contexts_are_quiet() {
     for text in [
         "The motion challenges illicit testimony.",
         "The court excluded illicit testimony at trial.",
+        "The objection to illicit testimony was sustained.",
         "The new tribunal will complement the court.",
         "These judges complement the court well.",
     ] {
