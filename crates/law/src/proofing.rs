@@ -38,7 +38,14 @@ pub fn confusion_issues(text: &str) -> Vec<Issue> {
             if start_idx + need > tokens.len() {
                 continue;
             }
-            if !rule.words.iter().enumerate().all(|(n, want)| word_matches(want, &tokens[start_idx + n].2)) {
+            // Only the highlighted (wrong) word may take a plural or possessive ending. Every
+            // other word of the phrase must match exactly: inflecting a context word can change
+            // its part of speech and fire on correct usage ("the principle issues from natural
+            // law"), which the phrase approach must never do.
+            if !rule.words.iter().enumerate().all(|(n, want)| {
+                let actual = &tokens[start_idx + n].2;
+                if n == rule.wrong_index { word_matches(want, actual) } else { actual.eq_ignore_ascii_case(want) }
+            }) {
                 continue;
             }
             if !(0..need - 1).all(|n| gap_allows_phrase_join(text, tokens[start_idx + n].1, tokens[start_idx + n + 1].0)) {
@@ -95,7 +102,8 @@ pub fn run_confusion_checks(session: &mut Session, store: bool) -> Value {
 }
 
 struct ConfusionPhrase {
-    /// Lowercase words in order (matched case-insensitively with plural/possessive variants).
+    /// Lowercase words in order. Matched case-insensitively; only the `wrong_index` word may
+    /// carry a plural/possessive variant — every context word must match exactly.
     words: &'static [&'static str],
     /// Index into [`Self::words`] of the misspelled/confused token to highlight.
     wrong_index: usize,
@@ -105,9 +113,11 @@ struct ConfusionPhrase {
 
 /// Fixed wrong phrases only — no single-token guesses or lookahead (original wording; no manual copied).
 ///
-/// Every entry must be unambiguous: it fires only when the highlighted word cannot be right. Where
-/// no exact phrase is unambiguous the pair is omitted rather than guessed at — for example
-/// `prescribe`/`proscribe`, because a subject that can forbid can also legitimately `proscribe`
+/// Every entry must be unambiguous: it fires only when the highlighted word cannot be right. Only
+/// that wrong word may take a plural or possessive ending; every other word of the phrase matches
+/// exactly, so an inflected context word that is really a verb (`the principle issues from natural
+/// law`) never fires. Where no exact phrase is unambiguous the pair is omitted rather than guessed
+/// at — `prescribe`/`proscribe`, because a subject that can forbid can also legitimately `proscribe`
 /// medication ("Doctors proscribe medication that is contraindicated"); `controlling precedence`,
 /// because `precedence` correctly means priority; and `complement`/`compliment`, because a "full
 /// compliment of the judge" is correct praise, so no `compliment` phrase fires.
@@ -123,12 +133,6 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         wrong_index: 0,
         right: "statute",
         message: "\"Statute\" is the law; \"statue\" is a sculpture — did you mean statute of frauds?",
-    },
-    ConfusionPhrase {
-        words: &["principle", "issue"],
-        wrong_index: 0,
-        right: "principal",
-        message: "In legal writing, the main claim or amount is usually \"principal\", not \"principle\".",
     },
     ConfusionPhrase {
         words: &["principle", "claim"],
@@ -235,12 +239,6 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
     ConfusionPhrase {
         words: &["illicit", "a", "response"],
         wrong_index: 0,
-        right: "elicit",
-        message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
-    },
-    ConfusionPhrase {
-        words: &["could", "illicit", "a", "response"],
-        wrong_index: 1,
         right: "elicit",
         message: "To draw out a response is to \"elicit\" it, not \"illicit\".",
     },

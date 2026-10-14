@@ -168,7 +168,24 @@ fn text_slice(text: &str, start: usize, end: usize) -> &str {
     text.get(start..end).unwrap_or("")
 }
 confusion_pair!(statute_frauds, "The statue of frauds bars oral agreements.", "A bronze statue stands in the plaza.", "statue", "statute");
-confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.", "principle", "principal");
+/// #5 review: an inflected *context* word must not match. The removed `principle issue` entry
+/// fired on "The principle issues from natural law." because the old matcher accepted `issues` as
+/// a plural of `issue`, suggesting `principal` for a correct noun. Every phrase now requires its
+/// context words exactly, so a following verb (`issues`, `claims`, `amounts`, `places`) stays
+/// quiet; this is that regression.
+#[test]
+fn principle_as_noun_before_a_verb_is_quiet() {
+    for text in [
+        "The principle issues from natural law.",
+        "A legal principle issues from the cases.",
+        "The principle claims our attention.",
+        "The principle amounts to nothing more than fairness.",
+        "The principle places the burden on the movant.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
 confusion_pair!(
     principal_principle_claim,
     "The principle claim for damages was dismissed.",
