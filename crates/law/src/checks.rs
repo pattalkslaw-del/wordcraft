@@ -87,6 +87,11 @@ struct LocatedSection {
     path: Path,
 }
 
+/// Body block index of a profile section's heading when it is present.
+pub fn section_body_index(doc: &Document, spec: &DocSpec, section_id: &str) -> Option<usize> {
+    locate_sections(doc, spec).iter().find(|s| s.id == section_id).and_then(|s| (s.path.depth() == 0).then_some(s.path.last()))
+}
+
 /// Section headings found in document order (by matching profile section names).
 fn locate_sections(doc: &Document, spec: &DocSpec) -> Vec<LocatedSection> {
     let mut found = Vec::new();

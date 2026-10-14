@@ -42,6 +42,7 @@ pub mod citations;
 pub mod cmd;
 pub mod profile;
 pub mod store;
+mod toa;
 
 use wordcraft_engine::Session;
 
@@ -76,3 +77,6 @@ mod tests_checks;
 
 #[cfg(test)]
 mod tests_citations;
+
+#[cfg(test)]
+mod tests_toa;

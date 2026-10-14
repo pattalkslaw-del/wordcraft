@@ -1,9 +1,222 @@
 //! Citation finder and form checker (suggestions only; never claims an authority exists).
 
-use wordcraft_doc::{Document, Pos};
+use std::collections::HashMap;
+
+use regex::Regex;
+use wordcraft_doc::{Document, Pos, StoryRef};
 use wordcraft_engine::lint::{Finding, MAX_FINDINGS};
 
 use crate::citation_pack::CompiledPack;
+
+/// One logical authority in the document (first full cite + linked short forms).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CitationEntry {
+    pub id: u32,
+    pub kind: String,
+    /// Full citation text at first occurrence.
+    pub label: String,
+    /// Sort key (leading non-adversarial prefixes stripped for cases).
+    pub sort_key: String,
+    pub occurrences: Vec<CitationOccurrence>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CitationOccurrence {
+    pub start: Pos,
+    pub end: Pos,
+}
+
+struct RawHit {
+    kind: String,
+    text: String,
+    start: Pos,
+    end: Pos,
+    rule_id: String,
+}
+
+fn id_re() -> Option<&'static Regex> {
+    static RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\bId\.\s*(?:at\s+)?\d*").ok()).as_ref()
+}
+
+fn case_key_re() -> Option<&'static Regex> {
+    static RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)(\d+)\s+S\.W\.(?:2d|3d)\s+(\d+)|(\d+)\s+U\.\s*S\.\s+(\d+)|(\d+)\s+F\.(?:2d|3d|4th)\s+(\d+)|(\d+)\s+S\.\s*Ct\.\s+(\d+)").ok()
+    })
+    .as_ref()
+}
+
+/// Map a pack rule `kind` to a table-of-authorities group heading.
+pub fn group_heading(kind: &str) -> &'static str {
+    match kind {
+        "case" => "Cases",
+        "constitutional" | "constitution" => "Constitutional Provisions",
+        "statute" => "Statutes",
+        "rule" => "Rules",
+        _ => "Other Authorities",
+    }
+}
+
+fn citation_sort_key(text: &str) -> String {
+    let t = text.trim();
+    let stripped = t
+        .strip_prefix("In re ")
+        .or_else(|| t.strip_prefix("in re "))
+        .or_else(|| t.strip_prefix("State ex rel. "))
+        .or_else(|| t.strip_prefix("state ex rel. "))
+        .or_else(|| t.strip_prefix("Ex parte "))
+        .or_else(|| t.strip_prefix("ex parte "))
+        .unwrap_or(t);
+    stripped.to_string()
+}
+
+fn case_entry_key(text: &str) -> Option<String> {
+    let m = case_key_re().and_then(|re| re.find(text))?;
+    Some(m.as_str().to_ascii_lowercase().replace(' ', ""))
+}
+
+/// Scan `doc` with `pack` and return grouped authority entries in document order.
+pub fn find_entries(doc: &Document, pack: &CompiledPack) -> Vec<CitationEntry> {
+    let mut raw = Vec::new();
+    for story in doc.counted_stories() {
+        for path in doc.para_paths(story) {
+            let Some(para) = doc.para(story, &path) else { continue };
+            let text = &para.text;
+            if text.is_empty() {
+                continue;
+            }
+            for rule in &pack.rules {
+                for m in rule.detect.find_iter(text) {
+                    let end = if rule.extend_tail { extend_span(text, m.end()) } else { m.end() };
+                    let slice = text.get(m.start()..end).map_or(m.as_str(), |s| s);
+                    let start = Pos { story, path: path.clone(), off: m.start() };
+                    let end_pos = Pos { story, path: path.clone(), off: end };
+                    raw.push(RawHit { kind: rule.kind.clone(), text: slice.to_string(), start, end: end_pos, rule_id: rule.id.clone() });
+                }
+            }
+            if let Some(id) = id_re() {
+                for m in id.find_iter(text) {
+                    let start = Pos { story, path: path.clone(), off: m.start() };
+                    let end_pos = Pos { story, path: path.clone(), off: m.end() };
+                    raw.push(RawHit { kind: "case".into(), text: m.as_str().to_string(), start, end: end_pos, rule_id: "shortId".into() });
+                }
+            }
+        }
+    }
+    raw = dedupe_overlaps(raw);
+    raw.sort_by_key(|h| pos_order(&h.start, &h.end));
+
+    let mut next_id = 1u32;
+    let mut key_to_id: HashMap<String, u32> = HashMap::new();
+    let mut last_case: Option<u32> = None;
+    let mut hits: Vec<(u32, RawHit)> = Vec::new();
+    for h in raw {
+        let id = if h.rule_id == "shortId" || h.rule_id == "moPinCite" {
+            last_case.unwrap_or_else(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            })
+        } else if h.kind == "case" {
+            let key = case_entry_key(&h.text).unwrap_or_else(|| h.text.to_ascii_lowercase());
+            let id = key_to_id.entry(key).or_insert_with(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            });
+            last_case = Some(*id);
+            *id
+        } else {
+            let key = format!("{}:{}", h.kind, h.text.to_ascii_lowercase());
+            *key_to_id.entry(key).or_insert_with(|| {
+                let id = next_id;
+                next_id += 1;
+                id
+            })
+        };
+        if h.kind == "case" && h.rule_id != "shortId" && h.rule_id != "moPinCite" {
+            last_case = Some(id);
+        }
+        hits.push((id, h));
+    }
+
+    let mut map: HashMap<u32, (String, Vec<CitationOccurrence>)> = HashMap::new();
+    for (id, h) in hits {
+        let slot = map.entry(id).or_insert_with(|| (h.kind.clone(), Vec::new()));
+        if h.rule_id != "shortId" && h.rule_id != "moPinCite" {
+            slot.0 = h.kind.clone();
+        }
+        slot.1.push(CitationOccurrence { start: h.start, end: h.end });
+    }
+    let mut out: Vec<CitationEntry> = Vec::new();
+    for (id, (kind, occurrences)) in map {
+        let label = occurrences.first().map(|o| entry_label(doc, &kind, o)).unwrap_or_default();
+        let sort_key = citation_sort_key(&label);
+        out.push(CitationEntry { id, kind, label, sort_key, occurrences });
+    }
+    out.sort_by_key(|e| e.id);
+    out
+}
+
+fn doc_text_span(doc: &Document, start: &Pos, end: &Pos) -> String {
+    doc.copy_range(start, end).plain_text()
+}
+
+/// Citation text as it appears at an occurrence (case hits include the party-name lead-in).
+fn entry_label(doc: &Document, kind: &str, occ: &CitationOccurrence) -> String {
+    let Some(para) = doc.para(occ.start.story, &occ.start.path) else {
+        return doc_text_span(doc, &occ.start, &occ.end);
+    };
+    let slice = para.text.get(occ.start.off..occ.end.off).unwrap_or("");
+    if kind != "case" {
+        return slice.trim().to_string();
+    }
+    let mut start = occ.start.off;
+    while start > 0 {
+        let b = para.text.as_bytes()[start - 1];
+        if b.is_ascii_alphanumeric() || matches!(b, b' ' | b',' | b'.' | b'\'' | b'-' | b'&') {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    para.text.get(start..occ.end.off).unwrap_or(slice).trim().to_string()
+}
+
+fn pos_order(start: &Pos, _end: &Pos) -> (i64, usize, usize) {
+    let story = match start.story {
+        StoryRef::Body => 0,
+        StoryRef::Part(id) => id as i64 + 1,
+    };
+    (story, start.path.last(), start.off)
+}
+
+fn para_key(story: StoryRef, path: &wordcraft_doc::Path) -> (i64, usize) {
+    let story = match story {
+        StoryRef::Body => 0,
+        StoryRef::Part(id) => id as i64 + 1,
+    };
+    (story, path.last())
+}
+
+fn dedupe_overlaps(hits: Vec<RawHit>) -> Vec<RawHit> {
+    let mut hits = hits;
+    hits.sort_by(|a, b| b.text.len().cmp(&a.text.len()).then_with(|| pos_order(&a.start, &a.end).cmp(&pos_order(&b.start, &b.end))));
+    let mut taken: HashMap<(i64, usize), Vec<(usize, usize)>> = HashMap::new();
+    let mut out = Vec::new();
+    for h in hits {
+        let key = para_key(h.start.story, &h.start.path);
+        let ranges = taken.entry(key).or_default();
+        if ranges.iter().any(|(a, b)| h.start.off < *b && h.end.off > *a) {
+            continue;
+        }
+        ranges.push((h.start.off, h.end.off));
+        out.push(h);
+    }
+    out.sort_by_key(|h| pos_order(&h.start, &h.end));
+    out
+}
 
 /// Extend a match through optional pin cites (including page ranges) and a parenthetical so
 /// validation sees the full cite.
