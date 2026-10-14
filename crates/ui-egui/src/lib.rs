@@ -966,6 +966,9 @@ impl WordApp {
         if let Some(up) = req.get("update") {
             update::apply_command_result(self, up);
         }
+        if req.get("updateReboot").is_some() {
+            self.status(tl!("WordCraft was updated. Restart the computer to finish the update."));
+        }
     }
 
     /// Follow the desktop's light/dark choice while the app runs (Linux, where winit reports no

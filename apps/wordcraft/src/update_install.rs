@@ -11,20 +11,20 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wordcraft_engine::update::{InstallFn, InstallHandoff, InstallKind};
+use wordcraft_engine::update::{InstallFn, InstallHandoff, InstallKind, InstallOutcome};
 
 pub fn handoff() -> InstallFn {
     std::sync::Arc::new(run)
 }
 
-fn run(job: InstallHandoff) -> Result<(), String> {
+fn run(job: InstallHandoff) -> Result<InstallOutcome, String> {
     let staging = private_staging_dir()?;
     let result = install_into(&job, &staging);
     let _ = std::fs::remove_dir_all(&staging);
     result
 }
 
-fn install_into(job: &InstallHandoff, staging: &Path) -> Result<(), String> {
+fn install_into(job: &InstallHandoff, staging: &Path) -> Result<InstallOutcome, String> {
     let file_name = safe_name(&job.file_name);
     let path = write_exclusive_file(staging, &file_name, &job.bytes)?;
     match job.kind {
@@ -103,31 +103,115 @@ fn wait_child(mut child: std::process::Child, secs: u64) -> Result<std::process:
     }
 }
 
-#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
+#[cfg(all(unix, not(target_os = "macos")))]
 const INSTALLER_WAIT_SECS: u64 = 60 * 60;
 
+/// Documented Windows Installer return codes we act on: `0` is success, `3010` is success with a
+/// restart required to finish, `1641` is success where the installer restarted the machine, and
+/// `1602` is the user cancelling.
+#[cfg(any(target_os = "windows", test))]
+pub const MSI_SUCCESS: u32 = 0;
+#[cfg(any(target_os = "windows", test))]
+pub const MSI_SUCCESS_REBOOT_REQUIRED: u32 = 3010;
+#[cfg(any(target_os = "windows", test))]
+pub const MSI_SUCCESS_REBOOT_INITIATED: u32 = 1641;
+#[cfg(any(target_os = "windows", test))]
+pub const MSI_CANCELLED: u32 = 1602;
+
+/// What an MSI run produced, independent of the host so tests need no Windows.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MsiOutcome {
+    Installed,
+    /// Installed, but a restart is needed to finish replacing in-use files.
+    InstalledRebootRequired,
+    Cancelled,
+    Failed(u32),
+}
+
+/// Classify a documented MSI return code (Microsoft's installer error codes).
+#[cfg(any(target_os = "windows", test))]
+pub fn msi_outcome(code: u32) -> MsiOutcome {
+    match code {
+        MSI_SUCCESS => MsiOutcome::Installed,
+        MSI_SUCCESS_REBOOT_REQUIRED | MSI_SUCCESS_REBOOT_INITIATED => MsiOutcome::InstalledRebootRequired,
+        MSI_CANCELLED => MsiOutcome::Cancelled,
+        other => MsiOutcome::Failed(other),
+    }
+}
+
+/// The `msiexec` arguments for an unattended in-place upgrade.
+///
+/// `/passive` installs with a progress bar but no prompts. `/norestart` suppresses any restart the
+/// package would otherwise trigger: Microsoft documents that `/passive` alone can restart the
+/// computer without prompting, which would close WordCraft before it could prompt to save.
+/// `MSIRESTARTMANAGERCONTROL=DisableShutdown` stops the Restart Manager from shutting running
+/// applications down to replace their files, so no installer-triggered close can bypass the save
+/// prompt; in-use files are instead scheduled for the restart (reported as `3010`).
+#[cfg(any(target_os = "windows", test))]
+pub fn msi_args(path: &str) -> Vec<String> {
+    vec!["/i".into(), path.into(), "/passive".into(), "/norestart".into(), "MSIRESTARTMANAGERCONTROL=DisableShutdown".into()]
+}
+
+/// Runs `msiexec` and returns its raw exit code, so tests cover the arguments and return-code
+/// handling offline.
+#[cfg(any(target_os = "windows", test))]
+pub trait MsiRunner {
+    fn run(&self, args: &[String], timeout_secs: u64) -> Result<u32, String>;
+}
+
+#[cfg(any(target_os = "windows", test))]
+const MSI_WAIT_SECS: u64 = 60 * 60;
+
+/// Run the installer through `runner`, classifying its return code. A restart-required success is
+/// reported (not an error), so the app can still quit cleanly and tell the user.
+#[cfg(any(target_os = "windows", test))]
+fn windows_msi_with(runner: &dyn MsiRunner, path: &Path) -> Result<InstallOutcome, String> {
+    let p = path.to_str().ok_or("bad path")?;
+    let code = runner.run(&msi_args(p), MSI_WAIT_SECS)?;
+    match msi_outcome(code) {
+        MsiOutcome::Installed => Ok(InstallOutcome::default()),
+        MsiOutcome::InstalledRebootRequired => {
+            log::info!("WordCraft was updated; restart the computer to finish (MSI code {code})");
+            Ok(InstallOutcome { reboot_required: true })
+        }
+        MsiOutcome::Cancelled => Err("The update was cancelled.".into()),
+        MsiOutcome::Failed(code) => Err(format!("msiexec exited with code {code}")),
+    }
+}
+
 #[cfg(target_os = "windows")]
-fn windows_msi(path: &Path) -> Result<(), String> {
-    let child = Command::new("msiexec").args(["/i", path.to_str().ok_or("bad path")?, "/passive"]).spawn().map_err(|e| e.to_string())?;
-    let status = wait_child(child, INSTALLER_WAIT_SECS)?;
-    if status.success() { Ok(()) } else { Err(format!("msiexec exited with {status}")) }
+struct RealMsiRunner;
+
+#[cfg(target_os = "windows")]
+impl MsiRunner for RealMsiRunner {
+    fn run(&self, args: &[String], timeout_secs: u64) -> Result<u32, String> {
+        let child = Command::new("msiexec").args(args).spawn().map_err(|e| e.to_string())?;
+        let status = wait_child(child, timeout_secs)?;
+        status.code().map(|c| c as u32).ok_or_else(|| "msiexec was terminated by a signal".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_msi(path: &Path) -> Result<InstallOutcome, String> {
+    windows_msi_with(&RealMsiRunner, path)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn windows_msi(_path: &Path) -> Result<(), String> {
+fn windows_msi(_path: &Path) -> Result<InstallOutcome, String> {
     Err("MSI install is only on Windows".into())
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn linux_deb(path: &Path) -> Result<(), String> {
+fn linux_deb(path: &Path) -> Result<InstallOutcome, String> {
     let p = path.to_str().ok_or("bad path")?;
     let child = Command::new("pkexec").args(["dpkg", "-i", p]).spawn().map_err(|e| e.to_string())?;
     let status = wait_child(child, INSTALLER_WAIT_SECS)?;
-    if status.success() { Ok(()) } else { Err("dpkg install was cancelled or failed.".into()) }
+    if status.success() { Ok(InstallOutcome::default()) } else { Err("dpkg install was cancelled or failed.".into()) }
 }
 
 #[cfg(not(all(unix, not(target_os = "macos"))))]
-fn linux_deb(_path: &Path) -> Result<(), String> {
+fn linux_deb(_path: &Path) -> Result<InstallOutcome, String> {
     Err(".deb install is only on Linux".into())
 }
 
@@ -338,12 +422,12 @@ fn mac_dmg_with(dmg: &Path, staging: &Path, exe: &str, runner: &dyn DmgRunner) -
 }
 
 #[cfg(target_os = "macos")]
-fn mac_dmg(dmg: &Path, staging: &Path, exe: &str) -> Result<(), String> {
-    mac_dmg_with(dmg, staging, exe, &RealDmgRunner)
+fn mac_dmg(dmg: &Path, staging: &Path, exe: &str) -> Result<InstallOutcome, String> {
+    mac_dmg_with(dmg, staging, exe, &RealDmgRunner).map(|()| InstallOutcome::default())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn mac_dmg(_dmg: &Path, _staging: &Path, _exe: &str) -> Result<(), String> {
+fn mac_dmg(_dmg: &Path, _staging: &Path, _exe: &str) -> Result<InstallOutcome, String> {
     Err("disk image install is only on macOS".into())
 }
 
@@ -578,5 +662,82 @@ mod tests {
         let err = mac_dmg_with(&dmg, &dir, "/Applications/WordCraft.app/Contents/MacOS/wordcraft", &runner).unwrap_err();
         assert!(err.contains("attach"), "{err}");
         assert!(!runner.detached.get(), "detach is only needed after a successful attach");
+    }
+
+    /// Records the arguments and reports a scripted return code, so MSI behaviour is covered on
+    /// any host (#15).
+    struct FakeMsi {
+        code: u32,
+        calls: RefCell<Vec<Vec<String>>>,
+    }
+
+    impl MsiRunner for FakeMsi {
+        fn run(&self, args: &[String], _timeout_secs: u64) -> Result<u32, String> {
+            self.calls.borrow_mut().push(args.to_vec());
+            Ok(self.code)
+        }
+    }
+
+    fn run_msi(code: u32) -> (Result<InstallOutcome, String>, Vec<String>) {
+        let fake = FakeMsi { code, calls: RefCell::new(Vec::new()) };
+        let outcome = windows_msi_with(&fake, Path::new("C:\\tmp\\wordcraft.msi"));
+        let args = fake.calls.into_inner().into_iter().next().unwrap_or_default();
+        (outcome, args)
+    }
+
+    #[test]
+    fn msi_args_suppress_restart_and_forced_shutdown() {
+        let args = msi_args("pkg.msi");
+        assert_eq!(args.first().map(String::as_str), Some("/i"));
+        assert_eq!(args.get(1).map(String::as_str), Some("pkg.msi"));
+        assert!(args.iter().any(|a| a == "/passive"), "{args:?}");
+        assert!(args.iter().any(|a| a == "/norestart"), "an installer restart must be suppressed: {args:?}");
+        assert!(
+            args.iter().any(|a| a.eq_ignore_ascii_case("MSIRESTARTMANAGERCONTROL=DisableShutdown")),
+            "the installer must not close WordCraft to replace files: {args:?}"
+        );
+    }
+
+    #[test]
+    fn msi_zero_is_an_install() {
+        let (outcome, args) = run_msi(MSI_SUCCESS);
+        assert_eq!(outcome.unwrap(), InstallOutcome::default());
+        assert!(args.iter().any(|a| a == "/norestart"), "the runner receives the arguments: {args:?}");
+        assert_eq!(msi_outcome(MSI_SUCCESS), MsiOutcome::Installed);
+    }
+
+    #[test]
+    fn msi_3010_is_success_with_a_deferred_restart() {
+        let (outcome, _) = run_msi(MSI_SUCCESS_REBOOT_REQUIRED);
+        assert!(outcome.expect("3010 is success, not failure").reboot_required);
+        assert_eq!(msi_outcome(MSI_SUCCESS_REBOOT_REQUIRED), MsiOutcome::InstalledRebootRequired);
+        assert_eq!(msi_outcome(MSI_SUCCESS_REBOOT_INITIATED), MsiOutcome::InstalledRebootRequired);
+    }
+
+    #[test]
+    fn msi_cancelled_is_an_error() {
+        let (outcome, _) = run_msi(MSI_CANCELLED);
+        let err = outcome.unwrap_err();
+        assert!(err.to_ascii_lowercase().contains("cancel"), "{err}");
+        assert_eq!(msi_outcome(MSI_CANCELLED), MsiOutcome::Cancelled);
+    }
+
+    #[test]
+    fn msi_failure_is_an_error() {
+        let (outcome, _) = run_msi(1603);
+        let err = outcome.unwrap_err();
+        assert!(err.contains("1603"), "{err}");
+        assert_eq!(msi_outcome(1603), MsiOutcome::Failed(1603));
+    }
+
+    #[test]
+    fn msi_runner_start_failure_is_propagated() {
+        struct Failing;
+        impl MsiRunner for Failing {
+            fn run(&self, _args: &[String], _timeout_secs: u64) -> Result<u32, String> {
+                Err("msiexec not found".into())
+            }
+        }
+        assert!(windows_msi_with(&Failing, Path::new("x.msi")).is_err());
     }
 }

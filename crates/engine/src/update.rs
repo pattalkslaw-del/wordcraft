@@ -314,6 +314,9 @@ pub struct CheckResult {
     /// The technical cause, logged for support, never shown raw (may contain interpolated text).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_detail: Option<String>,
+    /// An applied install succeeded but the platform needs a restart to finish (MSI 3010/1641).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub reboot_required: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -511,6 +514,16 @@ pub struct InstallHandoff {
     pub exe_path: String,
 }
 
+/// What an installer handoff produced. A successful install can still ask for a restart (Windows
+/// MSI returns 3010/1641 when a reboot finishes replacing in-use files); that is reported so the
+/// interface can tell the user rather than treating it as a failure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallOutcome {
+    /// Installed, but the platform needs a restart to finish.
+    pub reboot_required: bool,
+}
+
 /// HTTP GET through the session hook (`max_bytes` is enforced while reading).
 pub fn http_get(session: &crate::Session, url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     let fetch = session.update_http.as_ref().ok_or_else(|| "update check is not available".to_string())?;
@@ -523,7 +536,7 @@ pub fn http_get(session: &crate::Session, url: &str, max_bytes: usize) -> Result
 }
 
 pub type HttpGet = Arc<dyn Fn(&str, usize) -> Result<Vec<u8>, String> + Send + Sync>;
-pub type InstallFn = Arc<dyn Fn(InstallHandoff) -> Result<(), String> + Send + Sync>;
+pub type InstallFn = Arc<dyn Fn(InstallHandoff) -> Result<InstallOutcome, String> + Send + Sync>;
 pub type EnvReadBox = Arc<dyn EnvRead + Send + Sync>;
 
 /// Unix seconds for throttling (0 when unknown).

@@ -3,10 +3,10 @@
 use serde_json::{Value, json};
 
 use crate::update::{
-    CheckResult, CheckStatus, InstallHandoff, LATEST_API, MAX_DOWNLOAD, MAX_JSON, MSG_APPLY_FAILED, MSG_BAD_RELEASE, MSG_CHECK_FAILED,
-    MSG_CHECKSUM_MISMATCH, MSG_CHECKSUM_MISSING, MSG_CHECKSUMS_UNREADABLE, MSG_NO_CHECKSUMS, MSG_NO_INSTALL_FN, MSG_NO_INSTALLER, ReleaseInfo,
-    UpdateError, checksum_for, checksums_download_url, detect_install_kind, due, env_of, http_get, offer, parse_latest_release, parse_version,
-    pick_asset_name_with_arch, release_arch_for, skipped, verify_sha256, version_text,
+    CheckResult, CheckStatus, InstallHandoff, InstallOutcome, LATEST_API, MAX_DOWNLOAD, MAX_JSON, MSG_APPLY_FAILED, MSG_BAD_RELEASE,
+    MSG_CHECK_FAILED, MSG_CHECKSUM_MISMATCH, MSG_CHECKSUM_MISSING, MSG_CHECKSUMS_UNREADABLE, MSG_NO_CHECKSUMS, MSG_NO_INSTALL_FN, MSG_NO_INSTALLER,
+    ReleaseInfo, UpdateError, checksum_for, checksums_download_url, detect_install_kind, due, env_of, http_get, offer, parse_latest_release,
+    parse_version, pick_asset_name_with_arch, release_arch_for, skipped, verify_sha256, version_text,
 };
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -91,33 +91,49 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
                 release: None,
                 error: None,
                 error_detail: None,
+                reboot_required: false,
             }));
         }
         Err(e) => return Ok(json_result(failed(&current_text, MSG_BAD_RELEASE, e))),
     };
 
     if skipped(&release, &skipped_ver) {
-        return Ok(json_result(CheckResult { status: CheckStatus::Current, current: current_text, release: None, error: None, error_detail: None }));
+        return Ok(json_result(CheckResult {
+            status: CheckStatus::Current,
+            current: current_text,
+            release: None,
+            error: None,
+            error_detail: None,
+            reboot_required: false,
+        }));
     }
 
     let exe = s.update_exe.as_deref().unwrap_or("");
     let kind = install_kind(s, exe);
     let offer = offer(release.clone(), &skipped_ver, kind);
 
+    let mut reboot_required = false;
     if apply {
         if kind.external_updater() || kind == crate::update::InstallKind::Unknown {
             return Err(CmdError::Failed("Open the release page in your browser to update.".into()));
         }
-        if let Err(e) = download_and_install(s, &json, &release, kind) {
-            return Ok(json_result(CheckResult {
-                status: CheckStatus::Error,
-                current: current_text,
-                release: Some(offer),
-                error: Some(e.message.into()),
-                error_detail: Some(e.detail),
-            }));
+        match download_and_install(s, &json, &release, kind) {
+            Ok(outcome) => reboot_required = outcome.reboot_required,
+            Err(e) => {
+                return Ok(json_result(CheckResult {
+                    status: CheckStatus::Error,
+                    current: current_text,
+                    release: Some(offer),
+                    error: Some(e.message.into()),
+                    error_detail: Some(e.detail),
+                    reboot_required: false,
+                }));
+            }
         }
         s.ui_requests.push(json!({"quit": true}));
+        if reboot_required {
+            s.ui_requests.push(json!({"updateReboot": true}));
+        }
     } else {
         s.ui_requests.push(json!({
             "update": {
@@ -131,7 +147,14 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
         }));
     }
 
-    Ok(json_result(CheckResult { status: CheckStatus::Available, current: current_text, release: Some(offer), error: None, error_detail: None }))
+    Ok(json_result(CheckResult {
+        status: CheckStatus::Available,
+        current: current_text,
+        release: Some(offer),
+        error: None,
+        error_detail: None,
+        reboot_required,
+    }))
 }
 
 fn json_result(r: CheckResult) -> Value {
@@ -139,18 +162,30 @@ fn json_result(r: CheckResult) -> Value {
 }
 
 fn throttled(current: &str) -> CheckResult {
-    CheckResult { status: CheckStatus::Throttled, current: current.into(), release: None, error: None, error_detail: None }
+    CheckResult { status: CheckStatus::Throttled, current: current.into(), release: None, error: None, error_detail: None, reboot_required: false }
 }
 
 fn failed(current: &str, message: &'static str, detail: impl Into<String>) -> CheckResult {
-    CheckResult { status: CheckStatus::Error, current: current.into(), release: None, error: Some(message.into()), error_detail: Some(detail.into()) }
+    CheckResult {
+        status: CheckStatus::Error,
+        current: current.into(),
+        release: None,
+        error: Some(message.into()),
+        error_detail: Some(detail.into()),
+        reboot_required: false,
+    }
 }
 
 fn install_kind(s: &Session, exe: &str) -> crate::update::InstallKind {
     detect_install_kind(exe, env_of(s))
 }
 
-fn download_and_install(s: &mut Session, latest_json: &[u8], release: &ReleaseInfo, kind: crate::update::InstallKind) -> Result<(), UpdateError> {
+fn download_and_install(
+    s: &mut Session,
+    latest_json: &[u8],
+    release: &ReleaseInfo,
+    kind: crate::update::InstallKind,
+) -> Result<InstallOutcome, UpdateError> {
     let arch = release_arch_for(s);
     let file_name =
         pick_asset_name_with_arch(release.version, kind, &arch).ok_or_else(|| UpdateError::new(MSG_NO_INSTALLER, "no asset name for this kind"))?;
@@ -181,7 +216,7 @@ mod tests {
     fn test_now() -> u64 {
         2_000_000_000
     }
-    use crate::update::{EnvRead, EnvReadBox, InstallHandoff, InstallKind, MAX_JSON};
+    use crate::update::{EnvRead, EnvReadBox, InstallHandoff, InstallKind, InstallOutcome, MAX_JSON};
 
     type TestHttp = Arc<dyn Fn(&str, usize) -> Result<Vec<u8>, String> + Send + Sync>;
 
@@ -285,7 +320,7 @@ mod tests {
         );
         s.update_install = Some(Arc::new(move |h: InstallHandoff| {
             *g.lock().unwrap_or_else(|e| e.into_inner()) = Some(h);
-            Ok(())
+            Ok(InstallOutcome::default())
         }));
         let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
         let got = got.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -379,7 +414,7 @@ mod tests {
                 latest.clone().into_bytes()
             })
         }));
-        s.update_install = Some(Arc::new(|_| Ok(())));
+        s.update_install = Some(Arc::new(|_| Ok(InstallOutcome::default())));
         let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
         assert_eq!(r["status"], "error");
         assert!(r["error"].as_str().unwrap_or("").to_ascii_lowercase().contains("checksum"));
@@ -413,7 +448,7 @@ mod tests {
         let got2 = Arc::clone(&got);
         s.update_install = Some(Arc::new(move |_| {
             *got2.lock().unwrap_or_else(|e| e.into_inner()) = true;
-            Ok(())
+            Ok(InstallOutcome::default())
         }));
         let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
         assert_eq!(r["status"], "available");
@@ -462,7 +497,7 @@ mod tests {
         }));
         s.update_install = Some(Arc::new(move |_| {
             *c.lock().unwrap_or_else(|e| e.into_inner()) = true;
-            Ok(())
+            Ok(InstallOutcome::default())
         }));
         let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
         assert_eq!(r["status"], "error");
@@ -499,7 +534,7 @@ mod tests {
         s.dirty = true;
         s.update_install = Some(Arc::new(move |_| {
             *i.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-            Ok(())
+            Ok(InstallOutcome::default())
         }));
         let err = check(&mut s, &json!({"force": true, "apply": true})).unwrap_err();
         assert!(err.to_string().contains("unsaved"));
@@ -522,6 +557,38 @@ mod tests {
         assert_eq!(r["status"], "available");
         let h = got.unwrap();
         assert_eq!(h.file_name, "wordcraft-9.0.0-windows-x64.msi");
+    }
+
+    /// MSI return code 3010 (installed, restart required) must count as success and be reported,
+    /// not turned into an error that blocks the clean shutdown (#15).
+    #[test]
+    fn reboot_required_install_still_succeeds_and_is_reported() {
+        let bytes = b"hello";
+        let asset = pick_asset_name_with_arch((9, 0, 0), InstallKind::LinuxDeb, "x86_64").unwrap();
+        let sums = format!("{}  {asset}\n", sha256_hex(bytes));
+        let latest = latest_for(&asset);
+        let mut s = session_with_kind_arch(
+            Arc::new(move |u, _| {
+                Ok(if u == LATEST_API {
+                    latest.clone().into_bytes()
+                } else if u.contains("sums") {
+                    sums.clone().into_bytes()
+                } else {
+                    bytes.to_vec()
+                })
+            }),
+            InstallKind::LinuxDeb,
+            "x86_64",
+        );
+        s.update_install = Some(Arc::new(|_| Ok(InstallOutcome { reboot_required: true })));
+        let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
+        assert_eq!(r["status"], "available", "a deferred restart is not a failure");
+        assert_eq!(r["rebootRequired"], true, "the restart is reported to callers");
+        assert!(s.ui_requests.iter().any(|x| x.get("updateReboot").is_some()), "the interface is told about the restart");
+        assert!(
+            s.ui_requests.iter().any(|x| x.get("quit").and_then(Value::as_bool) == Some(true)),
+            "the app still quits to finish (after the save prompt)"
+        );
     }
 
     #[test]

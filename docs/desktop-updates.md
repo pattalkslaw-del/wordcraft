@@ -20,6 +20,8 @@ No account, identifier, document content, or telemetry is sent. GitHub sees a no
 
 For Windows `.msi`, Linux `.deb`, and a WordCraft `.app` installed under `/Applications`, **Update** downloads the matching release asset, verifies it against `SHA256SUMS.txt` on the release, then starts the platform installer (`msiexec`, `dpkg` via `pkexec`, or a validated macOS disk image copy). If the document has unsaved changes, WordCraft asks you to save first, and the download does not start until it is saved. The macOS swap validates the downloaded bundle (`Contents/`, `Info.plist`, and the executable) before replacing anything, keeping the previous installation when validation fails.
 
+On Windows the MSI runs with `/norestart` and `MSIRESTARTMANAGERCONTROL=DisableShutdown`: the installer never restarts the computer and never closes WordCraft to replace in-use files, so an update started while you are editing cannot shut the editor down behind the save prompt. An install that still needs a restart (MSI return code `3010` or `1641`) counts as a success: WordCraft reports it, asks about unsaved work, and quits so the restart can finish the update.
+
 Portable zip installs, copies outside `/Applications` on macOS, and unknown or development builds open the release page in your browser instead of replacing files in place.
 
 A manual **Check for updates** answers every outcome: a newer release shows the notice bar, "up to date" and network errors appear in the status bar. Network and installer work run off the UI thread.
