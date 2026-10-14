@@ -55,9 +55,9 @@ fn law_proofing_does_not_leak_between_sessions() {
     assert_eq!(install(&mut disabled), 0);
     assert!(is_correct_with_module("rsmo", &opts, enabled.module_en));
     assert!(!is_correct_with_module("rsmo", &opts, disabled.module_en));
-    let text = "The principle place of business is in St. Louis.";
+    let text = "The tenant claimed averse possession.";
     let on = check_text_with(text, &[(0..text.len(), ProofLang::En)], &opts, true, enabled.module_en);
-    assert!(on.iter().any(|i| i.message.contains("principal")));
+    assert!(on.iter().any(|i| i.message.contains("adverse")));
     let off = check_text_with(text, &[(0..text.len(), ProofLang::En)], &opts, true, disabled.module_en);
     assert!(off.is_empty());
 }
@@ -72,12 +72,12 @@ fn law_words_list_command() {
 }
 
 #[test]
-fn confusion_check_command_finds_principle_principal() {
+fn confusion_check_command_finds_averse_adverse() {
     let mut s = law();
-    run(&mut s, "text.insert", json!({"text": "The principle place of business is in St. Louis."}));
+    run(&mut s, "text.insert", json!({"text": "The tenant claimed averse possession."}));
     let r = run(&mut s, "law.proof.confusions", json!({"store": false}));
     let findings = r["findings"].as_array().expect("findings");
-    assert!(findings.iter().any(|f| f["message"].as_str().is_some_and(|m| m.contains("principal"))));
+    assert!(findings.iter().any(|f| f["message"].as_str().is_some_and(|m| m.contains("adverse"))));
 }
 
 /// The confusion check reaches the real Review › Proofing path: an enabled session's module hook
@@ -85,12 +85,12 @@ fn confusion_check_command_finds_principle_principal() {
 /// pane and F7 read) reports it — and an uninstalled session does not.
 #[test]
 fn confusion_issues_hook_into_review_proofing() {
-    let text = "The principle place of business is in St. Louis.";
+    let text = "The tenant claimed averse possession.";
     let mut s = law();
     run(&mut s, "text.insert", json!({"text": text}));
     let issues = run(&mut s, "review.issues", json!({}));
     assert!(
-        issues.as_array().is_some_and(|a| a.iter().any(|i| i["message"].as_str().is_some_and(|m| m.contains("principal")))),
+        issues.as_array().is_some_and(|a| a.iter().any(|i| i["message"].as_str().is_some_and(|m| m.contains("adverse")))),
         "review.issues should report the confusion: {issues}"
     );
 
@@ -121,75 +121,61 @@ macro_rules! confusion_pair {
 /// Phrase matching must not join tokens across a sentence-ending period.
 #[test]
 fn confusion_phrase_does_not_cross_sentence_boundary() {
-    let quiet = "We admired the principle. Place of business, none applied.";
+    let quiet = "They remained averse. Possession was never disputed.";
     assert!(confusion_issues(quiet).is_empty(), "cross-sentence match: {quiet}");
-    let fired = confusion_issues("The principle place of business is in St. Louis.");
+    let fired = confusion_issues("The tenant claimed averse possession.");
     assert_eq!(fired.len(), 1);
-    assert_eq!(fired[0].suggestions, vec!["principal".to_string()]);
+    assert_eq!(fired[0].suggestions, vec!["adverse".to_string()]);
 }
 
 /// #5 review: only plain whitespace may join the words of a confusion phrase. Intervening
 /// punctuation (semicolon, colon, comma, parentheses, dash, quotes) must break the match, so
-/// `principle; place of business` never fires even though the words are adjacent in token order.
+/// `averse; possession` never fires even though the words are adjacent in token order.
 #[test]
 fn confusion_phrase_requires_plain_whitespace_between_words() {
     for text in [
-        "We admired the principle; place of business, none applied.",
-        "We admired the principle: place of business, none applied.",
-        "We admired the principle, place of business, none applied.",
-        "We admired the principle (place of business) at the park.",
-        "We admired the principle - place of business none applied.",
-        "We admired the principle \"place of business\" at the park.",
-        "The principle place-of-business defense failed.",
+        "They remained averse; possession was never disputed.",
+        "They remained averse: possession was never disputed.",
+        "They remained averse, possession was never disputed.",
+        "They remained averse (possession was never disputed).",
+        "They remained averse - possession was never disputed.",
+        "They remained averse \"possession\" was never disputed.",
+        "They remained averse-possession was never disputed.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "punctuation joined a phrase in: {text} → {issues:?}");
     }
-    let fired = confusion_issues("The principal place of business is in St. Louis.");
+    let fired = confusion_issues("The tenant claimed adverse possession.");
     assert!(fired.is_empty(), "correct usage must stay quiet: {fired:?}");
 }
 
-/// Plural/possessive endings on the wrong word are preserved in the suggestion.
+/// The suggestion keeps the case of the wrong word.
 #[test]
-fn confusion_suggestion_preserves_inflection() {
-    let plural = "The principles place of business are in St. Louis and Kansas City.";
-    let fired = confusion_issues(plural);
-    assert_eq!(fired.len(), 1);
-    assert_eq!(text_slice(plural, fired[0].start, fired[0].end), "principles");
-    assert_eq!(fired[0].suggestions, vec!["principals".to_string()]);
-    let possessive = "The principle's place of business is in St. Louis.";
-    let fired = confusion_issues(possessive);
-    assert_eq!(fired.len(), 1);
-    assert_eq!(fired[0].suggestions, vec!["principal's".to_string()]);
+fn confusion_suggestion_matches_case() {
+    let lower = confusion_issues("The tenant claimed averse possession.");
+    assert_eq!(lower.len(), 1);
+    assert_eq!(lower[0].suggestions, vec!["adverse".to_string()]);
+    let upper = confusion_issues("Averse possession was claimed.");
+    assert_eq!(upper.len(), 1);
+    assert_eq!(upper[0].suggestions, vec!["Adverse".to_string()]);
 }
 
-fn text_slice(text: &str, start: usize, end: usize) -> &str {
-    text.get(start..end).unwrap_or("")
-}
+confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
 
-confusion_pair!(
-    principal_place_of_business,
-    "The principle place of business is in St. Louis.",
-    "The principal amount is unpaid.",
-    "principle",
-    "principal"
-);
-
-/// Correct noun `principle` before a verb must stay quiet (no `principle claim` / `principle amount` entries).
+/// #5 review: `principle place of business` is removed. "Under this principle" is an introductory
+/// prepositional phrase whose comma is optional, so this correct sentence must stay quiet.
 #[test]
-fn principle_as_noun_before_a_verb_is_quiet() {
+fn removed_principle_place_of_business_stays_quiet() {
     for text in [
-        "The principle issues from natural law.",
-        "Does the principle claim our attention?",
-        "Does the principle amount to a defense?",
-        "The principle places the burden on the movant.",
+        "Under this principle place of business determines jurisdiction.",
+        "Under this principle, place of business determines jurisdiction.",
+        "The principle place so designated governs.",
+        "The principal place of business is in St. Louis.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
     }
 }
-
-confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
 
 /// Removed phrases must stay quiet (regression guard).
 #[test]

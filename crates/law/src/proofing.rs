@@ -40,8 +40,7 @@ pub fn confusion_issues(text: &str) -> Vec<Issue> {
             }
             // Only the highlighted (wrong) word may take a plural or possessive ending. Every
             // other word of the phrase must match exactly: inflecting a context word can change
-            // its part of speech and fire on correct usage ("the principle issues from natural
-            // law"), which the phrase approach must never do.
+            // its part of speech and fire on correct usage, which the phrase approach never does.
             if !rule.words.iter().enumerate().all(|(n, want)| {
                 let actual = &tokens[start_idx + n].2;
                 if n == rule.wrong_index { word_matches(want, actual) } else { actual.eq_ignore_ascii_case(want) }
@@ -116,20 +115,16 @@ struct ConfusionPhrase {
 /// Every entry must be unambiguous: wrong in every grammatical English sentence that contains the
 /// exact phrase verbatim. Only the highlighted word may take a plural or possessive ending; every
 /// other word of the phrase matches exactly. All other confusion pairs are omitted rather than guessed.
-const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
-    ConfusionPhrase {
-        words: &["principle", "place", "of", "business"],
-        wrong_index: 0,
-        right: "principal",
-        message: "The main place of business is the \"principal\" place, not \"principle\".",
-    },
-    ConfusionPhrase {
-        words: &["averse", "possession"],
-        wrong_index: 0,
-        right: "adverse",
-        message: "An opposing party or interest is \"adverse\", not \"averse\" (unwilling).",
-    },
-];
+///
+/// `principle place of business` is omitted: "under this principle" can open a sentence, so
+/// "under this principle place of business determines jurisdiction" is a correct English sentence
+/// (the comma after `principle` is optional) — an ambiguity that would fire on correct usage.
+const CONFUSION_PHRASES: &[ConfusionPhrase] = &[ConfusionPhrase {
+    words: &["averse", "possession"],
+    wrong_index: 0,
+    right: "adverse",
+    message: "An opposing party or interest is \"adverse\", not \"averse\" (unwilling).",
+}];
 
 /// Only plain whitespace may join the words of an exact confusion phrase. Any punctuation
 /// (periods, semicolons, colons, commas, parentheses, quotes, line breaks) ends the phrase, so
