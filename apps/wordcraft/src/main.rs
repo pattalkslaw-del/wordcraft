@@ -56,7 +56,7 @@ impl eframe::App for App {
         let closing = ctx.input(|i| i.viewport().close_requested());
         if closing && !self.0.close_requested() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        } else if (closing || self.0.quit_requested) && !self.0.printing.busy() {
+        } else if (closing || self.0.quit_requested) && !self.0.printing.busy() && !wordcraft_ui_egui::update::worker_busy(&self.0) {
             if self.0.quit_requested && self.0.session.dirty && !self.0.close_requested() {
                 self.0.quit_requested = false;
                 #[cfg(target_os = "macos")]
@@ -104,7 +104,7 @@ impl eframe::App for App {
 #[cfg(target_os = "macos")]
 fn schedule_macos_terminate(app: &WordApp, key_file: Option<&control_server::KeyFile>) {
     use std::sync::atomic::{AtomicBool, Ordering};
-    if app.printing.busy() {
+    if app.printing.busy() || wordcraft_ui_egui::update::worker_busy(app) {
         return;
     }
     static QUIT: AtomicBool = AtomicBool::new(false);

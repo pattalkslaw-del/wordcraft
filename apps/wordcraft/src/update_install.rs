@@ -103,6 +103,7 @@ fn wait_child(mut child: std::process::Child, secs: u64) -> Result<std::process:
     }
 }
 
+#[cfg(any(target_os = "windows", all(unix, not(target_os = "macos"))))]
 const INSTALLER_WAIT_SECS: u64 = 60 * 60;
 
 #[cfg(target_os = "windows")]
@@ -254,7 +255,7 @@ impl BundleOps for RealBundleOps {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "macos")]
 fn copy_dir_all(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
     for entry in std::fs::read_dir(from).map_err(|e| e.to_string())? {
@@ -558,7 +559,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn dmg_runner_detach_runs_after_attach_failure() {
+    fn dmg_runner_detach_skipped_when_attach_fails() {
         use std::cell::Cell;
         struct FailAttach {
             detached: Cell<bool>,

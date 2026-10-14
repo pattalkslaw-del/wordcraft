@@ -865,6 +865,10 @@ impl WordApp {
             self.status(tl!("Wait for the print job to finish submitting before closing."));
             return false;
         }
+        if update::worker_busy(self) {
+            self.status(tl!("Wait for the update to finish before closing."));
+            return false;
+        }
         if self.quit_requested || !self.session.dirty {
             return true;
         }
@@ -2836,6 +2840,41 @@ mod tests {
         assert!(a.quit_requested);
         assert!(a.close_requested(), "the close that follows goes ahead");
         assert!(body_text(&a).contains(UNSAVED), "nothing was replaced on the way out");
+    }
+
+    #[test]
+    fn window_close_waits_for_update_worker() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+        use wordcraft_engine::update::LATEST_API;
+
+        let hold = Arc::new(AtomicBool::new(true));
+        let ctx = egui::Context::default();
+        let mut a = app();
+        a.ctx = Some(ctx.clone());
+        let gate = Arc::clone(&hold);
+        a.session.update_http = Some(Arc::new(move |u, _| {
+            if u == LATEST_API {
+                while gate.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            Ok(vec![])
+        }));
+        update::queue_check(&mut a, json!({"force": true}), true, &ctx);
+        assert!(update::worker_busy(&a));
+        assert!(!a.close_requested(), "install/check work must not be interrupted by closing");
+        hold.store(false, Ordering::Relaxed);
+        for _ in 0..200 {
+            update::poll(&mut a, &ctx);
+            if !update::worker_busy(&a) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!update::worker_busy(&a));
+        assert!(a.close_requested(), "close is allowed once the worker finishes");
     }
 
     /// Enter activates the focused prompt button; it means Save only when no button has focus.

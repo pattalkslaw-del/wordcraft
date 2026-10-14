@@ -104,14 +104,9 @@ pub fn detect_install_kind(exe: &str, env: &dyn EnvRead) -> InstallKind {
     let normalized = exe.replace('\\', "/");
     let lower = normalized.to_ascii_lowercase();
     if env.windows() {
-        // A bare `wordcraft.exe` under Program Files is only an MSI install when the installer's own
-        // evidence says so (the `App Paths` registry entry the MSI writes). A folder that merely
-        // happens to live there has no such evidence: guessing MSI would download and run the wrong
-        // installer, so we stay ambiguous and offer the release page instead.
-        if lower.contains("/program files/") || lower.contains("/program files (x86)/") {
-            return if env.windows_msi_installed(exe) { InstallKind::WindowsMsi } else { InstallKind::Unknown };
-        }
-        return InstallKind::Unknown;
+        // MSI vs portable is decided only by installer evidence (`App Paths` registry entry), not
+        // by folder names. Portable copies and custom install paths never get that entry.
+        return if env.windows_msi_installed(exe) { InstallKind::WindowsMsi } else { InstallKind::Unknown };
     }
     if env.macos() {
         if mac_app_bundle_in_system_applications(&lower) {
@@ -630,10 +625,22 @@ mod tests {
         assert_eq!(detect_install_kind(r"C:\Program Files\WordCraft\wordcraft.exe", &no_evidence), InstallKind::Unknown);
         assert_eq!(
             detect_install_kind(r"C:\Users\portable_user\Downloads\wordcraft.exe", &e),
-            InstallKind::Unknown,
-            "portable in a username must not classify as a portable zip install"
+            InstallKind::WindowsMsi,
+            "registry evidence wins over path shape (no dedicated portable-zip install type)"
         );
-        assert_eq!(detect_install_kind(r"D:\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &e), InstallKind::Unknown);
+        assert_eq!(detect_install_kind(r"C:\Users\portable_user\Downloads\wordcraft.exe", &no_evidence), InstallKind::Unknown);
+        assert_eq!(
+            detect_install_kind(r"D:\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &e),
+            InstallKind::WindowsMsi,
+            "a portable-looking folder name is not install-type evidence"
+        );
+        assert_eq!(detect_install_kind(r"D:\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &no_evidence), InstallKind::Unknown);
+        assert_eq!(
+            detect_install_kind(r"D:\Apps\WordCraft\wordcraft.exe", &e),
+            InstallKind::WindowsMsi,
+            "registry evidence applies outside Program Files"
+        );
+        assert_eq!(detect_install_kind(r"D:\Apps\WordCraft\wordcraft.exe", &no_evidence), InstallKind::Unknown);
     }
 
     #[test]
