@@ -182,6 +182,24 @@ fn correct_council_and_prescribe_contexts_are_quiet() {
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
     }
 }
+/// #5 review: a law, rule or regulator `proscribe`s (forbids) things — including medication
+/// advertising — so `proscribe medication` is only likely wrong when a medical actor, who would
+/// actually `prescribe` treatment, is the subject. The prohibition stays quiet; the doctor fires.
+#[test]
+fn proscribe_forbids_medication_only_for_medical_actors() {
+    let fired = confusion_issues("The doctor will proscribe medication for the patient.");
+    assert_eq!(fired.len(), 1, "expected one finding: {fired:?}");
+    assert_eq!(fired[0].suggestions, vec!["prescribe".to_string()]);
+    for text in [
+        "The regulation will proscribe medication advertising to minors.",
+        "The statute will proscribe medication by unlicensed sellers.",
+        "The board may proscribe medication in prison.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
 confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
 confusion_pair!(adverse_to_risk, "The clause is adverse to risk.", "The investor was averse to risk.", "adverse", "averse");
 confusion_pair!(elicit_illicit, "The deposition will illicit testimony about the contract.", "Police seized illicit drugs.", "illicit", "elicit");
@@ -193,7 +211,13 @@ confusion_pair!(
     "elicit"
 );
 confusion_pair!(complement_compliment, "The exhibit compliment the record.", "She compliment the judge after argument.", "compliment", "complement");
-confusion_pair!(discrete_discreet, "There are three discreet issues before us.", "A discreet investigation continued.", "discreet", "discrete");
+confusion_pair!(
+    discrete_discreet,
+    "There are three discreet issues before us.",
+    "The agency opened a discrete investigation into each transaction.",
+    "discreet",
+    "discrete"
+);
 confusion_pair!(effect_affect_outcome, "The new rule will effect the outcome.", "The new rule will affect the outcome.", "effect", "affect");
 
 /// #5 review: correct `illicit` (an adjective meaning unlawful) and correct `complement` (to
@@ -214,4 +238,33 @@ fn correct_illicit_and_complement_contexts_are_quiet() {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
     }
+}
+
+/// #5 review: `discrete investigation` means separate investigations and is correct, so it must
+/// never suggest `discreet`; a genuinely tactful `discreet investigation` is correct too. Only the
+/// `discreet issues` direction (separate issues) fires, and removing the reverse rule keeps both
+/// correct uses quiet.
+#[test]
+fn discrete_investigation_is_quiet() {
+    for text in [
+        "The agency opened a discrete investigation into each transaction.",
+        "The court ran a discrete investigation of each charge.",
+        "The firm conducted a discreet investigation.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
+
+/// #5 review: the mixed-case `RSMo` users actually type is clean with LawCraft on, through the
+/// same paragraph spelling path the editor uses, and flagged when it is off.
+#[test]
+fn mixed_case_rsmo_spells_clean_only_with_lawcraft() {
+    let opts = Options::default();
+    let text = "The RSMo governs this appeal under S.W.3d.";
+    let on = law();
+    let issues = check_spelling_with_module(text, &opts, on.module_en);
+    assert!(issues.is_empty(), "LawCraft should not flag `{text}`: {issues:?}");
+    let off = check_spelling_with_module(text, &opts, ModuleEn::default());
+    assert!(off.iter().any(|i| text.get(i.start..i.end) == Some("RSMo")), "without LawCraft, RSMo is flagged: {off:?}");
 }

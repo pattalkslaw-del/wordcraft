@@ -41,6 +41,7 @@ pub fn confusion_issues(text: &str) -> Vec<Issue> {
             if !phrase_follows(&tokens, idx, text, rule.following)
                 || !phrase_precedes(&tokens, idx, text, rule.preceding)
                 || !any_precedes(&tokens, idx, text, rule.preceding_any)
+                || !subject_any_before(&tokens, idx, text, rule.subject_any)
             {
                 continue;
             }
@@ -100,6 +101,11 @@ struct ConfusionRule {
     /// category (an auxiliary or `to` that only leads a verb) where the exact word varies but the
     /// context it signals is the same.
     preceding_any: &'static [&'static str],
+    /// When non-empty, any one of these words must appear somewhere before `wrong` in the same
+    /// sentence. Unlike [`Self::preceding_any`], the word need not be adjacent, so this reaches the
+    /// subject that selects the confused sense — for example a doctor before `proscribe medication`,
+    /// where the object alone cannot tell the physician's `prescribe` from the law's `proscribe`.
+    subject_any: &'static [&'static str],
 }
 
 /// Auxiliaries that only precede a *base verb*. A word after one of these is doing verb work, so
@@ -110,6 +116,11 @@ struct ConfusionRule {
 /// safer to drop `to` than to risk flagging correct prose.
 const VERB_LEADS: &[&str] = &["will", "would", "can", "could", "may", "might", "must", "shall", "should", "did", "does", "do"];
 
+/// People who order medical treatment. `proscribe medication` after one of these is almost
+/// certainly the confused `prescribe`; the same object after a law, regulator or rule is the
+/// correct `proscribe` (forbid), so requiring a medical subject keeps prohibitions quiet.
+const MEDICAL_ACTORS: &[&str] = &["doctor", "physician", "surgeon", "nurse", "clinician", "pharmacist", "dentist", "psychiatrist", "veterinarian"];
+
 /// Context-sensitive legal word-pair checks (original wording; no manual copied).
 const CONFUSION_RULES: &[ConfusionRule] = &[
     ConfusionRule {
@@ -119,6 +130,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["of", "limitations"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "principle",
@@ -127,6 +139,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["issue"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "principle",
@@ -135,6 +148,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["claim"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "principal",
@@ -143,6 +157,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["of", "law"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     // Note: `council for the …` is deliberately absent. "The city council for the district" is
     // correct, and immediate adjacency to `for the` doesn't make `council` likely wrong. Only the
@@ -154,6 +169,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["of", "record"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "affect",
@@ -162,6 +178,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["of", "the"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "effect",
@@ -170,6 +187,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["the", "outcome"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "precedence",
@@ -178,6 +196,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &[],
         preceding: &["binding"],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "precedence",
@@ -186,6 +205,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &[],
         preceding: &["controlling"],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "proscribe",
@@ -194,6 +214,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["medication"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: MEDICAL_ACTORS,
     },
     // Note: `prescribe such conduct` is deliberately absent. A rule can affirmatively *prescribe*
     // conduct, so `prescribe` there is correct, not a reversed `proscribe`; adjacency to `such
@@ -206,6 +227,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["possession"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "adverse",
@@ -214,6 +236,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["to", "risk"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "illicit",
@@ -222,6 +245,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["testimony"],
         preceding: &[],
         preceding_any: VERB_LEADS,
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "illicit",
@@ -230,6 +254,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["a", "response"],
         preceding: &[],
         preceding_any: VERB_LEADS,
+        subject_any: &[],
     },
     ConfusionRule {
         wrong: "compliment",
@@ -238,6 +263,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["the", "record"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
     // Note: the reverse `complement the court` rule is deliberately absent. "The new tribunal will
     // complement the court" is correct — `complement` legitimately takes a court as its object — so
@@ -250,15 +276,12 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["issues"],
         preceding: &[],
         preceding_any: &[],
+        subject_any: &[],
     },
-    ConfusionRule {
-        wrong: "discrete",
-        right: "discreet",
-        message: "Careful or tactful conduct is \"discreet\", not \"discrete\" (separate).",
-        following: &["investigation"],
-        preceding: &[],
-        preceding_any: &[],
-    },
+    // Note: the reverse `discrete investigation` rule is deliberately absent. "A discrete
+    // investigation into each transaction" means separate investigations and is correct, and
+    // adjacency to `investigation` alone cannot tell it from a tactful `discreet` one, so the
+    // clearer `discreet issues` case above is the only direction that fires.
 ];
 
 fn is_sentence_end(c: char) -> bool {
@@ -317,6 +340,33 @@ fn any_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, set: 
     let (Some(prev), Some(cur)) = (tokens.get(i), tokens.get(idx)) else { return false };
     set.contains(&prev.2.as_str()) && !gap_has_sentence_end(text, prev.1, cur.0)
 }
+
+/// Whether any word in `set` appears shortly before the token at `idx` in the same sentence.
+/// Unlike [`any_precedes`] (the immediate neighbour), this reaches the subject that selects the
+/// confused sense, so a rule can require an actor rather than only a neighbouring word. The scan
+/// is capped at [`SUBJECT_LOOKBACK`] words, so a hostile sentence can't make it quadratic.
+fn subject_any_before(tokens: &[(usize, usize, String)], idx: usize, text: &str, set: &[&str]) -> bool {
+    if set.is_empty() {
+        return true;
+    }
+    let Some(cur) = tokens.get(idx) else { return false };
+    let mut bound = cur.0;
+    for i in (0..idx).rev().take(SUBJECT_LOOKBACK) {
+        let Some(t) = tokens.get(i) else { break };
+        if gap_has_sentence_end(text, t.1, bound) {
+            break;
+        }
+        if set.contains(&t.2.as_str()) {
+            return true;
+        }
+        bound = t.0;
+    }
+    false
+}
+
+/// How many words before a candidate [`subject_any_before`] looks. A subject that far back still
+/// counts; beyond it the check stops rather than scanning a whole (possibly hostile) sentence.
+const SUBJECT_LOOKBACK: usize = 32;
 
 fn capitalize_like(original: &str, replacement: &str) -> String {
     if original.chars().next().is_some_and(|c| c.is_uppercase()) {
