@@ -1,0 +1,33 @@
+# Unsigned Windows test build of any branch, for Patrick to try LawCraft. Fork only.
+name: lawcraft-test-build
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit to build
+        default: lawcraft/integration
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: lawcraft-win
+      - name: Build
+        run: cargo build --release -p wordcraft
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item target/release/wordcraft.exe out/
+          "Built from ${{ inputs.ref }} at $(git rev-parse HEAD). Unsigned test build. Turn LawCraft on in File > Options > Add-ins." | Out-File out/README.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wordcraft-lawcraft-windows
+          path: out/
+          retention-days: 14
