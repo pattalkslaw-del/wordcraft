@@ -44,6 +44,20 @@ fn roundtrip(s: &Session) -> Document {
     wordcraft_engine::io::open_bytes("law.docx", &bytes).expect("reopen it")
 }
 
+/// Page labels as layout and the table of contents use them (section prefix + page number).
+fn layout_page_labels(s: &mut Session) -> Vec<String> {
+    let l = s.layout();
+    let sections = s.doc.sections();
+    l.pages.iter().map(|p| sections.get(p.section).map(|(_, sp)| sp.format_page_number(p.number)).unwrap_or_else(|| p.number.to_string())).collect()
+}
+
+fn session_from_doc(doc: Document) -> Session {
+    let mut s = Session::new(doc);
+    s.prefs.modules.insert(MODULE.into(), true);
+    install(&mut s);
+    s
+}
+
 /// The document's only section.
 fn section(doc: &Document) -> wordcraft_doc::section::SectionProps {
     doc.sections().into_iter().next().map(|(_, s)| s.clone()).expect("a section")
@@ -256,13 +270,19 @@ fn a_confined_agent_cannot_import_a_verified_profile() {
 
 #[test]
 fn missouri_appendix_pages_are_numbered_from_a1() {
-    let s = apply_session(MISSOURI, "appendix");
+    let mut s = apply_session(MISSOURI, "appendix");
     let sect = section(&s.doc);
     assert_eq!(sect.page_num_start, Some(1));
     assert_eq!(sect.page_num_prefix.as_deref(), Some("A"));
     let footer = sect.footers.default.expect("a footer");
     let text = s.doc.plain_text(wordcraft_doc::StoryRef::Part(footer));
     assert_eq!(text, "A1", "appendix pages are numbered A1, A2…: {text:?}");
+    assert_eq!(layout_page_labels(&mut s)[0], "A1", "layout page 1");
+    run(&mut s, "text.pageBreak", json!({}));
+    let labels = layout_page_labels(&mut s);
+    assert!(labels.len() >= 2, "at least two pages: {labels:?}");
+    assert_eq!(labels[0], "A1");
+    assert_eq!(labels[1], "A2", "layout page 2");
     let doc = roundtrip(&s);
     let sect = section(&doc);
     assert_eq!(sect.page_num_start, Some(1), "page numbering restarts at 1 in a saved .docx");
@@ -270,6 +290,10 @@ fn missouri_appendix_pages_are_numbered_from_a1() {
     let footer = sect.footers.default.expect("a footer after round-trip");
     let text = doc.plain_text(wordcraft_doc::StoryRef::Part(footer));
     assert_eq!(text, "A1", "the A prefix survives round-trip: {text:?}");
+    let mut reopened = session_from_doc(doc);
+    let after = layout_page_labels(&mut reopened);
+    assert_eq!(after[0], "A1", "layout after .docx round-trip");
+    assert_eq!(after[1], "A2", "layout page 2 after .docx round-trip");
 }
 
 #[test]
@@ -290,7 +314,7 @@ fn law_appendix_create_opens_a_numbered_appendix_with_toc() {
     run(&mut s, "references.updateToc", json!({}));
     let body = s.doc.plain_text(StoryRef::Body);
     assert!(body.contains("Exhibit A"), "{body}");
-    assert!(body.contains("A2") || body.contains("A3"), "TOC lists appendix headings with A page numbers: {body}");
+    assert!(body.contains("Exhibit A\tA2"), "TOC lists the exhibit on appendix page A2: {body}");
     let findings = run(&mut s, "law.checks.run", json!({"store": false}));
     assert!(findings["findings"].as_array().is_some_and(|f| f.is_empty()), "{findings}");
 }
@@ -301,6 +325,8 @@ fn law_appendix_apply_restyles_the_open_document() {
     run(&mut s, "law.appendix.apply", json!({"id": MISSOURI}));
     assert_eq!(s.doc.custom_prop(crate::checks::PROP_DOC_TYPE), Some("appendix"));
     assert_eq!(section(&s.doc).page_num_prefix.as_deref(), Some("A"));
+    let e = err(&mut s, "law.appendix.apply", json!({"id": MISSOURI, "doc": "brief"})).to_string();
+    assert!(e.contains("appendix") && e.contains("addendum"), "{e}");
 }
 
 #[test]

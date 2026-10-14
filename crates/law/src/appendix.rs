@@ -33,7 +33,15 @@ pub fn apply_appendix(s: &mut Session, v: &Value) -> Result<Value, LawError> {
         return Err(LawError::Failed(format!("no court profile `{profile_id}`")));
     };
     let doc_type = match p::str(v, "doc") {
-        Some(d) => d.to_string(),
+        Some(d) => {
+            if d != "appendix" && d != "addendum" {
+                return Err(LawError::Failed(format!("`doc` must be `appendix` or `addendum` (got `{d}`)")));
+            }
+            if !p.docs.contains_key(d) {
+                return Err(LawError::Failed(format!("profile `{}` has no `{d}` document type", profile_id)));
+            }
+            d.to_string()
+        }
         None => exhibit_doc_type(&p)?.to_string(),
     };
     apply::apply(s, &p, &doc_type).map_err(|e| LawError::Failed(e.to_string()))

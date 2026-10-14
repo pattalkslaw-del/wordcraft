@@ -56,6 +56,11 @@ pub const WRONG_PASSWORD: &str = "the password is incorrect";
 /// transform, so this rides in the extension list Word and other readers skip.
 pub(crate) const CANVAS_SPIN_EXT: &str = "urn:wordcraft:canvas-xfrm";
 
+/// `w:ext` URI under `w:sectPr/w:extLst` for [`wordcraft_doc::section::SectionProps::page_num_prefix`].
+pub const PAGE_NUM_PREFIX_EXT: &str = "urn:wordcraft:page-num-prefix";
+/// Namespace of the `wc:pgNumPrefix` element in that extension.
+pub const PAGE_NUM_PREFIX_NS: &str = "https://wordcraft.org/schemas/wordml";
+
 /// Read a package that may be password-protected ([`is_encrypted`]): it is decrypted with
 /// `password` first. An encrypted package without a password gives
 /// [`DocxError::PasswordRequired`]; a wrong one, [`DocxError::WrongPassword`].

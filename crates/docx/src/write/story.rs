@@ -1286,7 +1286,11 @@ fn sectpr_body(w: &mut W, s: &SectionProps) {
             w.empty("w:pgNumType", &refs);
         }
         if let Some(prefix) = s.page_num_prefix.as_deref().filter(|p| !p.is_empty()) {
-            w.empty("w:pgNumPrefix", &[("w:val", prefix)]);
+            w.open("w:extLst", &[]);
+            w.open("w:ext", &[("uri", crate::PAGE_NUM_PREFIX_EXT)]);
+            w.empty("wc:pgNumPrefix", &[("wc:val", prefix)]);
+            w.close("w:ext");
+            w.close("w:extLst");
         }
         let c = &s.columns;
         let count = c.count.clamp(1, 45);

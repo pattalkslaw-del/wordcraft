@@ -561,6 +561,11 @@ pub struct HfRef {
     pub rid: String,
 }
 
+fn page_num_prefix_val(raw: Option<&str>) -> Option<String> {
+    let p = raw?.chars().take(16).collect::<String>();
+    if p.is_empty() { None } else { Some(p) }
+}
+
 /// `w:sectPr` (header/footer references are returned for the caller to resolve).
 pub fn sectpr(e: &El) -> (SectionProps, Vec<HfRef>) {
     let mut s = SectionProps::default();
@@ -638,11 +643,20 @@ pub fn sectpr(e: &El) -> (SectionProps, Vec<HfRef>) {
                     s.page_num_format = NumFormat::from_ooxml(f);
                 }
             }
+            // Legacy WordCraft writer (pre-extension); not valid OOXML — still read for old files.
             "w:pgNumPrefix" => {
-                if let Some(p) = k.attr("w:val") {
-                    let p = p.chars().take(16).collect::<String>();
-                    if !p.is_empty() {
-                        s.page_num_prefix = Some(p);
+                if s.page_num_prefix.is_none() {
+                    s.page_num_prefix = page_num_prefix_val(k.attr("w:val"));
+                }
+            }
+            "w:extLst" => {
+                for ext in k.children("w:ext") {
+                    if ext.attr("uri") != Some(crate::PAGE_NUM_PREFIX_EXT) {
+                        continue;
+                    }
+                    let el = ext.child("wc:pgNumPrefix").or_else(|| ext.els().find(|e| e.name.ends_with(":pgNumPrefix") || e.name == "pgNumPrefix"));
+                    if let Some(el) = el {
+                        s.page_num_prefix = page_num_prefix_val(el.attr("wc:val").or_else(|| el.attr("w:val")));
                     }
                 }
             }
