@@ -6,7 +6,7 @@ use crate::update::{
     CheckResult, CheckStatus, InstallHandoff, LATEST_API, MAX_DOWNLOAD, MAX_JSON, MSG_APPLY_FAILED, MSG_BAD_RELEASE, MSG_CHECK_FAILED,
     MSG_CHECKSUM_MISMATCH, MSG_CHECKSUM_MISSING, MSG_CHECKSUMS_UNREADABLE, MSG_NO_CHECKSUMS, MSG_NO_INSTALL_FN, MSG_NO_INSTALLER, ReleaseInfo,
     UpdateError, checksum_for, checksums_download_url, detect_install_kind, due, env_of, http_get, offer, parse_latest_release, parse_version,
-    pick_asset_name, skipped, verify_sha256, version_text,
+    pick_asset_name_with_arch, release_arch_for, skipped, verify_sha256, version_text,
 };
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -151,7 +151,9 @@ fn install_kind(s: &Session, exe: &str) -> crate::update::InstallKind {
 }
 
 fn download_and_install(s: &mut Session, latest_json: &[u8], release: &ReleaseInfo, kind: crate::update::InstallKind) -> Result<(), UpdateError> {
-    let file_name = pick_asset_name(release.version, kind).ok_or_else(|| UpdateError::new(MSG_NO_INSTALLER, "no asset name for this kind"))?;
+    let arch = release_arch_for(s);
+    let file_name =
+        pick_asset_name_with_arch(release.version, kind, &arch).ok_or_else(|| UpdateError::new(MSG_NO_INSTALLER, "no asset name for this kind"))?;
     let asset_url = crate::update::asset_download_url(latest_json, &file_name)
         .ok_or_else(|| UpdateError::new(MSG_NO_INSTALLER, format!("release does not list {file_name}")))?;
     let sums_url = checksums_download_url(latest_json).ok_or_else(|| UpdateError::new(MSG_NO_CHECKSUMS, "release has no SHA256SUMS asset"))?;
@@ -216,11 +218,16 @@ mod tests {
     }
 
     fn session_with_kind(http: TestHttp, kind: InstallKind) -> Session {
+        session_with_kind_arch(http, kind, "x86_64")
+    }
+
+    fn session_with_kind_arch(http: TestHttp, kind: InstallKind, arch: &str) -> Session {
         let mut s = Session::new(wordcraft_doc::Document::new());
         s.update_http = Some(http);
         s.update_exe = Some("/usr/bin/wordcraft".into());
         s.update_env = Some(Arc::new(TestEnv { kind, no_update: false }) as EnvReadBox);
         s.update_now_unix = test_now;
+        s.update_release_arch = Some(arch.into());
         s
     }
 
@@ -242,15 +249,28 @@ mod tests {
         )
     }
 
+    fn release_arch_for_kind(kind: InstallKind) -> &'static str {
+        match kind {
+            InstallKind::WindowsMsi => "x64",
+            InstallKind::LinuxDeb => "x86_64",
+            InstallKind::MacApp => "x86_64",
+            _ => "x86_64",
+        }
+    }
+
     /// Run an apply check for `kind` with a healthy download and capture the handoff.
     fn apply_for(kind: InstallKind) -> (Value, Option<InstallHandoff>) {
+        apply_for_arch(kind, release_arch_for_kind(kind))
+    }
+
+    fn apply_for_arch(kind: InstallKind, arch: &str) -> (Value, Option<InstallHandoff>) {
         let bytes = b"hello";
-        let asset = pick_asset_name((9, 0, 0), kind).expect("asset for a supported install kind");
+        let asset = pick_asset_name_with_arch((9, 0, 0), kind, arch).expect("asset for a supported install kind");
         let sums = format!("{}  {asset}\n", sha256_hex(bytes));
         let latest = latest_for(&asset);
         let got: Arc<Mutex<Option<InstallHandoff>>> = Arc::new(Mutex::new(None));
         let g = Arc::clone(&got);
-        let mut s = session_with_kind(
+        let mut s = session_with_kind_arch(
             Arc::new(move |u, _| {
                 Ok(if u == LATEST_API {
                     latest.clone().into_bytes()
@@ -261,6 +281,7 @@ mod tests {
                 })
             }),
             kind,
+            arch,
         );
         s.update_install = Some(Arc::new(move |h: InstallHandoff| {
             *g.lock().unwrap_or_else(|e| e.into_inner()) = Some(h);
@@ -271,7 +292,9 @@ mod tests {
         (r, got)
     }
 
-    const LATEST: &str = r#"{"tag_name":"v9.0.0","draft":false,"prerelease":false,"body":"Hi","html_url":"https://github.com/storytold/wordcraft/releases/tag/v9.0.0","assets":[{"name":"SHA256SUMS.txt","browser_download_url":"https://example.com/sums"},{"name":"wordcraft-9.0.0-linux-x86_64.deb","browser_download_url":"https://example.com/pkg.deb"}]}"#;
+    fn latest_linux_deb(arch: &str) -> String {
+        latest_for(&format!("wordcraft-9.0.0-linux-{arch}.deb"))
+    }
 
     #[test]
     fn no_newer_version() {
@@ -288,7 +311,8 @@ mod tests {
 
     #[test]
     fn newer_version_notice() {
-        let s = session_with(Arc::new(|_, _| Ok(LATEST.as_bytes().to_vec())));
+        let latest = latest_linux_deb("x86_64");
+        let s = session_with(Arc::new(move |_, _| Ok(latest.clone().into_bytes())));
         let mut s = s;
         let r = check(&mut s, &json!({"force": true})).unwrap();
         assert_eq!(r["status"], "available");
@@ -299,7 +323,8 @@ mod tests {
 
     #[test]
     fn skip_this_version() {
-        let s = session_with(Arc::new(|_, _| Ok(LATEST.as_bytes().to_vec())));
+        let latest = latest_linux_deb("x86_64");
+        let s = session_with(Arc::new(move |_, _| Ok(latest.clone().into_bytes())));
         let mut s = s;
         s.update_prefs.skipped_version = "9.0.0".into();
         let r = check(&mut s, &json!({"force": true})).unwrap();
@@ -319,7 +344,7 @@ mod tests {
         let c = Arc::clone(&calls);
         let mut s = session_with(Arc::new(move |_, _| {
             *c.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-            Ok(LATEST.as_bytes().to_vec())
+            Ok(latest_linux_deb("x86_64").into_bytes())
         }));
         s.update_prefs.last_check_unix = 1_999_999_000;
         let r = check(&mut s, &json!({})).unwrap();
@@ -343,6 +368,7 @@ mod tests {
 
     #[test]
     fn checksum_mismatch_refused() {
+        let latest = latest_linux_deb("x86_64");
         let sums = b"0000000000000000000000000000000000000000000000000000000000000000  wordcraft-9.0.0-linux-x86_64.deb\n";
         let mut s = session_with(Arc::new(move |u, _| {
             Ok(if u.contains("sums") {
@@ -350,7 +376,7 @@ mod tests {
             } else if u.contains("pkg") {
                 b"bad".to_vec()
             } else {
-                LATEST.as_bytes().to_vec()
+                latest.clone().into_bytes()
             })
         }));
         s.update_install = Some(Arc::new(|_| Ok(())));
@@ -381,7 +407,7 @@ mod tests {
                 big.clone()
             } else {
                 assert_eq!(max, MAX_JSON);
-                LATEST.as_bytes().to_vec()
+                latest_linux_deb("x86_64").into_bytes()
             })
         }));
         let got2 = Arc::clone(&got);
@@ -397,11 +423,12 @@ mod tests {
     #[test]
     fn every_supported_install_kind_hands_off() {
         for kind in [InstallKind::WindowsMsi, InstallKind::MacApp, InstallKind::LinuxDeb] {
+            let arch = release_arch_for_kind(kind);
             let (r, got) = apply_for(kind);
             assert_eq!(r["status"], "available", "{kind:?}");
             let h = got.unwrap_or_else(|| panic!("no handoff for {kind:?}"));
             assert_eq!(h.kind, kind, "handoff kind");
-            assert_eq!(Some(h.file_name), pick_asset_name((9, 0, 0), kind), "asset for {kind:?}");
+            assert_eq!(Some(h.file_name), pick_asset_name_with_arch((9, 0, 0), kind, arch), "asset for {kind:?}");
             assert_eq!(h.bytes, b"hello", "verified bytes for {kind:?}");
         }
     }
@@ -409,7 +436,8 @@ mod tests {
     #[test]
     fn external_and_unknown_kinds_fall_back_to_release_page() {
         for kind in [InstallKind::Flatpak, InstallKind::AppImage, InstallKind::Unknown] {
-            let mut s = session_with_kind(Arc::new(|_, _| Ok(LATEST.as_bytes().to_vec())), kind);
+            let latest = latest_linux_deb("x86_64");
+            let mut s = session_with_kind(Arc::new(move |_, _| Ok(latest.clone().into_bytes())), kind);
             s.update_exe = Some("/tmp/dev/wordcraft".into());
             let err = check(&mut s, &json!({"force": true, "apply": true})).unwrap_err();
             assert!(err.to_string().to_ascii_lowercase().contains("release page"), "{kind:?}");
@@ -418,7 +446,7 @@ mod tests {
 
     #[test]
     fn missing_checksum_refused_with_catalogued_message() {
-        let asset = pick_asset_name((9, 0, 0), InstallKind::LinuxDeb).unwrap();
+        let asset = pick_asset_name_with_arch((9, 0, 0), InstallKind::LinuxDeb, "x86_64").unwrap();
         let sums = format!("{}  some-other-file.deb\n", sha256_hex(b"hello"));
         let latest = latest_for(&asset);
         let called = Arc::new(Mutex::new(false));
@@ -449,7 +477,7 @@ mod tests {
         let c = Arc::clone(&calls);
         let mut s = session_with(Arc::new(move |_, _| {
             *c.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-            Ok(LATEST.as_bytes().to_vec())
+            Ok(latest_linux_deb("x86_64").into_bytes())
         }));
         s.update_env = Some(Arc::new(TestEnv { kind: InstallKind::LinuxDeb, no_update: true }) as EnvReadBox);
         s.update_prefs.check_on_startup = true;
@@ -466,7 +494,7 @@ mod tests {
         let r = Arc::clone(&requests);
         let mut s = session_with(Arc::new(move |_, _| {
             *r.lock().unwrap_or_else(|e| e.into_inner()) += 1;
-            Ok(LATEST.as_bytes().to_vec())
+            Ok(latest_linux_deb("x86_64").into_bytes())
         }));
         s.dirty = true;
         s.update_install = Some(Arc::new(move |_| {
@@ -477,6 +505,23 @@ mod tests {
         assert!(err.to_string().contains("unsaved"));
         assert_eq!(*installs.lock().unwrap_or_else(|e| e.into_inner()), 0);
         assert_eq!(*requests.lock().unwrap_or_else(|e| e.into_inner()), 0, "not even the release metadata is fetched before the save prompt");
+    }
+
+    #[test]
+    fn linux_aarch64_asset_selected_independently_of_host() {
+        let arch = "aarch64";
+        let (r, got) = apply_for_arch(InstallKind::LinuxDeb, arch);
+        assert_eq!(r["status"], "available");
+        let h = got.unwrap();
+        assert_eq!(h.file_name, format!("wordcraft-9.0.0-linux-{arch}.deb"));
+    }
+
+    #[test]
+    fn windows_x64_msi_selected_independently_of_host() {
+        let (r, got) = apply_for_arch(InstallKind::WindowsMsi, "x64");
+        assert_eq!(r["status"], "available");
+        let h = got.unwrap();
+        assert_eq!(h.file_name, "wordcraft-9.0.0-windows-x64.msi");
     }
 
     #[test]

@@ -281,17 +281,47 @@ fn copy_dir_all(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "macos")]
-fn mac_dmg(dmg: &Path, staging: &Path, exe: &str) -> Result<(), String> {
+const DMG_COMMAND_WAIT_SECS: u64 = 10 * 60;
+
+#[cfg(target_os = "macos")]
+trait DmgRunner {
+    fn attach(&self, dmg: &str, mount: &str) -> Result<(), String>;
+    fn detach(&self, mount: &str);
+}
+
+#[cfg(target_os = "macos")]
+struct RealDmgRunner;
+
+#[cfg(target_os = "macos")]
+impl DmgRunner for RealDmgRunner {
+    fn attach(&self, dmg: &str, mount: &str) -> Result<(), String> {
+        let status =
+            run_command_status(Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-mountpoint", mount, dmg]), DMG_COMMAND_WAIT_SECS)?;
+        if status.success() { Ok(()) } else { Err("Could not open the disk image.".into()) }
+    }
+    fn detach(&self, mount: &str) {
+        let _ = run_command_status(Command::new("hdiutil").args(["detach", mount]), DMG_COMMAND_WAIT_SECS);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_command_status(mut cmd: Command, secs: u64) -> Result<std::process::ExitStatus, String> {
+    let child = cmd.spawn().map_err(|e| e.to_string())?;
+    wait_child(child, secs)
+}
+
+#[cfg(target_os = "macos")]
+fn mac_dmg_with(dmg: &Path, staging: &Path, exe: &str, runner: &dyn DmgRunner) -> Result<(), String> {
     let dest = app_bundle_for(exe).ok_or("WordCraft is not running from an application bundle")?;
+    let dest_lower = dest.to_string_lossy().to_ascii_lowercase();
+    if !dest_lower.starts_with("/applications/") {
+        return Err("One-click install only replaces WordCraft in /Applications.".into());
+    }
     let mount = staging.join("mnt");
     std::fs::create_dir(&mount).map_err(|e| e.to_string())?;
     let dmg_s = dmg.to_str().ok_or("bad path")?;
     let mount_s = mount.to_str().ok_or("bad path")?;
-    let attach =
-        Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-mountpoint", mount_s, dmg_s]).status().map_err(|e| e.to_string())?;
-    if !attach.success() {
-        return Err("Could not open the disk image.".into());
-    }
+    runner.attach(dmg_s, mount_s)?;
     let app_src = mount.join("WordCraft.app");
     let exe_name = Path::new(exe).file_name().and_then(|n| n.to_str()).unwrap_or("");
     let result = if !app_src.is_dir() {
@@ -299,10 +329,13 @@ fn mac_dmg(dmg: &Path, staging: &Path, exe: &str) -> Result<(), String> {
     } else {
         replace_bundle(&RealBundleOps, &app_src, &dest, exe_name)
     };
-    // Detaching a read-only image never touches what was already copied; a failed detach must not
-    // mask a successful (or failed) install.
-    let _ = Command::new("hdiutil").args(["detach", mount_s]).status();
+    runner.detach(mount_s);
     result
+}
+
+#[cfg(target_os = "macos")]
+fn mac_dmg(dmg: &Path, staging: &Path, exe: &str) -> Result<(), String> {
+    mac_dmg_with(dmg, staging, exe, &RealDmgRunner)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -346,7 +379,7 @@ mod tests {
         assert_eq!(
             app_bundle_for("/Users/me/Applications/WordCraft.app/Contents/MacOS/wordcraft"),
             Some(PathBuf::from("/Users/me/Applications/WordCraft.app")),
-            "a copy in another folder updates in place"
+            "bundle path is still discoverable; one-click install refuses non-/Applications targets"
         );
         assert_eq!(app_bundle_for("/usr/local/bin/wordcraft"), None);
         assert_eq!(app_bundle_for(""), None);
@@ -509,5 +542,35 @@ mod tests {
         let ops = FakeOps::default().with_dir("/apps/WordCraft.app");
         assert!(run_replace(&ops).is_err());
         assert!(ops.is_dir(&dest()), "the installed bundle is untouched");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dmg_install_refuses_bundles_outside_system_applications() {
+        let dir = private_staging_dir().unwrap();
+        let dmg = write_exclusive_file(&dir, "wordcraft.dmg", b"x").unwrap();
+        let err = mac_dmg_with(&dmg, &dir, "/Users/me/Applications/WordCraft.app/Contents/MacOS/wordcraft", &RealDmgRunner).unwrap_err();
+        assert!(err.contains("/Applications"), "{err}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dmg_runner_detach_runs_after_attach_failure() {
+        use std::cell::Cell;
+        struct FailAttach(Cell<bool>);
+        impl DmgRunner for FailAttach {
+            fn attach(&self, _: &str, _: &str) -> Result<(), String> {
+                Err("attach failed".into())
+            }
+            fn detach(&self, _: &str) {
+                self.0.set(true);
+            }
+        }
+        let detached = Cell::new(false);
+        let dir = private_staging_dir().unwrap();
+        let dmg = write_exclusive_file(&dir, "wordcraft.dmg", b"x").unwrap();
+        let err = mac_dmg_with(&dmg, &dir, "/Applications/WordCraft.app/Contents/MacOS/wordcraft", &FailAttach(detached)).unwrap_err();
+        assert!(err.contains("attach"), "{err}");
+        assert!(!detached.get(), "detach is only needed after a successful attach");
     }
 }

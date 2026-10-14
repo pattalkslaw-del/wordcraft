@@ -414,6 +414,8 @@ pub struct Session {
     pub update_env: Option<crate::update::EnvReadBox>,
     /// Wall clock for throttling (overridden in tests).
     pub update_now_unix: fn() -> u64,
+    /// Release asset arch segment (`x86_64`, `aarch64`, `x64`…); tests set this instead of using the host CPU.
+    pub update_release_arch: Option<String>,
     /// Read Aloud player (Review › Speech).
     pub read_aloud: crate::speech::ReadAloud,
     /// Preferences the front end saves between runs.
@@ -620,6 +622,7 @@ impl Session {
             update_exe: None,
             update_env: None,
             update_now_unix: crate::update::unix_now,
+            update_release_arch: None,
             math: None,
             math_latex: false,
             math_normal_text: false,
@@ -1056,6 +1059,7 @@ impl Session {
             update_exe: _,
             update_env: _,
             update_now_unix: _,
+            update_release_arch: _,
             document_id: _,
             read_aloud: _,
             prefs: _,

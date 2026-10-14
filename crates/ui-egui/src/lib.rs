@@ -674,6 +674,14 @@ impl WordApp {
             }
             return r;
         }
+        if id == "file.checkForUpdates"
+            && update::can_run_off_thread(self)
+            && let Some(ctx) = self.ctx.clone()
+        {
+            let startup = params.get("startup").and_then(Value::as_bool) == Some(true);
+            update::queue_check(self, params, !startup, &ctx);
+            return Ok(json!({"pending": "updateCheck"}));
+        }
         // Web: saving and exporting become downloads.
         if self.services.download.is_some() && matches!(id, "file.save" | "file.saveAs" | "file.exportPdf" | "file.exportPng") {
             let name = params.get("path").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| self.default_save_name());
@@ -802,6 +810,13 @@ impl WordApp {
         };
         if !go {
             return Ok(json!({"done": false}));
+        }
+        if then == "file.checkForUpdates"
+            && update::can_run_off_thread(self)
+            && let Some(ctx) = self.ctx.clone()
+        {
+            update::queue_check(self, params, false, &ctx);
+            return Ok(json!({"done": true}));
         }
         self.execute_user(&then, params).map(|r| json!({"done": true, "result": r}))
     }
@@ -1617,6 +1632,7 @@ impl WordApp {
                 control::Outcome::Done(v) => {
                     let _ = reply.send(v);
                 }
+                control::Outcome::Deferred => {}
                 control::Outcome::Screenshot { path } => {
                     self.shot_token += 1;
                     let token = self.shot_token;
@@ -3422,6 +3438,36 @@ mod tests {
         control::handle(&mut a, &ctx, &req);
         assert_eq!(prompt(&a), None);
         assert!(!body_text(&a).contains(UNSAVED));
+    }
+
+    #[test]
+    fn control_update_check_defers_until_worker_finishes() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        use wordcraft_engine::update::LATEST_API;
+
+        let cur = env!("CARGO_PKG_VERSION");
+        let latest = format!(r#"{{"tag_name":"v{cur}","draft":false,"prerelease":false,"assets":[]}}"#);
+        let latest = Arc::new(latest);
+        let ctx = egui::Context::default();
+        let mut a = app();
+        a.ctx = Some(ctx.clone());
+        let body = Arc::clone(&latest);
+        a.session.update_http = Some(Arc::new(move |u, _| if u == LATEST_API { Ok(body.as_bytes().to_vec()) } else { Ok(vec![]) }));
+        let (req, rx) = ControlRequest::new("engine.execute", json!({"command": "file.checkForUpdates", "params": {"force": true}}));
+        assert!(matches!(control::handle(&mut a, &ctx, &req), control::Outcome::Deferred));
+        for _ in 0..200 {
+            update::poll(&mut a, &ctx);
+            if !update::worker_busy(&a) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!update::worker_busy(&a));
+        let reply = rx.recv_timeout(Duration::from_secs(2)).expect("control reply");
+        assert_eq!(reply.get("ok"), Some(&json!(true)));
+        assert_eq!(reply.get("result").and_then(|r| r.get("status")).and_then(Value::as_str), Some("current"));
     }
 
     const MAILINGS: [&str; 3] = ["mailings.envelopes", "mailings.labels", "mailings.finish"];

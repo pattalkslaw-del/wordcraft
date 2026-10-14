@@ -114,7 +114,7 @@ pub fn detect_install_kind(exe: &str, env: &dyn EnvRead) -> InstallKind {
         return InstallKind::Unknown;
     }
     if env.macos() {
-        if lower.contains("/applications/") && lower.contains(".app/contents/macos/") {
+        if mac_app_bundle_in_system_applications(&lower) {
             return InstallKind::MacApp;
         }
         return InstallKind::Unknown;
@@ -133,6 +133,12 @@ pub fn detect_install_kind(exe: &str, env: &dyn EnvRead) -> InstallKind {
 
 fn linux_system_install_path(lower_exe: &str) -> bool {
     lower_exe.starts_with("/usr/bin/") || lower_exe.starts_with("/usr/local/bin/") || lower_exe.contains("/opt/wordcraft/")
+}
+
+/// One-click macOS updates only replace a bundle in the system `/Applications` folder, not a copy
+/// in `~/Applications` or elsewhere (those users use the release page).
+fn mac_app_bundle_in_system_applications(lower_exe: &str) -> bool {
+    lower_exe.starts_with("/applications/") && lower_exe.contains(".app/contents/macos/")
 }
 
 /// Environment hooks for install detection (real env or test fake).
@@ -227,15 +233,12 @@ impl EnvRead for SystemEnv {
         std::env::var("APPIMAGE").ok().filter(|s| !s.is_empty())
     }
     fn install_override(&self) -> Option<InstallKind> {
+        // Packagers may force Flatpak/AppImage/unknown; never grant MSI/.deb/.app without registry,
+        // dpkg or `/Applications` evidence (tests inject [`EnvRead`] instead).
         match std::env::var("WORDCRAFT_INSTALL").ok().as_deref() {
-            Some("msi") => Some(InstallKind::WindowsMsi),
-            Some("portable") => Some(InstallKind::Unknown),
-            Some("dmg") | Some("mac") => Some(InstallKind::MacDmg),
-            Some("app") => Some(InstallKind::MacApp),
-            Some("deb") => Some(InstallKind::LinuxDeb),
             Some("flatpak") => Some(InstallKind::Flatpak),
             Some("appimage") => Some(InstallKind::AppImage),
-            Some("unknown") => Some(InstallKind::Unknown),
+            Some("unknown") | Some("portable") => Some(InstallKind::Unknown),
             _ => None,
         }
     }
@@ -426,8 +429,20 @@ pub fn windows_arch() -> &'static str {
 }
 
 pub fn pick_asset_name(version: Version, kind: InstallKind) -> Option<String> {
-    let arch = if cfg!(target_os = "windows") { windows_arch() } else { target_arch() };
+    pick_asset_name_with_arch(version, kind, host_release_arch())
+}
+
+/// Release arch label for the running build (or tests may inject another through the session).
+pub fn host_release_arch() -> &'static str {
+    if cfg!(target_os = "windows") { windows_arch() } else { target_arch() }
+}
+
+pub fn pick_asset_name_with_arch(version: Version, kind: InstallKind, arch: &str) -> Option<String> {
     asset_name(version, kind, arch)
+}
+
+pub fn release_arch_for(session: &crate::Session) -> String {
+    session.update_release_arch.as_deref().filter(|a| !a.is_empty()).map(str::to_string).unwrap_or_else(|| host_release_arch().to_string())
 }
 
 /// Parse `SHA256SUMS.txt` and return the hash for `file_name`.
@@ -587,9 +602,21 @@ mod tests {
         let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "macos", windows_msi: false };
         assert_eq!(detect_install_kind("/Applications/WordCraft.app/Contents/MacOS/wordcraft", &e), InstallKind::MacApp);
         assert_eq!(detect_install_kind("/Users/me/WordCraft.app/Contents/MacOS/wordcraft", &e), InstallKind::Unknown);
+        assert_eq!(
+            detect_install_kind("/Users/me/Applications/WordCraft.app/Contents/MacOS/wordcraft", &e),
+            InstallKind::Unknown,
+            "~/Applications must not qualify for one-click install"
+        );
         let e =
             FakeEnv { flatpak: false, appimage: None, override_kind: Some(InstallKind::Unknown), linux_deb: false, os: "linux", windows_msi: false };
         assert_eq!(detect_install_kind("/build/wordcraft", &e), InstallKind::Unknown);
+        let e =
+            FakeEnv { flatpak: false, appimage: None, override_kind: Some(InstallKind::LinuxDeb), linux_deb: false, os: "linux", windows_msi: false };
+        assert_eq!(
+            detect_install_kind("/usr/bin/wordcraft", &e),
+            InstallKind::LinuxDeb,
+            "tests may inject install kind; production env override does not grant .deb without dpkg"
+        );
     }
 
     /// MSI detection uses registry evidence, not path shape alone; portable paths fall back to the release page.
@@ -616,8 +643,8 @@ mod tests {
         assert_eq!(asset_name(v, InstallKind::LinuxDeb, "aarch64").as_deref(), Some("wordcraft-0.6.1-linux-aarch64.deb"));
         assert_eq!(asset_name(v, InstallKind::WindowsMsi, "x64").as_deref(), Some("wordcraft-0.6.1-windows-x64.msi"));
         assert!(asset_name(v, InstallKind::Unknown, "x86_64").is_none());
-        let host_arch = if cfg!(target_os = "windows") { windows_arch() } else { target_arch() };
-        assert_eq!(pick_asset_name(v, InstallKind::LinuxDeb).as_deref(), asset_name(v, InstallKind::LinuxDeb, host_arch).as_deref());
+        assert_eq!(pick_asset_name_with_arch(v, InstallKind::LinuxDeb, "aarch64").as_deref(), Some("wordcraft-0.6.1-linux-aarch64.deb"));
+        assert_eq!(pick_asset_name(v, InstallKind::LinuxDeb).as_deref(), asset_name(v, InstallKind::LinuxDeb, host_release_arch()).as_deref());
     }
 
     #[test]

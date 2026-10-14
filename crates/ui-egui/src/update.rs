@@ -24,6 +24,7 @@ struct PendingWorker {
     rx: Receiver<WorkerDone>,
     manual: bool,
     apply: bool,
+    control_reply: Option<std::sync::mpsc::Sender<Value>>,
 }
 
 struct WorkerDone {
@@ -40,6 +41,7 @@ struct CheckSnapshot {
     prefs: UpdatePrefs,
     dirty: bool,
     now_unix: fn() -> u64,
+    release_arch: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,10 +93,33 @@ pub fn poll(app: &mut WordApp, ctx: &egui::Context) {
 
 /// Queue `file.checkForUpdates` on a worker (network, download and installer handoff stay off the UI thread).
 pub fn queue_check(app: &mut WordApp, params: Value, manual: bool, ctx: &egui::Context) {
+    let _ = queue_check_inner(app, params, manual, ctx, None);
+}
+
+/// Like [`queue_check`], but completes a control-channel reply when the worker finishes.
+pub fn queue_check_control(app: &mut WordApp, params: Value, ctx: &egui::Context, reply: std::sync::mpsc::Sender<Value>) -> bool {
+    queue_check_inner(app, params, true, ctx, Some(reply))
+}
+
+fn queue_check_inner(
+    app: &mut WordApp,
+    params: Value,
+    manual: bool,
+    ctx: &egui::Context,
+    control_reply: Option<std::sync::mpsc::Sender<Value>>,
+) -> bool {
     if app.update.worker.is_some() {
-        return;
+        if let Some(reply) = control_reply {
+            let _ = reply.send(json!({"ok": false, "error": "an update check is already running"}));
+        }
+        return false;
     }
-    let Some(snapshot) = snapshot_from(app) else { return };
+    let Some(snapshot) = snapshot_from(app) else {
+        if let Some(reply) = control_reply {
+            let _ = reply.send(json!({"ok": false, "error": "update check is not available"}));
+        }
+        return false;
+    };
     let (tx, rx) = std::sync::mpsc::channel();
     let ctx = ctx.clone();
     let apply = params.get("apply").and_then(Value::as_bool) == Some(true);
@@ -103,9 +128,21 @@ pub fn queue_check(app: &mut WordApp, params: Value, manual: bool, ctx: &egui::C
         let _ = tx.send(done);
         ctx.request_repaint();
     }) {
-        Ok(_) => app.update.worker = Some(PendingWorker { rx, manual, apply }),
-        Err(_) if manual => crate::backstage::report_update_check(app, Err("could not start the update check".into())),
-        Err(_) => log::warn!("could not start the update check"),
+        Ok(_) => {
+            app.update.worker = Some(PendingWorker { rx, manual, apply, control_reply });
+            true
+        }
+        Err(_) => {
+            let msg = "could not start the update check";
+            if let Some(reply) = control_reply {
+                let _ = reply.send(json!({"ok": false, "error": msg}));
+            } else if manual {
+                crate::backstage::report_update_check(app, Err(msg.into()));
+            } else {
+                log::warn!("{msg}");
+            }
+            false
+        }
     }
 }
 
@@ -120,9 +157,17 @@ fn poll_worker(app: &mut WordApp) {
             ui_requests: Vec::new(),
         },
     };
-    let (manual, apply) = app.update.worker.as_ref().map(|w| (w.manual, w.apply)).unwrap_or((false, false));
+    let (manual, apply, control_reply) =
+        app.update.worker.as_ref().map(|w| (w.manual, w.apply, w.control_reply.clone())).unwrap_or((false, false, None));
     app.update.worker = None;
-    apply_worker_result(app, msg, manual, apply);
+    let result = apply_worker_result(app, msg, manual, apply);
+    if let Some(reply) = control_reply {
+        let payload = match result {
+            Ok(v) => json!({"ok": true, "result": v}),
+            Err(e) => json!({"ok": false, "error": e}),
+        };
+        let _ = reply.send(payload);
+    }
 }
 
 fn snapshot_from(app: &WordApp) -> Option<CheckSnapshot> {
@@ -135,6 +180,7 @@ fn snapshot_from(app: &WordApp) -> Option<CheckSnapshot> {
         prefs: app.session.update_prefs.clone(),
         dirty: app.session.dirty,
         now_unix: app.session.update_now_unix,
+        release_arch: app.session.update_release_arch.clone(),
     })
 }
 
@@ -146,32 +192,41 @@ fn run_check(snapshot: CheckSnapshot, params: &Value) -> WorkerDone {
     s.update_env = snapshot.env;
     s.update_prefs = snapshot.prefs;
     s.update_now_unix = snapshot.now_unix;
+    s.update_release_arch = snapshot.release_arch;
     s.dirty = snapshot.dirty;
     let result = s.run("file.checkForUpdates", params).map_err(|e: CmdError| e.to_string());
     WorkerDone { result, prefs: s.update_prefs, ui_requests: s.ui_requests }
 }
 
-fn apply_worker_result(app: &mut WordApp, done: WorkerDone, manual: bool, apply: bool) {
-    let prefs = done.prefs;
-    app.session.update_prefs = prefs.clone();
-    app.ui.update_prefs = prefs;
-    app.apply_ui_requests(done.ui_requests);
+fn apply_worker_result(app: &mut WordApp, done: WorkerDone, manual: bool, apply: bool) -> Result<Value, String> {
+    app.session.update_prefs.last_check_unix = done.prefs.last_check_unix;
+    app.ui.update_prefs.last_check_unix = done.prefs.last_check_unix;
+    let mut ui_requests = done.ui_requests;
+    if apply && app.session.dirty {
+        ui_requests.retain(|r| r.get("quit").and_then(Value::as_bool) != Some(true));
+    }
+    app.apply_ui_requests(ui_requests);
     match done.result {
         Ok(v) => {
             if apply {
-                apply_install_result(app, Ok(v));
+                let _ = apply_install_result(app, Ok(v.clone()));
+                Ok(v)
             } else if manual {
-                crate::backstage::report_update_check(app, Ok(v));
+                crate::backstage::report_update_check(app, Ok(v.clone()));
+                Ok(v)
+            } else {
+                Ok(v)
             }
         }
         Err(e) => {
             if apply {
-                apply_install_result(app, Err(e));
+                let _ = apply_install_result(app, Err(e.clone()));
             } else if manual {
-                crate::backstage::report_update_check(app, Err(e));
+                crate::backstage::report_update_check(app, Err(e.clone()));
             } else {
                 log::info!("startup update check failed: {e}");
             }
+            Err(e)
         }
     }
 }
@@ -187,6 +242,9 @@ fn apply_install_result(app: &mut WordApp, v: Result<Value, String>) -> bool {
                 }
                 app.status(text);
                 false
+            } else if app.session.dirty {
+                app.status(tl!("Save or discard unsaved changes before updating."));
+                false
             } else {
                 app.quit_requested
             }
@@ -197,6 +255,15 @@ fn apply_install_result(app: &mut WordApp, v: Result<Value, String>) -> bool {
             false
         }
     }
+}
+
+/// True when this build can run update checks off the UI thread.
+pub fn can_run_off_thread(app: &WordApp) -> bool {
+    app.session.update_http.is_some()
+}
+
+pub fn worker_busy(app: &WordApp) -> bool {
+    app.update.worker.is_some()
 }
 
 /// Manual check or command-driven notice (`file.checkForUpdates` ui_request).
@@ -318,6 +385,15 @@ mod tests {
         let n = notice_from_payload(&up).unwrap();
         assert_eq!(n.version, "9.0.0");
         assert!(n.one_click);
+    }
+
+    #[test]
+    fn worker_apply_with_dirty_document_does_not_request_quit() {
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.session.dirty = true;
+        let done = WorkerDone { result: Ok(json!({"status": "available"})), prefs: UpdatePrefs::default(), ui_requests: vec![json!({"quit": true})] };
+        let _ = apply_worker_result(&mut app, done, false, true);
+        assert!(!app.quit_requested, "edits after the save prompt must block quitting");
     }
 
     #[test]
