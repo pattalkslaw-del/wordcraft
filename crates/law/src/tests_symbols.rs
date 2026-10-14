@@ -249,3 +249,21 @@ fn fix_sign_spacing_string_cases() {
     assert!(sign_spacing_space_ranges("A § 1 B", 0, 3).is_empty());
     assert_eq!(sign_spacing_space_ranges("A § 1 B", 2, 7).len(), 1);
 }
+
+/// A long run of signs with no following space-plus-digit must be skipped in one step. Scanning
+/// the tail once per sign was quadratic and could freeze `law.symbols.fixSpacing`; this completes
+/// immediately only when the whole run is consumed at once.
+#[test]
+fn fix_sign_spacing_long_run_does_not_rescan() {
+    let long = "§".repeat(100_000);
+    let (out, changed) = fix_sign_spacing_in_str(&long);
+    assert!(!changed);
+    assert_eq!(out.chars().count(), 100_000);
+    assert!(sign_spacing_space_ranges(&long, 0, long.len()).is_empty());
+
+    let mixed = format!("{} 1", "¶".repeat(100_000));
+    let (out, changed) = fix_sign_spacing_in_str(&mixed);
+    assert!(changed);
+    assert_eq!(out, format!("{}{NBSP}1", "¶".repeat(100_000)));
+    assert_eq!(sign_spacing_space_ranges(&mixed, 0, mixed.len()).len(), 1);
+}

@@ -158,6 +158,12 @@ pub fn fix_sign_spacing_in_str(text: &str) -> (String, bool) {
                 i = j + 1;
                 continue;
             }
+            // No replacement: emit the whole run and skip it in one step. Advancing one character
+            // would rescan the run's tail for every sign, which is quadratic (a long run could
+            // freeze the document command).
+            out.extend(chars[i..j].iter());
+            i = j;
+            continue;
         }
         out.push(c);
         i += 1;
@@ -199,6 +205,11 @@ pub fn sign_spacing_space_ranges(text: &str, from: usize, to: usize) -> Vec<(usi
                 i = digit_end;
                 continue;
             }
+            // No replacement: skip the whole scanned run. Advancing one character would rescan
+            // the run's tail for every sign, which is quadratic (a long run could freeze the
+            // document command).
+            i = j;
+            continue;
         }
         i += first.len_utf8();
     }
