@@ -32,6 +32,7 @@ pub fn apply(s: &mut Session, p: &Profile, doc_type: &str) -> Result<Value, LawE
         page_numbers(s, pn, &mut applied)?;
     }
     let styles = styles(s, &spec.styles, &mut applied)?;
+    crate::checks::remember_applied(s, &p.id, doc_type);
     Ok(json!({"profile": p.id, "doc": doc_type, "applied": applied, "styles": styles}))
 }
 

@@ -9,9 +9,11 @@
 pub mod catalog;
 pub mod cmd;
 pub mod file_access;
+pub mod hooks;
 pub mod io;
 mod io_ext;
 pub mod keymap;
+pub mod lint;
 pub mod math_gallery;
 pub mod print;
 pub mod ribbon;
@@ -34,6 +36,8 @@ pub use wordcraft_geom::Region;
 pub use wordcraft_layout as layout;
 pub use wordcraft_proof as proof;
 pub use wordcraft_render as render;
+
+pub use cmd::file::export_options;
 
 #[derive(Debug, thiserror::Error, Clone, PartialEq)]
 pub enum CmdError {

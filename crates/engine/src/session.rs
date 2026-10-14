@@ -444,6 +444,10 @@ pub struct Session {
     edit_marks: Vec<Pos>,
     /// How many Go Back presses since the last edit (which place comes next).
     go_back_step: usize,
+    /// Document-level lint findings (modules such as LawCraft set these; Review › Proofing reads them).
+    lint_findings: Vec<serde_json::Value>,
+    /// Commands to run before a PDF export (`(id, params)`); modules register checks here.
+    export_check_commands: Vec<(String, serde_json::Value)>,
 }
 
 /// The number of edit locations Go Back cycles through (Word: four).
@@ -660,7 +664,68 @@ impl Session {
             widened: None,
             edit_marks: Vec::new(),
             go_back_step: 0,
+            lint_findings: Vec::new(),
+            export_check_commands: Vec::new(),
         }
+    }
+
+    /// Document-level lint findings for Review › Proofing (`review.lintFindings`, `review.issues`).
+    pub fn lint_findings(&self) -> &[serde_json::Value] {
+        &self.lint_findings
+    }
+
+    /// Replace document-level lint findings (modules call this from their check commands).
+    pub fn set_lint_findings(&mut self, findings: Vec<crate::lint::Finding>) {
+        self.lint_findings =
+            findings.into_iter().take(crate::lint::MAX_FINDINGS).map(|f| crate::lint::finding_json(&f, crate::cmd::pos_json)).collect();
+    }
+
+    /// Commands run before a save or export; each command's result may include a `findings` array.
+    pub fn set_export_check_commands(&mut self, commands: Vec<(String, serde_json::Value)>) {
+        self.export_check_commands = commands;
+    }
+
+    /// Run [`export_check_commands`] with the export's own options and target `format` (a lower-case
+    /// extension such as `pdf`, `docx`, `png`), and store merged findings in [`lint_findings`].
+    /// Each command's parameters carry the actual `markup` option and the output `format`, so a
+    /// check that re-exports the document (such as `textSearchablePdf`) verifies what is being
+    /// written and only the checks that apply to that format run.
+    pub fn run_export_checks(&mut self, opts: &crate::io::ExportOptions, format: &str) -> Vec<serde_json::Value> {
+        let cmds = self.export_check_commands.clone();
+        let mut all = Vec::new();
+        for (id, params) in cmds {
+            let mut params = params;
+            if let Some(obj) = params.as_object_mut() {
+                obj.insert("markup".into(), serde_json::json!(opts.markup));
+                obj.insert("format".into(), serde_json::json!(format));
+            }
+            match self.run(&id, &params) {
+                Ok(v) => {
+                    if let Some(arr) = v.get("findings").and_then(serde_json::Value::as_array) {
+                        for f in arr {
+                            all.push(f.clone());
+                            if all.len() >= crate::lint::MAX_FINDINGS {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    // The same shape as any other lint finding, so Review › Proofing and
+                    // `review.issues` can show a failed check beside the rest.
+                    let finding = crate::lint::Finding::error(id, e.to_string());
+                    all.push(crate::lint::finding_json(&finding, crate::cmd::pos_json));
+                    if all.len() >= crate::lint::MAX_FINDINGS {
+                        break;
+                    }
+                }
+            }
+            if all.len() >= crate::lint::MAX_FINDINGS {
+                break;
+            }
+        }
+        self.lint_findings = all.clone();
+        all
     }
 
     /// Remember the caret as the place of an edit, for Go Back. Edits in the same paragraph as
@@ -1012,6 +1077,9 @@ impl Session {
         self.go_back_step = 0;
         self.view.outline.collapsed.clear();
         self.reset_history();
+        self.lint_findings.clear();
+        self.export_check_commands.clear();
+        crate::hooks::run_on_document_loaded(self);
         self.touch();
         self.dirty = false;
         self.relayout();
@@ -1097,6 +1165,8 @@ impl Session {
             // Go Back's places, like the caret history: not part of the document.
             edit_marks: _,
             go_back_step: _,
+            lint_findings: _,
+            export_check_commands: _,
         } = self;
         let head = if history.len() + SNAPSHOT_HEAD > MAX_UNDO { history.iter().take(SNAPSHOT_HEAD).cloned().collect() } else { Vec::new() };
         EditSnapshot {

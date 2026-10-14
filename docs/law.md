@@ -40,6 +40,7 @@ dictionary lives beside), one file per profile.
 | `law.profiles.import` | `{"path"}`: read a profile file into the store |
 | `law.profiles.export` | `{"id", "path"}`: write a profile file |
 | `law.profiles.apply` | `{"id", "doc"?}`: apply a document type's styles, page setup and line numbers to the open document |
+| `law.checks.run` | `{"id"?, "doc"?, "forExport"?, "format"?, "store"?}`: run the profile's checks for a document type and return `{"profile", "doc", "findings": [{checkId, severity, message, start?, end?}]}`; it never edits the document |
 
 Applying a profile runs WordCraft's own commands (`layout.size`, `layout.margins`,
 `layout.lineNumbers`, `insert.pageNumber`, `layout.pageNumberFormat`, `styles.create`,
@@ -109,12 +110,48 @@ The three parts per document type, as in [`LAWCRAFT.md`](../.lawcraft/LAWCRAFT.m
   takes, plus `enabled` for "none"), page numbering, and the named styles. A style is a standard
   WordCraft style object: `chr` and `para` are the same `CharProps` / `ParaProps` the `styles.*`
   commands take, with `basedOn` and `next`.
-- **checks** — the rules that aren't styles: `wordLimit`, `minFontSize`, `noHyperlinks`,
-  `textSearchablePdf` and `requiredSections`. This issue records them; running them on demand and
-  before export is separate work.
+- **checks** — the rules that aren't styles: `wordLimit` (with `excludeSections` for the parts the
+  count leaves out), `minFontSize` (a minimum point size and, optionally, a required typeface),
+  `minMargins`, `minLineSpacing` (with `exceptStyles` for the single-spaced exceptions),
+  `noHyperlinks`, `requiredSections` (the section ids that must be present, in order) and
+  `textSearchablePdf`.
 
 Every rule records `source` (the rule it comes from) and `effective` (when it took effect). The
 bundled profiles are verified; anything an agent writes is not, until a person approves it.
+
+## Running the checks
+
+`law.checks.run` evaluates a profile's checks against the open document for one document type
+(`doc`; the applied profile and document type are used when they are left out) and returns the
+findings. It has **no side effects on the document**; by default it also stores the findings so
+they show in Review › Proofing like spelling and grammar, and `"store": false` skips that for a
+pure query. A finding has a `checkId` (the check's kind or its id), a `severity` (`error`, or
+`warning` when something could not be verified), a message and, where the problem is a range in the
+document, `start` and `end`.
+
+A profile applied to a document registers its checks to run **before export** (through the
+engine's general export-check hook, which carries no legal logic). The export still proceeds:
+findings are reported, not blocking.
+
+- The word limit counts the document's own words (body, text boxes, footnotes and endnotes) and
+  leaves out the excluded sections; a text box anchored in an excluded section goes with it.
+- Line spacing covers the body and the text boxes it shows — text boxes live in their own part
+  stories, so a single-spaced box is caught like a single-spaced paragraph. The profile's
+  single-spaced exceptions (Caption, Heading, Block Quote, Signature, Certificate) still apply in
+  a box, and no exception may go below single spacing.
+- `textSearchablePdf` exports the document in memory and inspects the result: a page dominated by a
+  picture (a scan, photograph or figure) is a **warning** naming that page — `Page N has scanned
+  content that could not be verified as searchable.` — because text on the same page (a caption, a
+  page number, even a long paragraph) never certifies the picture's own content. That stays a
+  warning even when the document has no other text at all. A PDF with no picture and no text layer
+  is reported as not searchable. It runs only when the output being written is a PDF.
+
+## Revision history
+
+| Date | Change | Summary |
+|---|---|---|
+| 2026-10-14 | patch | `textSearchablePdf` now names the page for a picture-dominated page even when the document has no substantive text: an image-only scan and a scan with only a caption or page-number footer are a page-specific warning, not a document-wide "not searchable" error |
+| 2026-10-13 | minor | Court-profile checks engine: `law.checks.run`, pre-export checks through the engine's export-check hook, text-box-aware line spacing, and a PDF searchability verdict that no longer passes a scan with a caption |
 
 ## How it works
 

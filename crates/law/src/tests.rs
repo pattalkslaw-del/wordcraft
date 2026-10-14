@@ -12,22 +12,22 @@ use crate::cmd::store;
 use crate::profile::{Profile, SCHEMA};
 use crate::{MODULE, install, specs};
 
-const MISSOURI: &str = "missouri-appellate-brief";
-const FEDERAL: &str = "federal-appellate-brief";
+pub(crate) const MISSOURI: &str = "missouri-appellate-brief";
+pub(crate) const FEDERAL: &str = "federal-appellate-brief";
 
 /// A session with the module on, over a blank document.
-fn law() -> Session {
+pub(crate) fn law() -> Session {
     let mut s = Session::new(Document::new());
     s.prefs.modules.insert(MODULE.into(), true);
     assert_eq!(install(&mut s), specs().len(), "every law command is installed");
     s
 }
 
-fn run(s: &mut Session, id: &str, v: Value) -> Value {
+pub(crate) fn run(s: &mut Session, id: &str, v: Value) -> Value {
     s.run(id, &v).unwrap_or_else(|e| panic!("{id}: {e}"))
 }
 
-fn err(s: &mut Session, id: &str, v: Value) -> CmdError {
+pub(crate) fn err(s: &mut Session, id: &str, v: Value) -> CmdError {
     s.run(id, &v).expect_err(&format!("{id} should have failed"))
 }
 
@@ -55,7 +55,7 @@ fn style<'a>(doc: &'a Document, name: &str) -> &'a wordcraft_doc::styles::Style 
 }
 
 /// A profile in the shape `law.profiles.create` takes it.
-fn profile_json(id: &str) -> Value {
+pub(crate) fn profile_json(id: &str) -> Value {
     json!({
         "schema": SCHEMA,
         "id": id,
@@ -749,13 +749,13 @@ fn validation_reports_bad_nested_fields_in_structurally_valid_profiles() {
 }
 
 /// A session with a profile applied, for the checks that look at the document.
-fn apply_session(id: &str, doc_type: &str) -> Session {
+pub(crate) fn apply_session(id: &str, doc_type: &str) -> Session {
     let mut s = law();
     run(&mut s, "law.profiles.apply", json!({"id": id, "doc": doc_type}));
     s
 }
 
-fn temp_dir(what: &str) -> PathBuf {
+pub(crate) fn temp_dir(what: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("wordcraft-law-{what}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a temp folder");

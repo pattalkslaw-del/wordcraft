@@ -54,6 +54,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("review.changes", "Reviewing Pane", "Review › Tracking", list_changes).pure(),
         CommandSpec::new("review.spelling", "Spelling & Grammar", "Review › Proofing", next_issue).key("F7 / Alt+F7").pure(),
         CommandSpec::new("review.issues", "Proofing Issues", "Review › Proofing", all_issues).pure(),
+        CommandSpec::new("review.lintFindings", "Document Lint", "Review › Proofing", lint_findings).pure(),
         CommandSpec::new("review.suggestions", "Spelling Suggestions", "Review › Proofing", suggestions).params(r#"{"pos"?: Pos}"#).pure(),
         CommandSpec::new("review.addToDictionary", "Add to Dictionary", "Review › Proofing", |s, v| {
             let w = match p::str(v, "word") {
@@ -831,8 +832,12 @@ fn next_issue(s: &mut Session, _: &Value) -> CmdResult {
     Ok(json!({"done": true}))
 }
 
+fn lint_findings(s: &mut Session, _: &Value) -> CmdResult {
+    Ok(Value::Array(s.lint_findings().to_vec()))
+}
+
 fn all_issues(s: &mut Session, _: &Value) -> CmdResult {
-    let mut out = Vec::new();
+    let mut out: Vec<Value> = s.lint_findings().to_vec();
     for path in s.doc.para_paths(StoryRef::Body) {
         for (a, b, i) in para_issues(s, StoryRef::Body, &path) {
             out.push(issue_json(s, &a, &b, &i));

@@ -80,6 +80,12 @@
       ],
       "checks": [
         {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
           "kind": "requiredSections",
           "ids": [
             "cover",
@@ -267,13 +273,57 @@
         {
           "kind": "wordLimit",
           "limit": 31000,
+          "excludeSections": [
+            "cover",
+            "tableOfContents",
+            "tableOfAuthorities",
+            "certificateOfCompliance",
+            "certificateOfService"
+          ],
           "source": "Mo. Sup. Ct. R. 84.04(b)(1)",
           "effective": "2025-01-01"
         },
         {
           "kind": "minFontSize",
           "pt": 13,
+          "font": "Times New Roman",
           "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minLineSpacing",
+          "spacing": 1.5,
+          "exceptStyles": [
+            "Caption",
+            "Heading",
+            "Block Quote",
+            "Signature",
+            "Certificate"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "requiredSections",
+          "ids": [
+            "cover",
+            "tableOfContents",
+            "tableOfAuthorities",
+            "jurisdictionalStatement",
+            "statementOfFacts",
+            "pointsReliedOn",
+            "argument",
+            "conclusion",
+            "certificateOfCompliance",
+            "certificateOfService"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.04(a)",
           "effective": "2025-01-01"
         },
         {
@@ -404,7 +454,37 @@
         {
           "kind": "minFontSize",
           "pt": 13,
+          "font": "Times New Roman",
           "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minLineSpacing",
+          "spacing": 1.5,
+          "exceptStyles": [
+            "Heading",
+            "Signature",
+            "Certificate"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "requiredSections",
+          "ids": [
+            "caption",
+            "relief",
+            "argument",
+            "conclusion",
+            "certificateOfService"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.06",
           "effective": "2025-01-01"
         }
       ],
@@ -447,6 +527,10 @@
           "name": "Caption",
           "basedOn": "Normal",
           "next": "Body",
+          "chr": {
+            "font": "Times New Roman",
+            "size": 13
+          },
           "para": {
             "lineSpacing": {
               "rule": "multiple",
@@ -543,6 +627,25 @@
         {
           "kind": "minFontSize",
           "pt": 13,
+          "font": "Times New Roman",
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minLineSpacing",
+          "spacing": 1.5,
+          "exceptStyles": [
+            "Caption",
+            "Heading",
+            "Block Quote",
+            "Signature"
+          ],
           "source": "Mo. Sup. Ct. R. 84.03",
           "effective": "2025-01-01"
         },
@@ -663,11 +766,55 @@
         {
           "kind": "wordLimit",
           "limit": 7750,
+          "excludeSections": [
+            "cover",
+            "certificateOfService"
+          ],
           "source": "Mo. Sup. Ct. R. 84.04(b)(1)",
           "effective": "2025-01-01"
         },
         {
+          "kind": "minFontSize",
+          "pt": 13,
+          "font": "Times New Roman",
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minLineSpacing",
+          "spacing": 1.5,
+          "exceptStyles": [
+            "Heading",
+            "Signature",
+            "Certificate"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "requiredSections",
+          "ids": [
+            "cover",
+            "argument",
+            "conclusion",
+            "certificateOfService"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.04(a)",
+          "effective": "2025-01-01"
+        },
+        {
           "kind": "noHyperlinks",
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "textSearchablePdf",
           "source": "Mo. Sup. Ct. R. 84.03",
           "effective": "2025-01-01"
         }
@@ -850,13 +997,57 @@
         {
           "kind": "wordLimit",
           "limit": 27900,
+          "excludeSections": [
+            "cover",
+            "tableOfContents",
+            "tableOfAuthorities",
+            "certificateOfCompliance",
+            "certificateOfService"
+          ],
           "source": "Mo. Sup. Ct. R. 84.04(b)(1)",
           "effective": "2025-01-01"
         },
         {
           "kind": "minFontSize",
           "pt": 13,
+          "font": "Times New Roman",
           "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "minLineSpacing",
+          "spacing": 1.5,
+          "exceptStyles": [
+            "Caption",
+            "Heading",
+            "Block Quote",
+            "Signature",
+            "Certificate"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "requiredSections",
+          "ids": [
+            "cover",
+            "tableOfContents",
+            "tableOfAuthorities",
+            "jurisdictionalStatement",
+            "statementOfFacts",
+            "pointsReliedOn",
+            "argument",
+            "conclusion",
+            "certificateOfCompliance",
+            "certificateOfService"
+          ],
+          "source": "Mo. Sup. Ct. R. 84.04(a)",
           "effective": "2025-01-01"
         },
         {

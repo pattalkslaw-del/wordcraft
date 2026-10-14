@@ -36,6 +36,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod apply;
+pub mod checks;
 pub mod cmd;
 pub mod profile;
 pub mod store;
@@ -57,8 +58,16 @@ pub fn install(session: &mut Session) -> usize {
     if !session.module_enabled(MODULE) {
         return 0;
     }
+    checks::register_document_hook();
+    // A host may open the file *before* it installs LawCraft (`Session::new(doc)`), so the
+    // document-loaded hook never runs for it. Restore the applied profile's export checks from
+    // the document's own metadata at installation, the same way `set_document` would.
+    checks::restore_export_registration(session);
     session.install_commands(specs())
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_checks;
