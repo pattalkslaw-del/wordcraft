@@ -161,6 +161,17 @@ fn other_document_variables_are_preserved_but_reserved_ones_are_consumed() {
 }
 
 #[test]
+fn section_prefix_survives_a_full_document_variable_list() {
+    // The reader caps the total number of document variables. A full ordinary list must not crowd
+    // the prefix out, or a document's page numbering is lost the next time it is opened.
+    let mut doc = doc_with_prefix("A");
+    doc.settings.doc_vars = (0..wordcraft_docx::MAX_DOC_VARS).map(|i| (format!("Var{i}"), "x".to_string())).collect();
+    let back = read(&write(&doc).expect("write")).expect("read");
+    assert_eq!(sect(&back).page_num_prefix.as_deref(), Some("A"), "the section prefix must survive a full variable list");
+    assert_eq!(back.settings.doc_vars.len(), wordcraft_docx::MAX_DOC_VARS - 1, "the ordinary variables fill only what the section prefix leaves");
+}
+
+#[test]
 fn legacy_pg_num_prefix_still_reads() {
     let body = r#"<w:p><w:pPr><w:sectPr><w:pgNumType w:start="1"/><w:pgNumPrefix w:val="A"/></w:sectPr></w:pPr></w:p>"#;
     let d = read(&docx(body)).expect("read legacy prefix");

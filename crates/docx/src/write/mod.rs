@@ -970,8 +970,16 @@ fn settings_xml(doc: &Document, footnotes: bool, endnotes: bool, template_rel: O
     // (the page-number prefix) ride here; any other document variables are preserved as read.
     let reserved = wordcraft_doc::section::PAGE_NUM_PREFIX_DOCVAR;
     let section_vars = section_prefix_vars(doc);
-    let saved: Vec<(&String, &String)> =
-        s.doc_vars.iter().filter(|(n, _)| !n.starts_with(reserved)).map(|(n, v)| (n, v)).take(MAX_DOC_VARS).collect();
+    // The reader stops at `MAX_DOC_VARS` total in file order, and the section prefixes are written
+    // after the saved variables: reserve one slot per prefix so a full saved list cannot crowd
+    // them past the reader's cap and silently lose the page numbering.
+    let saved: Vec<(&String, &String)> = s
+        .doc_vars
+        .iter()
+        .filter(|(n, _)| !n.starts_with(reserved))
+        .map(|(n, v)| (n, v))
+        .take(MAX_DOC_VARS.saturating_sub(section_vars.len()))
+        .collect();
     if !saved.is_empty() || !section_vars.is_empty() {
         w.open("w:docVars", &[]);
         for (name, val) in saved {

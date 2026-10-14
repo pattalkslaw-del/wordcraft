@@ -336,6 +336,11 @@ fn law_appendix_create_opens_a_numbered_appendix_with_toc() {
     let sect = section(&s.doc);
     assert_eq!(sect.page_num_prefix.as_deref(), Some("A"));
     assert_eq!(s.doc.plain_text(StoryRef::Part(sect.footers.default.expect("footer"))), "A1");
+    // The TOC is complete as created: the skeleton's own headings are listed with A-numbers,
+    // without a separate update command.
+    let body = s.doc.plain_text(StoryRef::Body);
+    assert!(body.contains("Appendix cover\tA1"), "the cover heading is in the created TOC: {body}");
+    assert!(body.contains("Exhibits\tA1"), "the exhibits heading is in the created TOC: {body}");
     run(&mut s, "caret.docEnd", json!({}));
     run(&mut s, "text.pageBreak", json!({}));
     run(&mut s, "text.insert", json!({"text": "Exhibit A"}));

@@ -113,6 +113,10 @@ fn write_skeleton(s: &mut Session, profile: &Profile, doc_type: &str) -> Result<
             run(s, "text.insert", json!({"text": "\r"}))?;
         }
     }
+    // The TOC is inserted before the sections below it, so its entries are only complete once the
+    // whole skeleton exists: refresh it here, the way Word builds a table as the document is made.
+    // A profile without a `contents` section has no TOC and this is a no-op.
+    run(s, "references.updateToc", json!({}))?;
     Ok(())
 }
 
