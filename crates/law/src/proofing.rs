@@ -1,19 +1,17 @@
 //! Legal spell-check supplement and confusion-pair proofing for LawCraft.
 
-use std::sync::OnceLock;
-
 use serde_json::{Value, json};
 use wordcraft_doc::{Document, Pos, StoryRef};
 use wordcraft_engine::{Session, lint::Finding};
+use wordcraft_proof::{Issue, IssueKind, ModuleEn, ProofLang};
 
 use crate::checks::findings_json;
-use wordcraft_proof::{Issue, IssueKind, ProofLang};
 
 const LEGAL_WORDS_TXT: &str = include_str!("../data/legal-words.txt");
 
 /// Every legal base form from [`LEGAL_WORDS_TXT`], sorted.
 pub fn legal_words() -> &'static [&'static str] {
-    static WORDS: OnceLock<Vec<&'static str>> = OnceLock::new();
+    static WORDS: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
     WORDS
         .get_or_init(|| {
             let mut v: Vec<&'static str> = LEGAL_WORDS_TXT.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
@@ -24,42 +22,33 @@ pub fn legal_words() -> &'static [&'static str] {
         .as_slice()
 }
 
-/// Hook LawCraft into WordCraft proofing (legal dictionary + confusion checks).
-pub fn install() {
-    wordcraft_proof::set_module_en_spelling(Some(legal_words()));
-    wordcraft_proof::set_module_en_grammar(Some(confusion_issues));
-}
-
-/// Drop LawCraft proofing hooks (module off or before a fresh [`crate::install`]).
-pub(crate) fn uninstall() {
-    wordcraft_proof::set_module_en_spelling(None);
-    wordcraft_proof::set_module_en_grammar(None);
+/// Per-session English proofing hooks for LawCraft (legal dictionary + confusion checks).
+pub fn module_hooks() -> ModuleEn {
+    ModuleEn::with_spelling(Some(legal_words())).with_grammar(Some(confusion_issues))
 }
 
 /// Confusion issues in one paragraph of English text (for proofing and [`confusion_findings`]).
 pub fn confusion_issues(text: &str) -> Vec<Issue> {
+    let tokens: Vec<(usize, usize, String)> =
+        wordcraft_proof::words(text).into_iter().filter_map(|(a, b)| text.get(a..b).map(|w| (a, b, w.to_lowercase()))).collect();
     let mut out = Vec::new();
-    for (a, b) in wordcraft_proof::words(text) {
-        let w = text.get(a..b).unwrap_or("");
-        let lower = w.to_lowercase();
-        let following = following_words(text, b, 6);
-        let preceding = preceding_words(text, a, 4);
+    for (idx, (a, b, lower)) in tokens.iter().enumerate() {
+        let surface = text.get(*a..*b).unwrap_or("");
         for rule in CONFUSION_RULES {
             if !lower.eq_ignore_ascii_case(rule.wrong) {
                 continue;
             }
-            let context_ok = (rule.following.is_empty() || words_contain_sequence(&following, rule.following))
-                && (rule.preceding.is_empty() || words_contain_sequence(&preceding, rule.preceding));
-            if context_ok {
-                out.push(Issue {
-                    start: a,
-                    end: b,
-                    kind: IssueKind::Grammar,
-                    message: rule.message.into(),
-                    suggestions: vec![capitalize_like(w, rule.right)],
-                    lang: ProofLang::En,
-                });
+            if !phrase_follows(&tokens, idx, text, rule.following) || !phrase_precedes(&tokens, idx, text, rule.preceding) {
+                continue;
             }
+            out.push(Issue {
+                start: *a,
+                end: *b,
+                kind: IssueKind::Grammar,
+                message: rule.message.into(),
+                suggestions: vec![capitalize_like(surface, rule.right)],
+                lang: ProofLang::En,
+            });
         }
     }
     out
@@ -100,9 +89,9 @@ struct ConfusionRule {
     wrong: &'static str,
     right: &'static str,
     message: &'static str,
-    /// When non-empty, every token must appear in order in the words after `wrong`.
+    /// When non-empty, the words immediately after `wrong` in the same sentence.
     following: &'static [&'static str],
-    /// When non-empty, every token must appear in order in the words before `wrong`.
+    /// When non-empty, the words immediately before `wrong` in the same sentence.
     preceding: &'static [&'static str],
 }
 
@@ -189,7 +178,7 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         wrong: "prescribe",
         right: "proscribe",
         message: "To forbid conduct by rule is to \"proscribe\" it, not \"prescribe\".",
-        following: &["conduct"],
+        following: &["such", "conduct"],
         preceding: &[],
     },
     ConfusionRule {
@@ -250,34 +239,42 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
     },
 ];
 
-fn preceding_words(text: &str, before: usize, max: usize) -> Vec<String> {
-    let head = text.get(..before).unwrap_or("");
-    let mut words: Vec<String> = wordcraft_proof::words(head).into_iter().filter_map(|(a, b)| head.get(a..b).map(|w| w.to_lowercase())).collect();
-    if words.len() > max {
-        words = words.split_off(words.len() - max);
-    }
-    words
+fn is_sentence_end(c: char) -> bool {
+    matches!(c, '.' | '!' | '?')
 }
 
-fn following_words(text: &str, from: usize, max: usize) -> Vec<String> {
-    let tail = text.get(from..).unwrap_or("");
-    wordcraft_proof::words(tail).into_iter().take(max).filter_map(|(a, b)| tail.get(a..b).map(|w| w.to_lowercase())).collect()
+fn sentence_start(text: &str, before: usize) -> usize {
+    text.get(..before).and_then(|head| head.rfind(is_sentence_end)).map(|i| i + 1).unwrap_or(0)
 }
 
-fn words_contain_sequence(haystack: &[String], needle: &[&str]) -> bool {
-    if needle.is_empty() {
+fn sentence_end(text: &str, after: usize) -> usize {
+    text.get(after..).and_then(|tail| tail.find(is_sentence_end)).map(|i| after + i).unwrap_or_else(|| text.len())
+}
+
+fn following_words_in_sentence<'a>(tokens: &'a [(usize, usize, String)], idx: usize, text: &str) -> Vec<&'a str> {
+    let end = sentence_end(text, tokens.get(idx).map(|t| t.1).unwrap_or(0));
+    tokens.iter().skip(idx + 1).take_while(|t| t.0 < end).map(|t| t.2.as_str()).collect()
+}
+
+fn preceding_words_in_sentence<'a>(tokens: &'a [(usize, usize, String)], idx: usize, text: &str) -> Vec<&'a str> {
+    let start = sentence_start(text, tokens.get(idx).map(|t| t.0).unwrap_or(0));
+    tokens.iter().take(idx).filter(|t| t.0 >= start).map(|t| t.2.as_str()).collect()
+}
+
+fn phrase_follows(tokens: &[(usize, usize, String)], idx: usize, text: &str, phrase: &[&str]) -> bool {
+    if phrase.is_empty() {
         return true;
     }
-    let mut i = 0;
-    for w in haystack {
-        if w == needle[i] {
-            i += 1;
-            if i == needle.len() {
-                return true;
-            }
-        }
+    let next = following_words_in_sentence(tokens, idx, text);
+    next.len() >= phrase.len() && next[..phrase.len()] == *phrase
+}
+
+fn phrase_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, phrase: &[&str]) -> bool {
+    if phrase.is_empty() {
+        return true;
     }
-    false
+    let prev = preceding_words_in_sentence(tokens, idx, text);
+    prev.len() >= phrase.len() && prev[prev.len() - phrase.len()..] == *phrase
 }
 
 fn capitalize_like(original: &str, replacement: &str) -> String {

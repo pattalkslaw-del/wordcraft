@@ -1,10 +1,12 @@
 //! Legal spelling supplement and confusion-pair proofing.
 
 use serde_json::json;
-use wordcraft_proof::{IssueKind, ProofLang, check_text_with, is_correct};
+use wordcraft_doc::Document;
+use wordcraft_engine::Session;
+use wordcraft_proof::{IssueKind, Options, ProofLang, check_text_with, is_correct_with_module};
 
 use crate::install;
-use crate::proofing::{confusion_issues, legal_words};
+use crate::proofing::{confusion_issues, legal_words, module_hooks};
 use crate::tests::{law, run};
 
 #[test]
@@ -16,20 +18,31 @@ fn legal_words_are_sorted_and_nonempty() {
 
 #[test]
 fn legal_terms_spell_check_depends_on_lawcraft() {
-    proofing_off();
-    assert!(!is_correct("rsmo"), "Moby does not include the RSMo abbreviation");
+    let opts = Options::default();
+    assert!(!is_correct_with_module("rsmo", &opts, wordcraft_proof::ModuleEn::default()));
     let mut s = law();
-    assert!(is_correct("rsmo"));
-    assert!(is_correct("tortfeasor"));
-    proofing_off();
-    assert!(!is_correct("rsmo"));
-    // A fresh install restores the supplement (commands stay registered).
+    assert!(is_correct_with_module("rsmo", &opts, s.module_en));
+    assert!(is_correct_with_module("tortfeasor", &opts, s.module_en));
+    s.module_en = wordcraft_proof::ModuleEn::default();
+    assert!(!is_correct_with_module("rsmo", &opts, s.module_en));
     assert_eq!(install(&mut s), 0);
-    assert!(is_correct("rsmo"));
+    assert!(is_correct_with_module("rsmo", &opts, s.module_en));
 }
 
-fn proofing_off() {
-    crate::proofing::uninstall();
+#[test]
+fn law_proofing_does_not_leak_between_sessions() {
+    let opts = Options::default();
+    let enabled = law();
+    let mut disabled = Session::new(Document::new());
+    assert!(!disabled.module_enabled(crate::MODULE));
+    assert_eq!(install(&mut disabled), 0);
+    assert!(is_correct_with_module("rsmo", &opts, enabled.module_en));
+    assert!(!is_correct_with_module("rsmo", &opts, disabled.module_en));
+    let text = "The statue of limitations has run.";
+    let on = check_text_with(text, &[(0..text.len(), ProofLang::En)], &opts, true, enabled.module_en);
+    assert!(on.iter().any(|i| i.message.contains("statute")));
+    let off = check_text_with(text, &[(0..text.len(), ProofLang::En)], &opts, true, disabled.module_en);
+    assert!(off.is_empty());
 }
 
 #[test]
@@ -52,9 +65,8 @@ fn confusion_check_command_finds_statute_statue() {
 
 #[test]
 fn confusion_issues_hook_into_review_proofing() {
-    let _s = law();
     let text = "The statue of limitations has run.";
-    let issues = check_text_with(text, &[(0..text.len(), ProofLang::En)], &Default::default(), true);
+    let issues = check_text_with(text, &[(0..text.len(), ProofLang::En)], &Options::default(), true, module_hooks());
     assert!(issues.iter().any(|i| i.kind == IssueKind::Grammar && i.message.contains("statute")));
 }
 
@@ -73,7 +85,9 @@ macro_rules! confusion_pair {
 confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.");
 confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.");
 confusion_pair!(counsel_council, "Attorney council for the defendant filed a brief.", "The city council met last night.");
+confusion_pair!(counsel_council_ordinance, "Attorney council for the defendant filed a brief.", "The city council voted for the ordinance.");
 confusion_pair!(affect_effect, "The affect of the ruling was clear.", "The new rule will affect the outcome.");
+confusion_pair!(affect_statute, "The affect of the ruling was clear.", "The rule will affect enforcement of the statute.");
 confusion_pair!(precedent_precedence, "This is binding precedence in our circuit.", "Federal law takes precedence over state law.");
 confusion_pair!(prescribe_proscribe, "The doctor proscribe medication for the patient.", "The regulation proscribe such conduct.");
 confusion_pair!(proscribe_prescribe, "The rule prescribe such conduct by counsel.", "The physician prescribe antibiotics.");
