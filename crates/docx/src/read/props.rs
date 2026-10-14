@@ -638,6 +638,14 @@ pub fn sectpr(e: &El) -> (SectionProps, Vec<HfRef>) {
                     s.page_num_format = NumFormat::from_ooxml(f);
                 }
             }
+            "w:pgNumPrefix" => {
+                if let Some(p) = k.attr("w:val") {
+                    let p = p.chars().take(16).collect::<String>();
+                    if !p.is_empty() {
+                        s.page_num_prefix = Some(p);
+                    }
+                }
+            }
             "w:lnNumType" => {
                 let mut l = LineNumbering::default();
                 if let Some(v) = k.attr("w:countBy").and_then(u32_of) {

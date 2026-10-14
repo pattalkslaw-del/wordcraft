@@ -35,6 +35,7 @@
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+mod appendix;
 mod apply;
 pub mod checks;
 pub mod cmd;
@@ -43,12 +44,17 @@ pub mod store;
 
 use wordcraft_engine::Session;
 
-pub use cmd::{set_profiles_dir, settings_dir, specs, store};
+pub use cmd::{set_profiles_dir, settings_dir, store};
 pub use profile::{Profile, SCHEMA};
 pub use store::LawError;
 
 /// The module id the settings use (`law.enabled`).
 pub const MODULE: &str = "law";
+
+/// Every `law.*` command spec (profiles, checks, appendix).
+pub fn specs() -> Vec<wordcraft_engine::CommandSpec> {
+    cmd::specs().into_iter().chain(appendix::specs()).collect()
+}
 
 /// Turn the module on for a session: installs the `law.*` commands when `law.enabled` is set in
 /// the editing preferences, and leaves the session alone when it isn't. A host calls this once,
@@ -63,7 +69,9 @@ pub fn install(session: &mut Session) -> usize {
     // document-loaded hook never runs for it. Restore the applied profile's export checks from
     // the document's own metadata at installation, the same way `set_document` would.
     checks::restore_export_registration(session);
-    session.install_commands(specs())
+    let n = specs().len();
+    session.install_commands(specs());
+    n
 }
 
 #[cfg(test)]

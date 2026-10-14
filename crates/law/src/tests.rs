@@ -259,15 +259,62 @@ fn missouri_appendix_pages_are_numbered_from_a1() {
     let s = apply_session(MISSOURI, "appendix");
     let sect = section(&s.doc);
     assert_eq!(sect.page_num_start, Some(1));
+    assert_eq!(sect.page_num_prefix.as_deref(), Some("A"));
     let footer = sect.footers.default.expect("a footer");
     let text = s.doc.plain_text(wordcraft_doc::StoryRef::Part(footer));
-    assert!(text.starts_with('A'), "appendix pages use an A prefix before the number: {text:?}");
+    assert_eq!(text, "A1", "appendix pages are numbered A1, A2…: {text:?}");
     let doc = roundtrip(&s);
     let sect = section(&doc);
     assert_eq!(sect.page_num_start, Some(1), "page numbering restarts at 1 in a saved .docx");
+    assert_eq!(sect.page_num_prefix.as_deref(), Some("A"), "the section prefix survives .docx");
     let footer = sect.footers.default.expect("a footer after round-trip");
     let text = doc.plain_text(wordcraft_doc::StoryRef::Part(footer));
-    assert!(text.starts_with('A'), "the A prefix survives round-trip: {text:?}");
+    assert_eq!(text, "A1", "the A prefix survives round-trip: {text:?}");
+}
+
+#[test]
+fn law_appendix_create_opens_a_numbered_appendix_with_toc() {
+    let mut s = apply_session(MISSOURI, "brief");
+    let created = run(&mut s, "law.appendix.create", json!({}));
+    assert_eq!(created["profile"], json!(MISSOURI));
+    assert_eq!(created["doc"], json!("appendix"));
+    assert_eq!(s.doc.custom_prop(crate::checks::PROP_DOC_TYPE), Some("appendix"));
+    let sect = section(&s.doc);
+    assert_eq!(sect.page_num_prefix.as_deref(), Some("A"));
+    assert_eq!(s.doc.plain_text(StoryRef::Part(sect.footers.default.expect("footer"))), "A1");
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "text.pageBreak", json!({}));
+    run(&mut s, "text.insert", json!({"text": "Exhibit A"}));
+    run(&mut s, "para.style", json!({"style": "Appendix Heading"}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "references.updateToc", json!({}));
+    let body = s.doc.plain_text(StoryRef::Body);
+    assert!(body.contains("Exhibit A"), "{body}");
+    assert!(body.contains("A2") || body.contains("A3"), "TOC lists appendix headings with A page numbers: {body}");
+    let findings = run(&mut s, "law.checks.run", json!({"store": false}));
+    assert!(findings["findings"].as_array().is_some_and(|f| f.is_empty()), "{findings}");
+}
+
+#[test]
+fn law_appendix_apply_restyles_the_open_document() {
+    let mut s = law();
+    run(&mut s, "law.appendix.apply", json!({"id": MISSOURI}));
+    assert_eq!(s.doc.custom_prop(crate::checks::PROP_DOC_TYPE), Some("appendix"));
+    assert_eq!(section(&s.doc).page_num_prefix.as_deref(), Some("A"));
+}
+
+#[test]
+fn federal_addendum_pages_use_add_prefix() {
+    let s = apply_session(FEDERAL, "addendum");
+    let sect = section(&s.doc);
+    assert_eq!(sect.page_num_prefix.as_deref(), Some("Add. "));
+    let text = s.doc.plain_text(StoryRef::Part(sect.footers.default.expect("footer")));
+    assert_eq!(text, "Add. 1", "federal addendum numbering: {text:?}");
+    let doc = roundtrip(&s);
+    let sect = section(&doc);
+    assert_eq!(sect.page_num_prefix.as_deref(), Some("Add. "));
+    let text = doc.plain_text(StoryRef::Part(sect.footers.default.expect("footer")));
+    assert_eq!(text, "Add. 1");
 }
 
 #[test]

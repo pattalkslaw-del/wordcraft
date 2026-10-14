@@ -1285,6 +1285,9 @@ fn sectpr_body(w: &mut W, s: &SectionProps) {
             let refs: Vec<(&str, &str)> = a.iter().map(|(k, v)| (*k, v.as_str())).collect();
             w.empty("w:pgNumType", &refs);
         }
+        if let Some(prefix) = s.page_num_prefix.as_deref().filter(|p| !p.is_empty()) {
+            w.empty("w:pgNumPrefix", &[("w:val", prefix)]);
+        }
         let c = &s.columns;
         let count = c.count.clamp(1, 45);
         let mut ca = vec![("w:space", twips(c.space.max(0.0))), ("w:num", n(count as i64))];

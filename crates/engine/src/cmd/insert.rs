@@ -460,7 +460,8 @@ fn page_number(s: &mut Session, v: &Value) -> CmdResult {
         _ => Align::Center,
     };
     let x_of_y = p::str(v, "format").is_some_and(|f| f.contains("of"));
-    let prefix = p::str(v, "prefix").unwrap_or("");
+    let prefix_param = p::str(v, "prefix");
+    let prefix = prefix_param.unwrap_or("");
     if prefix.chars().count() > 16 {
         return Err(CmdError::Params("`prefix` is at most 16 characters".into()));
     }
@@ -502,6 +503,11 @@ fn page_number(s: &mut Session, v: &Value) -> CmdResult {
         para.insert_object(prefix.len(), field, &CharProps::default())?;
     }
     s.doc.set_story(StoryRef::Part(id), vec![para_block(para)])?;
+    if let Some(pfx) = prefix_param {
+        super::page::with_sect(s, |sect| {
+            sect.page_num_prefix = if pfx.is_empty() { None } else { Some(pfx.to_string()) };
+        })?;
+    }
     Ok(json!({"story": id}))
 }
 

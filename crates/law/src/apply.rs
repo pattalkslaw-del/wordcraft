@@ -103,6 +103,9 @@ fn page_numbers(s: &mut Session, pn: &PageNumbersSpec, applied: &mut Vec<String>
     if let Some(start) = pn.start {
         fmt["start"] = json!(start);
     }
+    if let Some(prefix) = &pn.prefix {
+        fmt["prefix"] = json!(prefix);
+    }
     if !fmt.as_object().is_some_and(|o| o.is_empty()) {
         run(s, "layout.pageNumberFormat", fmt)?;
         applied.push("layout.pageNumberFormat".into());

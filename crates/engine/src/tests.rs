@@ -1892,6 +1892,22 @@ fn imported_range_toc_is_refreshed_in_place() {
 }
 
 #[test]
+fn toc_page_numbers_use_the_section_page_prefix() {
+    let mut s = s();
+    run(&mut s, "insert.pageNumber", json!({"position": "bottom", "prefix": "A"}));
+    run(&mut s, "layout.pageNumberFormat", json!({"start": 1}));
+    run(&mut s, "references.toc", json!({}));
+    run(&mut s, "caret.docEnd", json!({}));
+    run(&mut s, "text.pageBreak", json!({}));
+    run(&mut s, "text.insert", json!({"text": "Exhibit"}));
+    run(&mut s, "para.heading1", json!({}));
+    run(&mut s, "text.newParagraph", json!({}));
+    run(&mut s, "references.updateToc", json!({}));
+    let t = text(&s);
+    assert!(t.contains("Exhibit\tA2"), "TOC page numbers include the section prefix: {t}");
+}
+
+#[test]
 fn toc_page_numbers_follow_headings() {
     let mut s = s();
     run(&mut s, "references.toc", json!({}));
