@@ -60,8 +60,13 @@ pub fn set_enabled(app: &mut WordApp, on: bool) {
 }
 
 fn apply_module_toggle(app: &mut WordApp, on: bool) {
+    // `file.options` turning LawCraft off goes through [`guard_module_change`], which commits the
+    // pane's pending edits first and cancels the change when they cannot be saved. So on failure
+    // the module stays on, the pane stays visible and the inline error stays put.
     if let Err(e) = app.run("file.options", json!({"modules": {MODULE: on}})) {
-        app.status(e);
+        if app.law.validation.is_none() {
+            app.law.validation = Some(e);
+        }
         return;
     }
     if on {
@@ -69,11 +74,24 @@ fn apply_module_toggle(app: &mut WordApp, on: bool) {
         sync_module(app);
         app.ui.options_pane = "law".into();
     } else if app.ui.options_pane == "law" {
-        if !commit_pending_drafts(app) {
-            return;
-        }
         app.ui.options_pane = "addins".into();
     }
+}
+
+/// Whether `id`/`params` turns the LawCraft module off (the one navigation that hides the pane).
+fn disables_law(id: &str, params: &Value) -> bool {
+    id == "file.options" && params.get("modules").and_then(Value::as_object).and_then(|m| m.get(MODULE)).and_then(Value::as_bool) == Some(false)
+}
+
+/// Before a `file.options` call that disables LawCraft, commit every pending draft and refuse the
+/// change (returning the error) when any cannot be saved. Both entry points — the Add-ins checkbox
+/// and a direct `file.options` (CLI, control channel, MCP) — pass through here, so a failed save
+/// never hides the pane and the edits are never lost.
+pub(crate) fn guard_module_change(app: &mut WordApp, id: &str, params: &Value) -> Result<(), String> {
+    if !disables_law(id, params) || commit_pending_drafts(app) {
+        return Ok(());
+    }
+    Err(app.law.validation.clone().unwrap_or_else(|| "pending LawCraft edits could not be saved".to_string()))
 }
 
 /// After selecting or importing a profile, keep `doc_type` on a key that exists in `docs`.

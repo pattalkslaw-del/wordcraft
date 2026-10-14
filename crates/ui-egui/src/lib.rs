@@ -645,6 +645,10 @@ impl WordApp {
     /// Run a command for a script or an agent (control channel, MCP bridge): never asks first.
     /// UI-level commands (`ui.*`) are handled here, the rest by the engine.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // Turning LawCraft off hides its settings pane. Commit the pane's pending edits first and
+        // cancel the change when they cannot be saved, so the error stays visible. This is the one
+        // choke point for both the Add-ins checkbox and a direct `file.options`.
+        law::guard_module_change(self, id, &params)?;
         // A pending Change Picture only survives until the next action (#147).
         if !matches!(id, "ui.changePicture" | "picture.change" | "insert.picture") {
             self.change_picture_target = None;

@@ -71,6 +71,29 @@ fn answer(shown: &Shown, picked: Option<&str>) {
     tx.send(Ok(picked.map(str::to_string))).unwrap();
 }
 
+/// Make a profile file unwritable, so the next `law.profiles.update` fails (a forced save error).
+fn make_read_only(path: &std::path::Path) {
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(path, perms).unwrap();
+}
+
+/// Restore write access on every platform: on Unix `set_readonly(true)` clears the mode's write
+/// bits, so clear `0o644` back; elsewhere `set_readonly(false)` is the matching inverse.
+fn make_writable(path: &std::path::Path) {
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o644);
+    }
+    #[cfg(not(unix))]
+    {
+        perms.set_readonly(false);
+    }
+    std::fs::set_permissions(path, perms).unwrap();
+}
+
 fn open_law_options(a: &mut WordApp) {
     a.run("file.options", json!({"pane": "law"})).unwrap();
     assert!(a.ui.backstage);
@@ -814,20 +837,12 @@ fn failed_section_name_update_keeps_draft_for_retry() {
     h.state_mut().law.check_source_drafts.insert(draft_key.clone(), "Saved after retry".into());
 
     let profile_file = store_dir.join(format!("{}.json", id));
-    let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
-    perms.set_readonly(true);
-    std::fs::set_permissions(&profile_file, perms).unwrap();
+    make_read_only(&profile_file);
 
     h.get_by_label("Add check").click();
     h.run_steps(4);
     assert!(h.state().law.validation.is_some(), "a failed flush keeps the error visible");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
-        perms.set_mode(0o644);
-        std::fs::set_permissions(&profile_file, perms).unwrap();
-    }
+    make_writable(&profile_file);
 
     h.get_by_label("General").click();
     h.run_steps(4);
@@ -920,22 +935,14 @@ fn leaving_law_options_cancels_when_pending_drafts_fail_to_commit() {
     }
 
     let profile_file = store_dir.join(format!("{}.json", id));
-    let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
-    perms.set_readonly(true);
-    std::fs::set_permissions(&profile_file, perms).unwrap();
+    make_read_only(&profile_file);
 
     h.get_by_label("General").click();
     h.run_steps(4);
     assert_eq!(h.state().ui.options_pane, "law", "navigation away from LawCraft is cancelled when flush fails");
     assert!(h.state().law.validation.is_some(), "the flush error is shown inline");
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
-        perms.set_mode(0o644);
-        std::fs::set_permissions(&profile_file, perms).unwrap();
-    }
+    make_writable(&profile_file);
     h.get_by_label("General").click();
     h.run_steps(4);
     assert_eq!(h.state().ui.options_pane, "general", "navigation succeeds after the draft saves");
@@ -984,9 +991,7 @@ fn import_is_cancelled_when_pending_drafts_fail_to_commit() {
     }
 
     let profile_file = store_dir.join(format!("{}.json", id));
-    let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
-    perms.set_readonly(true);
-    std::fs::set_permissions(&profile_file, perms).unwrap();
+    make_read_only(&profile_file);
 
     h.get_by_label("Import…").click();
     h.run_steps(2);
@@ -995,13 +1000,7 @@ fn import_is_cancelled_when_pending_drafts_fail_to_commit() {
     let still = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
     assert_eq!(still["docs"]["brief"]["sections"][0]["name"], json!("Cover"), "the unsaved draft was not written");
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
-        perms.set_mode(0o644);
-        std::fs::set_permissions(&profile_file, perms).unwrap();
-    }
+    make_writable(&profile_file);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1048,4 +1047,115 @@ fn approve_profile_in_ui_and_block_automation() {
     let Outcome::Done(v) = handle(h.state_mut(), &ctx, &req) else { panic!("screenshot") };
     assert_eq!(v["ok"], false);
     assert!(v["error"].as_str().unwrap_or("").contains("outside automation"));
+}
+
+#[test]
+fn turning_lawcraft_off_from_addins_commits_drafts_first_and_cancels_on_failure() {
+    let (_lock, store_dir) = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-disable-addins");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Disable addins test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "OK"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("1.").focus();
+    h.run_steps(2);
+    for ch in " Page".chars() {
+        h.get_by_label("1.").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+
+    // Stand on the Add-ins pane (where the module switch lives) and make the profile unwritable.
+    h.state_mut().ui.options_pane = "addins".into();
+    h.run_steps(4);
+    let profile_file = store_dir.join(format!("{}.json", id));
+    make_read_only(&profile_file);
+    h.get_by_label("LawCraft (court profiles and legal formatting)").click();
+    h.run_steps(4);
+
+    assert!(h.state().session.module_enabled(MODULE), "a failed save leaves the module on");
+    assert!(h.state().law.validation.is_some(), "the save error is shown inline");
+
+    make_writable(&profile_file);
+    h.get_by_label("LawCraft (court profiles and legal formatting)").click();
+    h.run_steps(4);
+    assert!(!h.state().session.module_enabled(MODULE), "the module turns off once the draft saves");
+}
+
+#[test]
+fn file_options_disabling_lawcraft_commits_drafts_first_and_cancels_on_failure() {
+    let (_lock, store_dir) = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-disable-direct");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Disable direct test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "OK"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("1.").focus();
+    h.run_steps(2);
+    for ch in " Page".chars() {
+        h.get_by_label("1.").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+
+    let profile_file = store_dir.join(format!("{}.json", id));
+    make_read_only(&profile_file);
+    let r = h.state_mut().run("file.options", json!({"modules": {"law": false}}));
+    h.run_steps(4);
+    assert!(r.is_err(), "disabling is cancelled when the pending draft cannot be saved: {r:?}");
+    assert!(h.state().session.module_enabled(MODULE), "the module stays on");
+    assert_eq!(h.state().ui.options_pane, "law", "the LawCraft pane stays visible");
+    assert!(h.state().law.validation.is_some(), "the save error is shown inline");
+
+    let shown = h.get_by_label("1.").value().unwrap_or_default();
+    assert_eq!(shown, "Cover Page", "the failed disable keeps the draft in the field");
+    let still = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    assert_eq!(still["docs"]["brief"]["sections"][0]["name"], json!("Cover"), "the unsaved draft was not written");
+
+    make_writable(&profile_file);
+    h.state_mut().run("file.options", json!({"modules": {"law": false}})).unwrap();
+    h.run_steps(4);
+    assert!(!h.state().session.module_enabled(MODULE), "the module turns off once the draft saves");
+    let saved = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    assert_eq!(saved["docs"]["brief"]["sections"][0]["name"], json!("Cover Page"), "the retried draft persisted");
 }
