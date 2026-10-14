@@ -876,6 +876,17 @@ impl WordApp {
         false
     }
 
+    /// A finished update asked to quit. Run the normal close path (unlike a user quit, it hasn't
+    /// been confirmed against the document as it is now), so a document edited after the update
+    /// worker finished still gets the save prompt. Returns true once the close may begin; false
+    /// when the document is dirty and the prompt was shown (or nothing was pending).
+    pub fn update_quit_requested(&mut self) -> bool {
+        if !std::mem::take(&mut self.update.quit_pending) {
+            return false;
+        }
+        self.close_requested()
+    }
+
     fn after_command(&mut self, id: &str) {
         options::sync(self);
         self.canvas.caret_visible_since = now_ms();

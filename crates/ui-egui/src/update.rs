@@ -18,6 +18,9 @@ pub struct UpdateCheck {
     started: bool,
     pub notice: Option<Notice>,
     worker: Option<PendingWorker>,
+    /// A successful update asked to quit. The host runs the usual close path for it, so a
+    /// document edited after the worker finished still gets the save prompt (#15).
+    pub quit_pending: bool,
 }
 
 struct PendingWorker {
@@ -202,14 +205,19 @@ fn apply_worker_result(app: &mut WordApp, done: WorkerDone, manual: bool, apply:
     app.session.update_prefs.last_check_unix = done.prefs.last_check_unix;
     app.ui.update_prefs.last_check_unix = done.prefs.last_check_unix;
     let mut ui_requests = done.ui_requests;
-    if apply && app.session.dirty {
+    if apply {
+        // The installer's quit is not confirmed against the document as it is now: drop the
+        // direct quit request and let the host's close path ask about edits made after the
+        // worker finished. `apply_install_result` reports when the close may go ahead.
         ui_requests.retain(|r| r.get("quit").and_then(Value::as_bool) != Some(true));
     }
     app.apply_ui_requests(ui_requests);
     match done.result {
         Ok(v) => {
             if apply {
-                let _ = apply_install_result(app, Ok(v.clone()));
+                if apply_install_result(app, Ok(v.clone())) {
+                    app.update.quit_pending = true;
+                }
                 Ok(v)
             } else if manual {
                 crate::backstage::report_update_check(app, Ok(v.clone()));
@@ -246,7 +254,9 @@ fn apply_install_result(app: &mut WordApp, v: Result<Value, String>) -> bool {
                 app.status(tl!("Save or discard unsaved changes before updating."));
                 false
             } else {
-                app.quit_requested
+                // Only a newer release that installed cleanly asks to quit; a re-check that now
+                // finds the current version must not close the window.
+                v.get("status").and_then(Value::as_str) == Some("available")
             }
         }
         Err(e) => {
@@ -394,6 +404,53 @@ mod tests {
         let done = WorkerDone { result: Ok(json!({"status": "available"})), prefs: UpdatePrefs::default(), ui_requests: vec![json!({"quit": true})] };
         let _ = apply_worker_result(&mut app, done, false, true);
         assert!(!app.quit_requested, "edits after the save prompt must block quitting");
+        assert!(!app.update.quit_pending, "and no quit is left pending");
+    }
+
+    /// A successful update sets the quit, but editing remains possible before the host acts on
+    /// it: those edits must still be protected by the save prompt (#15).
+    #[test]
+    fn update_quit_after_a_new_edit_still_prompts_and_cancel_keeps_the_document() {
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        let done = WorkerDone { result: Ok(json!({"status": "available"})), prefs: UpdatePrefs::default(), ui_requests: vec![json!({"quit": true})] };
+        let _ = apply_worker_result(&mut app, done, false, true);
+        assert!(app.update.quit_pending, "a successful update asks to quit");
+        assert!(!app.quit_requested, "the quit goes through the close path, not straight to quit");
+
+        // The user types before the host acts on the quit.
+        app.session.dirty = true;
+        assert!(!app.update_quit_requested(), "unsaved edits block the close");
+        assert!(matches!(app.dialog, Some(crate::dialogs::Dialog::SaveChanges { .. })), "the save prompt is shown");
+
+        // Cancelling keeps the document open; nothing is lost.
+        app.run("ui.saveChanges", json!({"answer": "cancel"})).unwrap();
+        assert!(!app.quit_requested, "cancelling keeps the document open");
+        assert!(!app.update.quit_pending, "the pending update quit was consumed");
+    }
+
+    /// A clean document quits once the update finishes, through the same path.
+    #[test]
+    fn update_quit_on_a_clean_document_closes() {
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        let done = WorkerDone { result: Ok(json!({"status": "available"})), prefs: UpdatePrefs::default(), ui_requests: vec![json!({"quit": true})] };
+        let _ = apply_worker_result(&mut app, done, false, true);
+        assert!(app.update_quit_requested(), "a clean document may close");
+        assert!(!app.update.quit_pending, "the pending quit was consumed");
+        // The host asks the window to close; the next frame's close path allows it.
+        assert!(app.close_requested(), "the close goes ahead");
+        assert!(!app.quit_requested, "no user quit was recorded");
+    }
+
+    /// A re-check that finds no newer release (or errors) must not quit.
+    #[test]
+    fn update_result_without_a_handoff_does_not_quit() {
+        for result in [json!({"status": "current"}), json!({"status": "throttled"}), json!({"status": "error", "error": "x"})] {
+            let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+            let done = WorkerDone { result: Ok(result.clone()), prefs: UpdatePrefs::default(), ui_requests: vec![json!({"quit": true})] };
+            let _ = apply_worker_result(&mut app, done, false, true);
+            assert!(!app.update.quit_pending, "{result} must not quit");
+            assert!(!app.quit_requested, "{result} must not quit");
+        }
     }
 
     #[test]

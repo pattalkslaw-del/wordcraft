@@ -54,6 +54,17 @@ impl eframe::App for App {
         }
         // The window's close button: with unsaved changes, ask first (`WordApp::close_requested`).
         let closing = ctx.input(|i| i.viewport().close_requested());
+        // A finished update asks to quit through the same path, so a document edited after the
+        // update worker finished is still checked for unsaved changes before the window closes.
+        // Asking to close (rather than acting on the quit now) leaves the next frame's close
+        // handling free to see any edit made after this check.
+        if self.0.update.quit_pending {
+            if !self.0.update_quit_requested() {
+                return;
+            }
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
         if closing && !self.0.close_requested() {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         } else if (closing || self.0.quit_requested) && !self.0.printing.busy() && !wordcraft_ui_egui::update::worker_busy(&self.0) {
