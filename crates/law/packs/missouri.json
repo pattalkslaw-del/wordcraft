@@ -9,7 +9,8 @@
       "id": "moCaseReporter",
       "kind": "case",
       "source": "Show Me Citations (reporter spacing)",
-      "detect": "\\b\\d+\\s+S\\.\\s+W\\.\\s+(?:2d|3d)\\b",
+      "detect": "\\b\\d+\\s+S\\.(?:\\s*W\\.)+\\s*(?:2d|3d)\\b",
+      "valid": "^\\d+\\s+S\\.W\\.(?:2d|3d)$",
       "message": "Missouri case reporters use tight spacing: S.W.2d or S.W.3d (not S.W. 2d)."
     },
     {
@@ -23,8 +24,17 @@
       "id": "moCaseParenthetical",
       "kind": "case",
       "source": "Show Me Citations (parenthetical)",
-      "detect": "\\bv\\.\\s+[^,]+,\\s*\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+(?:\\s*$|\\s+[^(])",
+      "detect": "\\b[A-Z][\\w.'\\s-]{0,80}\\s+v\\.\\s+[\\w.'\\s-]{0,80},\\s*\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+\\b",
+      "extendTail": true,
+      "valid": "^[\\w.'\\s,-]+,\\s*\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+(?:,\\s*\\d+)?\\s+\\(\\s*Mo\\.\\s+(?:banc|App\\.\\s+(?:E\\.D\\.|W\\.D\\.|S\\.D\\.))\\s+\\d{4}\\s*\\)$",
       "message": "A Missouri case citation with a S.W. reporter needs a court and year parenthetical, e.g. (Mo. banc 1978)."
+    },
+    {
+      "id": "moPinCite",
+      "kind": "case",
+      "source": "Show Me Citations (pin cite)",
+      "detect": "\\bS\\.W\\.(?:2d|3d)\\s+\\d+,(?:\\d+|\\s*[^\\d\\s])",
+      "message": "Pin cites follow the first page with a comma and space, e.g. 679, 680."
     },
     {
       "id": "moBancCaps",
@@ -32,6 +42,13 @@
       "source": "Show Me Citations (court abbreviations)",
       "detect": "\\(Mo\\.\\s+Banc\\s+\\d{4}\\)",
       "message": "Use lowercase banc: (Mo. banc 1978), not Mo. Banc."
+    },
+    {
+      "id": "moBancMissingYear",
+      "kind": "case",
+      "source": "Show Me Citations (parenthetical)",
+      "detect": "\\(\\s*Mo\\.\\s+banc\\s*\\)",
+      "message": "The court parenthetical needs a four-digit year, e.g. (Mo. banc 1978)."
     },
     {
       "id": "moAppDistrict",
@@ -51,8 +68,8 @@
       "id": "moStatuteForm",
       "kind": "statute",
       "source": "Show Me Citations (statutes)",
-      "detect": "\\b(?:Section|Sec\\.|§)\\s*\\d+\\.\\d+[^,\\s]*\\s+RSMo\\b",
-      "valid": "^(?:Section|§)\\s*\\d+\\.\\d+(?:,\\s*RSMo(?:\\s+\\d{4})?|(?:\\s+RSMo(?:\\s+\\d{4})?))$",
+      "detect": "\\b(?:Section|Sec\\.|§)\\s*\\d+\\.\\d+(?:\\s*,\\s*|\\s+)RSMo\\b",
+      "valid": "^(?:Section|§)\\s*\\d+\\.\\d+(?:,\\s*RSMo(?:\\s+\\d{4})?|\\s+RSMo(?:\\s+\\d{4})?)$",
       "message": "Statute citations use Section or § with the RSMo year when given, e.g. Section 537.080, RSMo 2016 or § 537.080 RSMo."
     },
     {
@@ -62,6 +79,14 @@
       "detect": "\\bRule\\s+\\d+\\.\\d+(?:\\([a-z]\\))?",
       "valid": "^Rule\\s+\\d{2}\\.\\d{2}(?:\\([a-z]\\))?$",
       "message": "Supreme Court rule citations use Rule with two-part numbers, e.g. Rule 84.04(d)."
+    },
+    {
+      "id": "moRecordCite",
+      "kind": "record",
+      "source": "Show Me Citations (record citations)",
+      "detect": "\\((?:R\\.|Rec\\.|Tr\\.|App\\.|J\\.A\\.)(?:\\s+at)?\\s+\\d+\\)",
+      "valid": "^\\((?:R\\.|Tr\\.|App\\.)\\s+at\\s+\\d+\\)|^\\(J\\.A\\.\\s+\\d+\\)$",
+      "message": "Record citations use (R. at 12), (Tr. at 3), (App. at 5), or (J.A. 12)."
     }
   ]
 }

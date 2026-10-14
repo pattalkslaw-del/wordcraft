@@ -9,16 +9,25 @@
       "id": "usReporter",
       "kind": "case",
       "source": "Bluebook R. 10.4 (U.S. Reports)",
-      "detect": "\\b\\d+\\s+U\\.S\\.\\s+\\d+",
-      "valid": "^\\d+\\s+U\\.S\\.\\s+\\d+(?:\\s*,\\s*\\d+)?(?:\\s*\\([^)]+\\))?$",
+      "detect": "\\b\\d+\\s+U\\.\\s*S\\.\\s+\\d+\\b",
+      "extendTail": true,
+      "valid": "^\\d+\\s+U\\.\\s*S\\.\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*\\d{4}[^)]*\\)$",
       "message": "U.S. Reports citations use U.S. with periods and usually include a year parenthetical."
     },
     {
       "id": "sCtReporter",
       "kind": "case",
       "source": "Bluebook R. 10.4 (Supreme Court Reporter)",
-      "detect": "\\b\\d+\\s+S\\.\\s*Ct\\.\\s+\\d+",
-      "valid": "^\\d+\\s+S\\.\\s*Ct\\.\\s+\\d+(?:\\s*,\\s*\\d+)?(?:\\s*\\([^)]+\\))?$",
+      "detect": "\\b\\d+\\s+S\\.\\s*Ct\\.\\s+\\d+\\b",
+      "extendTail": true,
+      "valid": "^\\d+\\s+S\\.\\s+Ct\\.\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*\\d{4}[^)]*\\)$",
+      "message": "Supreme Court Reporter citations use S. Ct. with a space after S. and a year parenthetical."
+    },
+    {
+      "id": "sCtReporterTight",
+      "kind": "case",
+      "source": "Bluebook R. 10.4 (Supreme Court Reporter)",
+      "detect": "\\b\\d+\\s+S\\.Ct\\.\\s+\\d+\\b",
       "message": "Supreme Court Reporter citations use S. Ct. with a space after S."
     },
     {
@@ -29,10 +38,19 @@
       "message": "Use F.2d, F.3d, or F.4th (with a period after F)."
     },
     {
+      "id": "federalCirMissingYear",
+      "kind": "case",
+      "source": "Bluebook R. 10.4 (court parenthetical)",
+      "detect": "\\(\\s*\\d{1,2}(?:th|nd|rd|st)?\\s+Cir\\.\\s*\\)",
+      "message": "The court parenthetical needs a four-digit year, e.g. (8th Cir. 2009)."
+    },
+    {
       "id": "federalCourtParen",
       "kind": "case",
       "source": "Bluebook R. 10.4 (court parenthetical)",
-      "detect": "\\b\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+(?:\\s*$|\\s+[^(])",
+      "detect": "\\b\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+\\b",
+      "extendTail": true,
+      "valid": "^\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*\\d{4}[^)]*\\)$",
       "message": "Federal appellate and district reporter citations need a court parenthetical with the year, e.g. (8th Cir. 2009)."
     },
     {
@@ -58,6 +76,14 @@
       "detect": "\\bFed\\.?\\s*R\\.?\\s*Civ\\.?\\s*P\\.?\\s+\\d+(?:\\([a-z0-9]+\\))*",
       "valid": "^Fed\\.\\s+R\\.\\s+Civ\\.\\s+P\\.\\s+\\d+(?:\\([a-z0-9]+\\))*$",
       "message": "Federal Rules of Civil Procedure: Fed. R. Civ. P. 12(b)(6)."
+    },
+    {
+      "id": "federalRecordCite",
+      "kind": "record",
+      "source": "Bluebook R. 10.9 (record citations)",
+      "detect": "\\((?:R\\.|Rec\\.|Tr\\.|App\\.|J\\.A\\.)(?:\\s+at)?\\s+\\d+\\)",
+      "valid": "^\\((?:R\\.|Tr\\.|App\\.)\\s+at\\s+\\d+\\)|^\\(J\\.A\\.\\s+\\d+\\)$",
+      "message": "Record citations use (R. at 12), (Tr. at 3), (App. at 5), or (J.A. 12)."
     }
   ]
 }

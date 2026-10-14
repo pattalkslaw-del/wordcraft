@@ -26,10 +26,13 @@ fn missouri_good_citations_have_no_findings() {
     let mut s = law();
     for cite in [
         "Thummel v. King, 570 S.W.2d 679 (Mo. banc 1978)",
+        "Thummel v. King, 570 S.W.2d 679, 680 (Mo. banc 1978)",
         "See also (Mo. App. E.D. 2020) and (Mo. App. W.D. 2019) and (Mo. App. S.D. 2021)",
         "Section 537.080, RSMo 2016",
         "§ 537.080 RSMo",
         "Rule 84.04(d)",
+        "(R. at 42)",
+        "(J.A. 12)",
     ] {
         insert(&mut s, cite);
         insert(&mut s, "\r");
@@ -40,13 +43,18 @@ fn missouri_good_citations_have_no_findings() {
 
 #[test]
 fn missouri_bad_citations_are_reported() {
-    let cases: [(&str, &str); 6] = [
+    let cases: [(&str, &str); 11] = [
+        ("Thummel v. King, 570 S.W. 2d 679 (Mo. banc 1978)", "moCaseReporter"),
         ("Thummel v. King, 570 S. W. 2d 679 (Mo. banc 1978)", "moCaseReporter"),
         ("Thummel v. King, 570 SW2d 679 (Mo. banc 1978)", "moCaseReporterWrong"),
         ("Thummel v. King, 570 S.W.2d 679", "moCaseParenthetical"),
+        ("Thummel v. King, 570 S.W.2d 679, 680", "moCaseParenthetical"),
+        ("Thummel v. King, 570 S.W.2d 679,680 (Mo. banc 1978)", "moPinCite"),
         ("Thummel v. King, 570 S.W.2d 679 (Mo. Banc 1978)", "moBancCaps"),
+        ("Thummel v. King, 570 S.W.2d 679 (Mo. banc)", "moBancMissingYear"),
         ("Thummel v. King, 570 S.W.2d 679 (Mo. App. 2020)", "moAppDistrict"),
         ("Sec. 537.080 RSMo", "moStatuteForm"),
+        ("(R. 42)", "moRecordCite"),
     ];
     for (cite, rule) in cases {
         let mut one = law();
@@ -62,11 +70,20 @@ fn federal_good_citations_have_no_findings() {
     for cite in [
         "Brown v. Board, 347 U.S. 483 (1954)",
         "Roe v. Wade, 410 U.S. 113 (1973)",
+        "Miranda v. Arizona, 384 U.S. 436, 444 (1966)",
+        "Obergefell v. Hodges, 576 U.S. 644, 675 (2015)",
+        "United States v. Nixon, 418 U.S. 683, 713 (1974)",
         "Smith v. Jones, 567 F.3d 890 (8th Cir. 2009)",
+        "Smith v. Jones, 567 F.3d 890, 891 (8th Cir. 2009)",
+        "Old case, 123 F.2d 456 (8th Cir. 1941)",
+        "Recent case, 99 F.4th 100 (D.C. Cir. 2024)",
         "Doe v. Roe, 123 F. Supp. 2d 456 (E.D. Mo. 2005)",
+        "Doe v. Roe, 200 F. Supp. 3d 789 (S.D.N.Y. 2016)",
         "42 U.S.C. § 1983",
         "Fed. R. App. P. 32(a)",
         "Fed. R. Civ. P. 12(b)(6)",
+        "(R. at 12)",
+        "(Tr. at 3)",
     ] {
         insert(&mut s, cite);
         insert(&mut s, "\r");
@@ -77,12 +94,18 @@ fn federal_good_citations_have_no_findings() {
 
 #[test]
 fn federal_bad_citations_are_reported() {
-    let cases: [(&str, &str); 5] = [
+    let cases: [(&str, &str); 11] = [
+        ("Brown v. Board, 347 U.S. 483", "usReporter"),
+        ("Roe v. Wade, 410 S.Ct. 113 (1973)", "sCtReporterTight"),
+        ("Roe v. Wade, 410 S. Ct. 113", "sCtReporter"),
         ("Smith v. Jones, 567 F3d 890 (8th Cir. 2009)", "federalReporterWrong"),
         ("Smith v. Jones, 567 F.3d 890", "federalCourtParen"),
+        ("Smith v. Jones, 567 F.3d 890, 891", "federalCourtParen"),
+        ("Smith v. Jones, 567 F.3d 890 (8th Cir.)", "federalCirMissingYear"),
         ("42 U.S.C. 1983", "uscSection"),
         ("Fed R App P 32(a)", "fedRuleApp"),
         ("Fed. R. Civ. P 12", "fedRuleCiv"),
+        ("(Rec. 12)", "federalRecordCite"),
     ];
     for (cite, rule) in cases {
         let mut s = law();
@@ -132,4 +155,12 @@ fn citation_check_is_pure_and_unknown_pack_fails() {
     let e = err(&mut s, "law.citations.check", json!({"pack": "no-such-pack"})).to_string();
     assert!(e.contains("no citation pack"), "{e}");
     assert!(specs().iter().any(|c| c.id == "law.citations.check"));
+}
+
+#[test]
+fn double_space_before_missouri_parenthetical_is_not_a_false_positive() {
+    let mut s = law();
+    insert(&mut s, "Thummel v. King, 570 S.W.2d 679  (Mo. banc 1978)");
+    let f = check(&mut s, "missouri", false);
+    assert!(!has_rule(&f, "moCaseParenthetical"), "unexpected findings: {f:?}");
 }
