@@ -98,6 +98,8 @@ fn federal_good_citations_have_no_findings() {
         "Old case, 123 F.2d 456 (8th Cir. 1941)",
         "Smith v. Jones, 567 F.3d 890 (8th Cir. 2009)",
         "Smith v. Jones, 567 F.3d 890, 891 (8th Cir. 2009)",
+        "Smith v. Jones, 567 F.3d 890 (2d Cir. 2009)",
+        "Smith v. Jones, 567 F.3d 890 (3d Cir. 2009)",
         "Recent case, 99 F.4th 100 (D.C. Cir. 2024)",
         "Doe v. Roe, 123 F. Supp. 2d 456 (E.D. Mo. 2005)",
         "Doe v. Roe, 200 F. Supp. 3d 789 (S.D.N.Y. 2016)",
@@ -128,6 +130,10 @@ fn federal_bad_citations_are_reported() {
         ("Smith v. Jones, 567 F.3d 890 (2009)", "federalCourtParen"),
         ("Recent case, 99 F.4th 100 (2024)", "federalCourtParen"),
         ("Smith v. Jones, 567 F.3d 890 (8th Cir.)", "federalCirMissingYear"),
+        ("Smith v. Jones, 567 F.3d 890 (2d Cir.)", "federalCirMissingYear"),
+        ("Smith v. Jones, 567 F.3d 890 (3d Cir.)", "federalCirMissingYear"),
+        ("Smith v. Jones, 567 F.3d 890 (2d Cir. 20090)", "federalCourtParen"),
+        ("Smith v. Jones, 567 F.3d 890 (3d Cir. 09)", "federalCourtParen"),
         ("Doe v. Roe, 123 F. Supp. 2d 456 (2005)", "federalCourtParen"),
         ("Doe v. Roe, 200 F. Supp. 3d 789 (2016)", "federalCourtParen"),
         ("Smith v. Jones, 567 F.3d 890 (year 2009)", "federalCourtParen"),
@@ -144,6 +150,35 @@ fn federal_bad_citations_are_reported() {
         insert(&mut s, cite);
         let f = check(&mut s, "federal", false);
         assert!(has_rule(&f, rule), "expected {rule} for `{cite}`: {f:?}");
+    }
+}
+
+#[test]
+fn pin_page_range_separators_are_accepted() {
+    for dash in ['-', '–', '—'] {
+        let mo = format!("Thummel v. King, 570 S.W.2d 679, 680{dash}681 (Mo. banc 1978)");
+        let mut s = law();
+        insert(&mut s, &mo);
+        let f = check(&mut s, "missouri", false);
+        assert!(!has_rule(&f, "moCaseParenthetical"), "`{mo}` must be accepted: {f:?}");
+
+        let fed = format!("Smith v. Jones, 567 F.3d 890, 891{dash}892 (8th Cir. 2009)");
+        let mut s = law();
+        insert(&mut s, &fed);
+        let f = check(&mut s, "federal", false);
+        assert!(!has_rule(&f, "federalCourtParen"), "`{fed}` must be accepted: {f:?}");
+
+        let us = format!("Brown v. Board, 347 U.S. 483, 484{dash}485 (1954)");
+        let mut s = law();
+        insert(&mut s, &us);
+        let f = check(&mut s, "federal", false);
+        assert!(!has_rule(&f, "usReporter"), "`{us}` must be accepted: {f:?}");
+
+        let sct = format!("Roe v. Wade, 410 S. Ct. 113, 114{dash}115 (1973)");
+        let mut s = law();
+        insert(&mut s, &sct);
+        let f = check(&mut s, "federal", false);
+        assert!(!has_rule(&f, "sCtReporter"), "`{sct}` must be accepted: {f:?}");
     }
 }
 
