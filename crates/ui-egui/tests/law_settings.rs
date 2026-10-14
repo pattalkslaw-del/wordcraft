@@ -188,6 +188,97 @@ fn law_profile_import_and_export_through_file_dialogs() {
 }
 
 #[test]
+fn editing_a_check_source_across_frames_saves_on_blur() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-source-edit");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Source edit test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "Old"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    let mut h = harness(a);
+    h.run_steps(6);
+    h.get_by_label("Source edit test").click();
+    h.run_steps(6);
+
+    // Type one character per frame: egui rebuilds the widget buffer every frame, so the draft has
+    // to be kept between frames or the characters would be lost before the field can save.
+    h.get_by_label("Source:").focus();
+    h.run_steps(2);
+    for ch in "New".chars() {
+        h.get_by_label("Source:").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    let shown = h.get_by_label("Source:").value().unwrap_or_default();
+    assert!(shown.ends_with("New"), "the field keeps every character typed, not just the last: {shown:?}");
+
+    // Blurring commits through law.profiles.update.
+    h.get_by_label("Add check").focus();
+    h.run_steps(2);
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let saved = after["docs"]["brief"]["checks"][0]["source"].as_str().unwrap_or("");
+    assert_ne!(saved, "Old", "the source edit is saved, not discarded");
+    assert!(saved.ends_with("New"), "saved source {saved:?}");
+}
+
+#[test]
+fn editing_a_section_name_across_frames_saves_on_blur() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-section-name");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Section edit test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    a.run("law.profiles.approve", json!({"id": id})).unwrap();
+    open_law_options(&mut a);
+    let mut h = harness(a);
+    h.run_steps(6);
+    h.get_by_label("Section edit test").click();
+    h.run_steps(6);
+
+    h.get_by_label("1.").focus();
+    h.run_steps(2);
+    for ch in " Page".chars() {
+        h.get_by_label("1.").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    h.get_by_label("Add check").focus();
+    h.run_steps(2);
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    assert_eq!(after["docs"]["brief"]["sections"][0]["name"], json!("Cover Page"));
+    assert_eq!(after["verified"], json!(false), "editing the profile makes it unverified again");
+}
+
+#[test]
 fn approve_profile_in_ui_and_block_automation() {
     let _lock = serial();
     let mut a = law_app();

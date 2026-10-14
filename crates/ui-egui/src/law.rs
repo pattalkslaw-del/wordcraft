@@ -28,6 +28,9 @@ pub struct LawUi {
     pub export_id: Option<String>,
     /// Section display names being edited (`profile_id` + section `id`).
     pub section_name_drafts: BTreeMap<String, String>,
+    /// Check source text being edited (`profile_id` + document type + check index). Kept between
+    /// frames so typing is not lost before the field loses focus and saves.
+    pub check_source_drafts: BTreeMap<String, String>,
 }
 
 /// Install LawCraft commands when the module is on (safe to call every frame).
@@ -75,6 +78,16 @@ fn reconcile_doc_type(law: &mut LawUi, profile: &Value) {
 
 fn section_draft_key(profile_id: &str, section_id: &str) -> String {
     format!("{profile_id}\0{section_id}")
+}
+
+fn check_draft_key(profile_id: &str, doc_key: &str, index: usize) -> String {
+    format!("{profile_id}\0{doc_key}\0{index}")
+}
+
+/// Drop drafts for one document type (its check list is about to change shape).
+fn clear_check_drafts(law: &mut LawUi, profile_id: &str, doc_key: &str) {
+    let prefix = format!("{profile_id}\0{doc_key}\0");
+    law.check_source_drafts.retain(|k, _| !k.starts_with(&prefix));
 }
 
 /// File › Options › Add-ins: optional modules.
@@ -143,6 +156,7 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                         app.law.validation = None;
                         app.law.confirm_approve = false;
                         app.law.section_name_drafts.clear();
+                        app.law.check_source_drafts.clear();
                         if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
                             reconcile_doc_type(&mut app.law, &p);
                         }
@@ -216,6 +230,7 @@ fn profile_editor(app: &mut WordApp, ui: &mut Ui, id: &str, list: &[Value]) {
             for d in &docs {
                 if ui.selectable_label(app.law.doc_type == *d, d.as_str()).clicked() {
                     app.law.doc_type = d.clone();
+                    app.law.check_source_drafts.clear();
                 }
             }
         });
@@ -277,8 +292,8 @@ fn sections_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &s
         let is_req = required.iter().any(|r| r == sid);
         let mut req = is_req;
         ui.horizontal(|ui| {
-            ui.label(format!("{}.", i + 1));
-            let resp = ui.text_edit_singleline(&mut name);
+            let label = ui.label(format!("{}.", i + 1));
+            let resp = ui.text_edit_singleline(&mut name).labelled_by(label.id);
             if resp.changed() {
                 app.law.section_name_drafts.insert(draft_key.clone(), name.clone());
             }
@@ -418,7 +433,7 @@ fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
             });
         }
     });
-    ui.label(RichText::new(tl!("Full style editing uses the document's Modify Style dialog when you apply a profile to a document.")).small().weak());
+    ui.label(RichText::new(tl!("These are the profile's named styles. Applying the profile writes them into the document, where WordCraft's usual style tools can refine them.")).small().weak());
 }
 
 fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str, doc: &Value, profile: &mut Value) {
@@ -437,6 +452,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Checks for this document type")).small().weak());
         if ui.button(tl!("Add check")).clicked() {
+            clear_check_drafts(&mut app.law, profile_id, doc_key);
             let mut checks = checks.clone();
             checks.push(json!({"kind": "wordLimit", "limit": 10000, "source": "Edited in LawCraft settings"}));
             save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
@@ -465,6 +481,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     },
                 );
                 if selected_kind != kind {
+                    clear_check_drafts(&mut app.law, profile_id, doc_key);
                     let mut checks = checks.clone();
                     if let Some(c) = checks.get_mut(i) {
                         *c = default_check(&selected_kind, c);
@@ -473,6 +490,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     return;
                 }
                 if ui.button(tl!("Remove")).clicked() {
+                    clear_check_drafts(&mut app.law, profile_id, doc_key);
                     let mut checks = checks.clone();
                     checks.remove(i);
                     save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
@@ -554,12 +572,22 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                 _ => {}
             }
 
-            let mut source = ch["source"].as_str().unwrap_or("").to_string();
+            // Keep what is typed between frames: the field saves on focus loss, so a buffer
+            // rebuilt from the stored value every frame would lose the edit before it can save.
+            let draft_key = check_draft_key(profile_id, doc_key, i);
+            let stored_source = ch["source"].as_str().unwrap_or("").to_string();
+            let mut source = app.law.check_source_drafts.get(&draft_key).cloned().unwrap_or_else(|| stored_source.clone());
             ui.horizontal(|ui| {
-                ui.label(tl!("Source:"));
-                let resp = ui.text_edit_singleline(&mut source);
-                if resp.lost_focus() && source.trim() != ch["source"].as_str().unwrap_or("").trim() {
-                    patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"source": source.trim()}));
+                let label = ui.label(tl!("Source:"));
+                let resp = ui.text_edit_singleline(&mut source).labelled_by(label.id);
+                if resp.changed() {
+                    app.law.check_source_drafts.insert(draft_key.clone(), source.clone());
+                }
+                if resp.lost_focus() {
+                    app.law.check_source_drafts.remove(&draft_key);
+                    if source.trim() != stored_source.trim() {
+                        patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"source": source.trim()}));
+                    }
                 }
             });
             if let Some(eff) = ch["effective"].as_str().filter(|s| !s.is_empty()) {
@@ -683,6 +711,7 @@ pub(crate) fn finish_pick(app: &mut WordApp, after: AfterPick, picked: Option<St
                     app.law.selected = Some(id.to_string());
                     app.law.validation = None;
                     app.law.section_name_drafts.clear();
+                    app.law.check_source_drafts.clear();
                     if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
                         reconcile_doc_type(&mut app.law, &p);
                     }
