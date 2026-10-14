@@ -94,13 +94,6 @@ fn style_font_draft_key(profile_id: &str, doc_key: &str, index: usize) -> String
     format!("{profile_id}\0{doc_key}\0style\0{index}")
 }
 
-/// Drop check drafts for one document type (its check list is about to change shape).
-fn clear_check_drafts(law: &mut LawUi, profile_id: &str, doc_key: &str) {
-    let prefix = format!("{profile_id}\0{doc_key}\0");
-    law.check_source_drafts.retain(|k, _| !k.starts_with(&prefix));
-    law.check_font_drafts.retain(|k, _| !k.starts_with(&prefix));
-}
-
 /// Every draft key for one profile starts with its id and a NUL.
 fn draft_prefix(profile_id: &str) -> String {
     format!("{profile_id}\0")
@@ -182,17 +175,12 @@ fn flush_drafts(app: &mut WordApp, profile_id: &str) -> bool {
         }
     };
     apply_drafts(&app.law, profile_id, &mut profile);
-    match app.run("law.profiles.update", json!({"id": profile_id, "docs": profile["docs"].clone()})) {
+    match save_profile(app, profile_id, profile) {
         Ok(_) => {
             clear_drafts_for(&mut app.law, profile_id);
-            validate_profile(app, profile_id);
             true
         }
-        Err(e) => {
-            app.law.validation = Some(e.clone());
-            app.status(e);
-            false
-        }
+        Err(()) => false,
     }
 }
 
@@ -282,14 +270,21 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button(tl!("Import…")).clicked() {
-                    let _ = app.ask_file(FileDialogRequest::Open { purpose: "lawProfile".into() }, AfterPick::LawImport);
+                    let id = app.law.selected.clone();
+                    let allowed = id.as_ref().map(|p| flush_drafts(app, p)).unwrap_or(true);
+                    if allowed {
+                        let _ = app.ask_file(FileDialogRequest::Open { purpose: "lawProfile".into() }, AfterPick::LawImport);
+                    }
                 }
                 let id = app.law.selected.clone();
                 ui.add_enabled_ui(id.is_some(), |ui| {
                     if ui.button(tl!("Export…")).clicked() {
-                        let name = format!("{}.json", id.as_deref().unwrap_or("profile"));
-                        app.law.export_id = id;
-                        let _ = app.ask_file(FileDialogRequest::Save { name }, AfterPick::LawExport);
+                        let profile_id = id.as_deref().unwrap_or("");
+                        if flush_drafts(app, profile_id) {
+                            let name = format!("{}.json", profile_id);
+                            app.law.export_id = id;
+                            let _ = app.ask_file(FileDialogRequest::Save { name }, AfterPick::LawExport);
+                        }
                     }
                 });
             });
@@ -340,14 +335,11 @@ fn profile_editor(app: &mut WordApp, ui: &mut Ui, id: &str, list: &[Value]) {
     }
     ui.horizontal(|ui| {
         ui.label(tl!("Document type:"));
-        egui::ComboBox::from_id_salt("law_doc_type").selected_text(app.law.doc_type.as_str()).width(220.0).show_ui(ui, |ui| {
-            for d in &docs {
-                if ui.selectable_label(app.law.doc_type == *d, d.as_str()).clicked() {
-                    app.law.doc_type = d.clone();
-                    clear_check_drafts(&mut app.law, id, d);
-                }
+        for d in &docs {
+            if ui.selectable_label(app.law.doc_type == *d, d.as_str()).clicked() && app.law.doc_type != *d && flush_drafts(app, id) {
+                app.law.doc_type = d.clone();
             }
-        });
+        }
     });
 
     let doc_key = app.law.doc_type.clone();
@@ -373,6 +365,9 @@ fn approve_ui(app: &mut WordApp, ui: &mut Ui, id: &str) {
         ui.label(tl!("Approve this court profile? You are confirming that its rules match the court's requirements."));
         ui.horizontal(|ui| {
             if ui.button(tl!("Approve")).clicked() {
+                if !flush_drafts(app, id) {
+                    return;
+                }
                 match app.run("law.profiles.approve", json!({"id": id})) {
                     Ok(_) => {
                         app.law.confirm_approve = false;
@@ -386,7 +381,7 @@ fn approve_ui(app: &mut WordApp, ui: &mut Ui, id: &str) {
                 app.law.confirm_approve = false;
             }
         });
-    } else if ui.button(tl!("Approve profile…")).clicked() {
+    } else if ui.button(tl!("Approve profile…")).clicked() && flush_drafts(app, id) {
         app.law.confirm_approve = true;
     }
 }
@@ -420,12 +415,13 @@ fn sections_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &s
             }
             let name_save = resp.lost_focus() && name.trim() != stored_name.trim();
             if name_save || req != is_req {
-                app.law.section_name_drafts.remove(&draft_key);
                 // Commit the name by section id, not by position: an arrow click in this same frame
                 // has already reordered the sections, so `i` may now point at a neighbour.
                 if name_save {
                     let secs = patch_section_name(profile, doc_key, sid, name.trim());
-                    save_doc(app, profile_id, doc_key, profile, json!({"sections": secs}));
+                    if save_doc(app, profile_id, doc_key, profile, json!({"sections": secs})) {
+                        app.law.section_name_drafts.remove(&draft_key);
+                    }
                 }
                 if req != is_req {
                     set_section_required_in_profile(profile, doc_key, sid, req);
@@ -526,12 +522,12 @@ fn patch_style(
     profile: &mut Value,
     index: usize,
     edit: impl FnOnce(&mut serde_json::Map<String, Value>),
-) {
+) -> bool {
     let mut styles = current_styles(profile, doc_key);
     if let Some(s) = styles.get_mut(index).and_then(Value::as_object_mut) {
         edit(s);
     }
-    save_doc(app, profile_id, doc_key, profile, json!({"styles": styles}));
+    save_doc(app, profile_id, doc_key, profile, json!({"styles": styles}))
 }
 
 fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str, doc: &Value, profile: &mut Value) {
@@ -559,9 +555,8 @@ fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     ui.label(tl!("Size (pt):"));
                     let size_changed = ui.add(egui::DragValue::new(&mut size).speed(0.5).range(1.0..=4096.0)).changed();
                     let font_dirty = font.trim() != stored_font.trim();
-                    if size_changed || (font_resp.lost_focus() && font_dirty) {
-                        app.law.style_font_drafts.remove(&draft_key);
-                        patch_style(app, profile_id, doc_key, profile, i, |s| {
+                    if (size_changed || (font_resp.lost_focus() && font_dirty))
+                        && patch_style(app, profile_id, doc_key, profile, i, |s| {
                             let chr = s.entry("chr").or_insert(json!({}));
                             if let Some(c) = chr.as_object_mut() {
                                 if !font.trim().is_empty() {
@@ -571,7 +566,11 @@ fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                                     c.insert("size".into(), json!(size));
                                 }
                             }
-                        });
+                        })
+                        && font_resp.lost_focus()
+                        && font_dirty
+                    {
+                        app.law.style_font_drafts.remove(&draft_key);
                     }
                 });
                 let mut spacing = st.pointer("/para/lineSpacing/value").and_then(Value::as_f64).unwrap_or(0.0) as f32;
@@ -607,8 +606,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
 
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Checks for this document type")).small().weak());
-        if ui.button(tl!("Add check")).clicked() {
-            clear_check_drafts(&mut app.law, profile_id, doc_key);
+        if ui.button(tl!("Add check")).clicked() && flush_drafts(app, profile_id) {
             let mut checks = current_checks(profile, doc_key);
             checks.push(json!({"kind": "wordLimit", "limit": 10000, "source": "Edited in LawCraft settings"}));
             save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
@@ -636,8 +634,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                         }
                     },
                 );
-                if selected_kind != kind {
-                    clear_check_drafts(&mut app.law, profile_id, doc_key);
+                if selected_kind != kind && flush_drafts(app, profile_id) {
                     let mut checks = current_checks(profile, doc_key);
                     if let Some(c) = checks.get_mut(i) {
                         *c = default_check(&selected_kind, c);
@@ -645,8 +642,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
                     return;
                 }
-                if ui.button(tl!("Remove")).clicked() {
-                    clear_check_drafts(&mut app.law, profile_id, doc_key);
+                if ui.button(tl!("Remove")).clicked() && flush_drafts(app, profile_id) {
                     let mut checks = current_checks(profile, doc_key);
                     if i < checks.len() {
                         checks.remove(i);
@@ -692,9 +688,12 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                             app.law.check_font_drafts.insert(font_key.clone(), font.clone());
                         }
                         let font_dirty = font.trim() != stored_font.trim();
-                        if pt_changed || (font_resp.lost_focus() && font_dirty) {
+                        if (pt_changed || (font_resp.lost_focus() && font_dirty))
+                            && patch_check(app, profile_id, doc_key, profile, i, json!({"pt": pt, "font": font.trim()}))
+                            && font_resp.lost_focus()
+                            && font_dirty
+                        {
                             app.law.check_font_drafts.remove(&font_key);
-                            patch_check(app, profile_id, doc_key, profile, i, json!({"pt": pt, "font": font.trim()}));
                         }
                     });
                 }
@@ -747,11 +746,11 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                 if resp.changed() {
                     app.law.check_source_drafts.insert(draft_key.clone(), source.clone());
                 }
-                if resp.lost_focus() {
+                if resp.lost_focus()
+                    && source.trim() != stored_source.trim()
+                    && patch_check(app, profile_id, doc_key, profile, i, json!({"source": source.trim()}))
+                {
                     app.law.check_source_drafts.remove(&draft_key);
-                    if source.trim() != stored_source.trim() {
-                        patch_check(app, profile_id, doc_key, profile, i, json!({"source": source.trim()}));
-                    }
                 }
             });
             if let Some(eff) = ch["effective"].as_str().filter(|s| !s.is_empty()) {
@@ -784,7 +783,7 @@ fn current_checks(profile: &Value, doc_key: &str) -> Vec<Value> {
 /// Merge one patch into a check. It reads the profile's *current* checks, so a commit later in the
 /// same frame (the Source field losing focus after a parameter changed) cannot revert the earlier
 /// edit by cloning the frame's starting snapshot.
-fn patch_check(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut Value, index: usize, patch: Value) {
+fn patch_check(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut Value, index: usize, patch: Value) -> bool {
     let mut checks = current_checks(profile, doc_key);
     if let Some(c) = checks.get_mut(index).and_then(Value::as_object_mut)
         && let Some(p) = patch.as_object()
@@ -793,7 +792,7 @@ fn patch_check(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut
             c.insert(k.clone(), v.clone());
         }
     }
-    save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
+    save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}))
 }
 
 fn check_id_list_editor(
@@ -841,7 +840,7 @@ fn check_id_list_editor(
     }
 }
 
-fn save_doc(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut Value, patch: Value) {
+fn save_doc(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut Value, patch: Value) -> bool {
     let doc = profile["docs"].get(doc_key).cloned().unwrap_or(Value::Null);
     let mut merged = doc.as_object().cloned().unwrap_or_default();
     if let Some(p) = patch.as_object() {
@@ -852,15 +851,41 @@ fn save_doc(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut Va
     if let Some(docs) = profile.get_mut("docs").and_then(Value::as_object_mut) {
         docs.insert(doc_key.to_string(), Value::Object(merged));
     }
-    let docs = profile["docs"].clone();
-    match app.run("law.profiles.update", json!({"id": profile_id, "docs": docs})) {
+    match save_profile(app, profile_id, profile.clone()) {
         Ok(updated) => {
             *profile = updated;
+            true
+        }
+        Err(()) => false,
+    }
+}
+
+/// Validate the full profile, then persist it. Drafts stay until this succeeds.
+fn save_profile(app: &mut WordApp, profile_id: &str, profile: Value) -> Result<Value, ()> {
+    if profile.get("id").and_then(Value::as_str) != Some(profile_id) {
+        let mut p = profile;
+        if let Some(o) = p.as_object_mut() {
+            o.insert("id".into(), json!(profile_id));
+        }
+        return save_profile(app, profile_id, p);
+    }
+    match app.run("law.profiles.validate", profile.clone()) {
+        Ok(_) => {}
+        Err(e) => {
+            app.law.validation = Some(e.clone());
+            app.status(e);
+            return Err(());
+        }
+    }
+    match app.run("law.profiles.update", json!({"id": profile_id, "docs": profile["docs"].clone()})) {
+        Ok(updated) => {
             validate_profile(app, profile_id);
+            Ok(updated)
         }
         Err(e) => {
             app.law.validation = Some(e.clone());
             app.status(e);
+            Err(())
         }
     }
 }
@@ -880,14 +905,14 @@ pub(crate) fn finish_pick(app: &mut WordApp, after: AfterPick, picked: Option<St
     match after {
         AfterPick::LawImport => {
             let Some(path) = picked else { return Ok(json!({"cancelled": true})) };
+            if let Some(sel) = app.law.selected.clone()
+                && !flush_drafts(app, &sel)
+            {
+                return Ok(json!({"cancelled": true, "reason": "pending edits could not be saved"}));
+            }
             let r = app.run("law.profiles.import", json!({"path": path}));
             if let Ok(v) = &r {
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    // Commit any pending edit on the profile being replaced, then drop only the
-                    // imported profile's drafts (a stale draft must not overwrite what was read).
-                    if let Some(previous) = app.law.selected.clone().filter(|p| p != id) {
-                        flush_drafts(app, &previous);
-                    }
                     clear_drafts_for(&mut app.law, id);
                     app.law.selected = Some(id.to_string());
                     app.law.validation = None;
@@ -906,6 +931,9 @@ pub(crate) fn finish_pick(app: &mut WordApp, after: AfterPick, picked: Option<St
             };
             let id = app.law.export_id.clone().ok_or_else(|| "no profile selected for export".to_string())?;
             app.law.export_id = None;
+            if !flush_drafts(app, &id) {
+                return Ok(json!({"cancelled": true, "reason": "pending edits could not be saved"}));
+            }
             let r = app.run("law.profiles.export", json!({"id": id, "path": path}));
             if r.is_ok() {
                 app.status(crate::i18n::fmt(tl!("Exported court profile {path}"), &[("path", &path)]));

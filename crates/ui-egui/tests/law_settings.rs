@@ -15,14 +15,14 @@ fn unique_id(prefix: &str) -> String {
 /// The law profile store is process-wide; tests in this file run one at a time.
 static LAW_SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
-fn serial() -> std::sync::MutexGuard<'static, ()> {
+fn serial() -> (std::sync::MutexGuard<'static, ()>, std::path::PathBuf) {
     let guard = LAW_SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Keep the tests' profile store out of the person's real settings folder: point it at a fresh
     // temp folder for each test, so runs do not accumulate profiles or read another run's.
     let dir = std::env::temp_dir().join(format!("wc-ui-law-store-{}", unique_id("test")));
     let _ = std::fs::create_dir_all(&dir);
-    wordcraft_law::set_profiles_dir(Some(dir));
-    guard
+    wordcraft_law::set_profiles_dir(Some(dir.clone()));
+    (guard, dir)
 }
 use std::rc::Rc;
 use std::sync::mpsc::{Sender, channel};
@@ -89,7 +89,7 @@ fn harness(a: WordApp) -> egui_kittest::Harness<'static, WordApp> {
 
 #[test]
 fn law_options_lists_bundled_profiles_with_verification_badges() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     open_law_options(&mut a);
     let mut h = harness(a);
@@ -103,7 +103,7 @@ fn law_options_lists_bundled_profiles_with_verification_badges() {
 
 #[test]
 fn law_module_toggle_uses_file_options_and_shows_law_pane() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = plain_app();
     assert!(!a.session.module_enabled(MODULE));
     a.run("file.options", json!({"pane": "addins"})).unwrap();
@@ -123,7 +123,7 @@ fn law_module_toggle_uses_file_options_and_shows_law_pane() {
 
 #[test]
 fn editing_a_profile_marks_it_unverified() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-edit-unverified");
     a.run(
@@ -160,7 +160,7 @@ fn editing_a_profile_marks_it_unverified() {
 
 #[test]
 fn law_profile_import_and_export_through_file_dialogs() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let dir = std::env::temp_dir().join(format!("wc-ui-law-settings-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -195,7 +195,7 @@ fn law_profile_import_and_export_through_file_dialogs() {
 
 #[test]
 fn editing_a_check_source_across_frames_saves_on_blur() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-source-edit");
     a.run(
@@ -244,7 +244,7 @@ fn editing_a_check_source_across_frames_saves_on_blur() {
 
 #[test]
 fn editing_a_section_name_across_frames_saves_on_blur() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-section-name");
     a.run(
@@ -286,7 +286,7 @@ fn editing_a_section_name_across_frames_saves_on_blur() {
 
 #[test]
 fn editing_a_style_font_across_frames_keeps_spaces() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-style-font");
     a.run(
@@ -336,7 +336,7 @@ fn editing_a_style_font_across_frames_keeps_spaces() {
 
 #[test]
 fn editing_a_check_font_across_frames_keeps_spaces() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-check-font");
     a.run(
@@ -383,7 +383,7 @@ fn editing_a_check_font_across_frames_keeps_spaces() {
 
 #[test]
 fn editing_source_and_exclusion_together_keeps_both() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-check-merge");
     a.run(
@@ -430,7 +430,7 @@ fn editing_source_and_exclusion_together_keeps_both() {
 
 #[test]
 fn renaming_and_reordering_a_section_keeps_both_identities() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-section-reorder");
     a.run(
@@ -486,7 +486,7 @@ fn renaming_and_reordering_a_section_keeps_both_identities() {
 
 #[test]
 fn editing_style_font_and_line_spacing_together_keeps_both() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-style-merge");
     a.run(
@@ -563,7 +563,7 @@ fn editing_style_font_and_line_spacing_together_keeps_both() {
 
 #[test]
 fn switching_profiles_commits_a_field_that_never_blurred() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let first = unique_id("ui-law-switch-a");
     let second = unique_id("ui-law-switch-b");
@@ -620,7 +620,7 @@ fn switching_profiles_commits_a_field_that_never_blurred() {
 
 #[test]
 fn toggling_required_marks_the_section_required() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-required");
     a.run(
@@ -660,7 +660,7 @@ fn toggling_required_marks_the_section_required() {
 
 #[test]
 fn validation_errors_are_shown_inline() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-validation");
     a.run(
@@ -674,6 +674,7 @@ fn validation_errors_are_shown_inline() {
                 "brief": {
                     "styles": [],
                     "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "OK"}],
                     "source": "Test"
                 }
             }
@@ -683,15 +684,200 @@ fn validation_errors_are_shown_inline() {
     open_law_options(&mut a);
     a.law.selected = Some(id.clone());
     a.law.doc_type = "brief".into();
-    a.law.validation = Some("the profile is not valid: missing court".into());
     let mut h = harness(a);
-    h.run_steps(6);
-    assert!(h.query_by_label("the profile is not valid: missing court").is_some(), "a validation error is shown inline");
+    h.run_steps(8);
+    let mut p = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    p["docs"]["brief"]["checks"][0]["source"] = json!("x".repeat(201));
+    let expect = h.state_mut().run("law.profiles.validate", p).unwrap_err();
+    assert!(expect.contains("not valid"), "{expect}");
+    h.get_by_label("Source:").focus();
+    h.run_steps(2);
+    for _ in 0..10 {
+        h.get_by_label("Source:").type_text("\u{8}");
+        h.run_steps(1);
+    }
+    h.get_by_label("Source:").type_text(&"x".repeat(201));
+    h.run_steps(2);
+    h.get_by_label("Add check").focus();
+    h.run_steps(2);
+    let err = h.state().law.validation.as_deref().unwrap_or("");
+    assert!(err.contains("not valid"), "law.profiles.validate reported the problem: {err:?}");
+    assert!(h.query_by_label(err).is_some(), "the validation error is shown inline");
+    let still = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    assert_eq!(still["docs"]["brief"]["checks"][0]["source"], json!("OK"), "a failed validate does not write the profile");
+}
+
+#[test]
+fn switching_document_type_commits_or_keeps_check_source_draft() {
+    let (_lock, _) = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-doc-type-switch");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Doc type switch test",
+            "jurisdiction": "Test",
+            "verified": true,
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "Brief source"}],
+                    "source": "Test"
+                },
+                "motion": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "Motion source"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("Source:").focus();
+    h.run_steps(2);
+    for ch in " edited".chars() {
+        h.get_by_label("Source:").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    // Switch document type before blur: pending edits must commit first, not be discarded.
+    h.get_by_label("motion").click();
+    h.run_steps(4);
+    assert_eq!(h.state().law.doc_type, "motion");
+
+    let brief = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let saved = brief["docs"]["brief"]["checks"][0]["source"].as_str().unwrap_or("");
+    assert!(saved.contains("edited"), "the brief check source was committed before the switch: {saved:?}");
+
+    h.get_by_label("brief").click();
+    h.run_steps(4);
+    let shown = h.get_by_label("Source:").value().unwrap_or_default();
+    assert!(shown.contains("edited"), "returning to brief still shows the saved source: {shown:?}");
+}
+
+#[test]
+fn failed_section_name_update_keeps_draft_for_retry() {
+    let (_lock, _) = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-failed-retry");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Failed retry test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "OK"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("Source:").focus();
+    h.run_steps(2);
+    for _ in 0..10 {
+        h.get_by_label("Source:").type_text("\u{8}");
+        h.run_steps(1);
+    }
+    h.get_by_label("Source:").type_text(&"x".repeat(201));
+    h.run_steps(2);
+    h.get_by_label("Add check").focus();
+    h.run_steps(2);
+    assert!(h.state().law.validation.is_some(), "a failed validate/update surfaces an error");
+    let shown = h.get_by_label("Source:").value().unwrap_or_default();
+    assert!(shown.chars().count() > 200, "the failed save keeps the draft in the field: {shown:?}");
+
+    let before = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    assert_eq!(before["docs"]["brief"]["checks"][0]["source"], json!("OK"), "the invalid draft was not saved");
+}
+
+#[test]
+fn import_is_cancelled_when_pending_drafts_fail_to_commit() {
+    let (_lock, store_dir) = serial();
+    let dir = std::env::temp_dir().join(format!("wc-ui-law-import-draft-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let import_path = dir.join("import.json");
+
+    let (mut a, shown) = async_app();
+    let id = unique_id("ui-law-import-draft");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Import draft test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    a.run("law.profiles.export", json!({"id": "missouri-appellate-brief", "path": import_path.to_string_lossy()})).unwrap();
+
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("1.").focus();
+    h.run_steps(2);
+    for ch in " Page".chars() {
+        h.get_by_label("1.").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+
+    let profile_file = store_dir.join(format!("{}.json", id));
+    let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&profile_file, perms).unwrap();
+
+    h.get_by_label("Import…").click();
+    h.run_steps(2);
+    assert!(shown.borrow().is_empty(), "import is cancelled before the file dialog when flush fails");
+
+    let still = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    assert_eq!(still["docs"]["brief"]["sections"][0]["name"], json!("Cover"), "the unsaved draft was not written");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&profile_file, perms).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn approve_profile_in_ui_and_block_automation() {
-    let _lock = serial();
+    let (_lock, _) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-approve-test");
     a.run(
