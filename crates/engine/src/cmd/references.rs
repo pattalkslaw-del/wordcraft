@@ -832,7 +832,8 @@ pub fn update_fields(s: &mut Session) -> Result<(), CmdError> {
         para.touch();
     }
     super::citations::update_citations(s)?;
-    update_toc(s)
+    update_toc(s)?;
+    crate::hooks::run_on_update_fields(s)
 }
 
 /// A field's `\@` date picture: the quoted text after it (switches may follow), or one word.
@@ -877,6 +878,19 @@ mod tests {
     /// #402: Custom Table of Contents settings become TOC switches, and updating honours them:
     /// levels (`\o`), a style with a level (`\t`), no hyperlinks, page numbers after a space
     /// (`\p`), or none at all (`\n`).
+    #[test]
+    fn update_fields_runs_registered_hooks() {
+        static CALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        fn mark(_: &mut Session) -> Result<(), CmdError> {
+            CALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        crate::hooks::register_on_update_fields(mark);
+        let mut s = Session::new(wordcraft_doc::Document::new());
+        s.run("references.updateFields", &json!({})).unwrap();
+        assert!(CALLED.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     #[test]
     fn toc_switches_shape_the_entries() {
         let mut s = Session::new(wordcraft_doc::Document::from_text("Intro\nPart\nDeep\nNote"));

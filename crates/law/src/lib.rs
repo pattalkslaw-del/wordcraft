@@ -36,6 +36,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod apply;
+mod certificate;
 pub mod checks;
 pub mod cmd;
 pub mod profile;
@@ -71,3 +72,6 @@ mod tests;
 
 #[cfg(test)]
 mod tests_checks;
+
+#[cfg(test)]
+mod tests_certificate;
