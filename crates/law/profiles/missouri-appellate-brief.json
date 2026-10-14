@@ -80,6 +80,13 @@
       ],
       "checks": [
         {
+          "kind": "minFontSize",
+          "pt": 13,
+          "font": "Times New Roman",
+          "source": "Mo. Sup. Ct. R. 84.03",
+          "effective": "2025-01-01"
+        },
+        {
           "kind": "minMargins",
           "pt": 72,
           "source": "Mo. Sup. Ct. R. 84.03",
@@ -92,6 +99,11 @@
             "exhibits"
           ],
           "source": "Mo. Sup. Ct. R. 84.06",
+          "effective": "2025-01-01"
+        },
+        {
+          "kind": "textSearchablePdf",
+          "source": "Mo. Sup. Ct. R. 84.04(a)",
           "effective": "2025-01-01"
         }
       ],

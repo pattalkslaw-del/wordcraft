@@ -390,6 +390,110 @@
       ],
       "source": "FRAP 32(a)",
       "effective": "2024-12-01"
+    },
+    "addendum": {
+      "label": "Addendum",
+      "page": {
+        "size": "Letter",
+        "top": 72,
+        "bottom": 72,
+        "left": 72,
+        "right": 72
+      },
+      "lineNumbers": {
+        "enabled": false
+      },
+      "pageNumbers": {
+        "position": "bottom",
+        "align": "center",
+        "xOfY": false,
+        "format": "decimal",
+        "prefix": "Add. ",
+        "start": 1
+      },
+      "styles": [
+        {
+          "name": "Normal",
+          "chr": {
+            "font": "Times New Roman",
+            "size": 14
+          },
+          "para": {
+            "lineSpacing": {
+              "rule": "multiple",
+              "value": 2
+            }
+          }
+        },
+        {
+          "name": "Addendum Body",
+          "basedOn": "Normal",
+          "next": "Addendum Body"
+        },
+        {
+          "name": "Addendum Heading",
+          "basedOn": "Normal",
+          "next": "Addendum Body",
+          "chr": {
+            "bold": true
+          },
+          "para": {
+            "keepNext": true,
+            "align": "center",
+            "lineSpacing": {
+              "rule": "multiple",
+              "value": 1
+            }
+          }
+        }
+      ],
+      "sections": [
+        {
+          "id": "cover",
+          "name": "Addendum cover",
+          "style": "Addendum Heading"
+        },
+        {
+          "id": "contents",
+          "name": "Contents of the addendum",
+          "style": "Addendum Heading"
+        },
+        {
+          "id": "materials",
+          "name": "Supplemental materials",
+          "style": "Addendum Heading"
+        }
+      ],
+      "checks": [
+        {
+          "kind": "minFontSize",
+          "pt": 14,
+          "source": "FRAP 32(a)(4)(A)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "minMargins",
+          "pt": 72,
+          "source": "FRAP 32(a)(4)(B)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "requiredSections",
+          "ids": [
+            "cover",
+            "materials"
+          ],
+          "source": "FRAP 32(a)(1)",
+          "effective": "2024-12-01"
+        },
+        {
+          "kind": "textSearchablePdf",
+          "source": "FRAP 32(a)(2)",
+          "effective": "2024-12-01"
+        }
+      ],
+      "source": "FRAP 32(a)",
+      "effective": "2024-12-01"
     }
   }
 }
