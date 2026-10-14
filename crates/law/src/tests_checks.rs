@@ -21,7 +21,7 @@ fn has_check(findings: &[Value], check_id: &str) -> bool {
 }
 
 /// Write every section heading from the profile, with body text under each.
-fn write_skeleton(s: &mut Session, profile: &Profile, doc_type: &str) {
+pub(crate) fn write_skeleton(s: &mut Session, profile: &Profile, doc_type: &str) {
     let spec = profile.docs.get(doc_type).expect("document type");
     // Not every document type has a `Body` style (the appendix does not); fall back to the first
     // style so the body still carries the profile's formatting.

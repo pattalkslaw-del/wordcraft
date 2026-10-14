@@ -29,6 +29,7 @@ const MAX_CHECKS: usize = 100;
 const MAX_NAME: usize = 200;
 const MAX_ID: usize = 64;
 const MAX_LISTED: usize = 64;
+const MAX_CERT_TEMPLATE: usize = 16_384;
 /// Points (ECMA-376's `w:spacing` and friends are 16-bit twips: 1584 pt is the largest).
 const MAX_PT: f32 = 1584.0;
 /// Word's largest type size, in points.
@@ -79,6 +80,9 @@ pub struct DocSpec {
     pub sections: Vec<SectionSpec>,
     /// Rules that are not styles (word limits, minimum type size…).
     pub checks: Vec<CheckSpec>,
+    /// Certificate of compliance text for [`crate::certificate`] (`{wordCount}`, `{wordLimit}`…).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub certificate_of_compliance: Option<ComplianceCertificateSpec>,
     /// The rule these formatting rules come from (`Mo. Sup. Ct. R. 84.03`).
     pub source: String,
     /// When the rule took effect (`2025-01-01`).
@@ -189,6 +193,18 @@ pub struct StyleSpec {
     pub chr: Option<CharProps>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub para: Option<ParaProps>,
+}
+
+/// Template for the certificate of compliance section (placeholders filled by
+/// `law.certificate.compliance`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ComplianceCertificateSpec {
+    /// Paragraphs joined with `\n`; `{wordCount}` becomes a live field.
+    pub template: String,
+    /// The rule this certificate comes from (`Mo. Sup. Ct. R. 84.06(c)`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub source: String,
 }
 
 /// One part of the document skeleton, in order.
@@ -458,6 +474,17 @@ fn check_doc(out: &mut Vec<String>, at: &str, d: &DocSpec) {
     for (i, c) in d.checks.iter().enumerate() {
         let at = format!("{at}.checks[{i}]");
         check_check(out, &at, c, &ids);
+    }
+    if let Some(cert) = &d.certificate_of_compliance {
+        let cat = format!("{at}.certificateOfCompliance");
+        if cert.template.is_empty() {
+            out.push(format!("{cat}.template must not be empty"));
+        } else if cert.template.len() > MAX_CERT_TEMPLATE {
+            out.push(format!("{cat}.template is too long (at most {MAX_CERT_TEMPLATE} characters)"));
+        }
+        if !cert.source.is_empty() {
+            check_text(out, &format!("{cat}.source"), &cert.source);
+        }
     }
 }
 

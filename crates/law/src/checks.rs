@@ -19,6 +19,9 @@ use crate::store::LawError;
 pub const PROP_PROFILE: &str = "LAW_PROFILE_ID";
 pub const PROP_DOC_TYPE: &str = "LAW_DOC_TYPE";
 
+/// Section id for the certificate of compliance in a profile skeleton.
+pub const CERT_SECTION_ID: &str = "certificateOfCompliance";
+
 /// Run every check for `doc_type` in `profile` against `doc`. `for_export` runs export-only
 /// checks such as `textSearchablePdf`, but `textSearchablePdf` itself only runs when the output
 /// being exported is a PDF (`pdf_output`), since other formats cannot be verified as PDFs.
@@ -131,12 +134,49 @@ fn required_sections(found: &[LocatedSection], check: &CheckSpec, id: &str, out:
 
 fn word_limit(doc: &Document, spec: &DocSpec, sections: &[LocatedSection], check: &CheckSpec, id: &str, out: &mut Vec<Finding>) {
     let Some(limit) = check.limit else { return };
-    let exclude: Vec<&str> = check.exclude_sections.iter().map(String::as_str).collect();
-    let words = counted_words(doc, spec, sections, &exclude);
+    let words = word_count_with_check(doc, spec, sections, check);
     if words > limit {
         let source = &check.source;
         out.push(Finding::error(id, format!("Word count {words} exceeds the limit of {limit} ({source})")));
     }
+}
+
+/// Word count for the profile's `wordLimit` check (same exclusions the check uses).
+pub fn word_count(doc: &Document, profile: &Profile, doc_type: &str) -> Result<u32, LawError> {
+    let spec = profile.docs.get(doc_type).ok_or_else(|| {
+        LawError::Failed(format!("profile `{}` has no document type `{doc_type}` (it has {})", profile.id, profile.doc_types().join(", ")))
+    })?;
+    let check = spec
+        .checks
+        .iter()
+        .find(|c| c.kind == "wordLimit")
+        .ok_or_else(|| LawError::Failed(format!("profile `{}` / `{doc_type}` has no wordLimit check", profile.id)))?;
+    let sections = locate_sections(doc, spec);
+    Ok(word_count_with_check(doc, spec, &sections, check))
+}
+
+/// The word-limit finding for `doc`, if any (`None` when at or under the limit).
+pub fn word_limit_finding(doc: &Document, profile: &Profile, doc_type: &str) -> Result<Option<Finding>, LawError> {
+    let spec = profile.docs.get(doc_type).ok_or_else(|| {
+        LawError::Failed(format!("profile `{}` has no document type `{doc_type}` (it has {})", profile.id, profile.doc_types().join(", ")))
+    })?;
+    let check = spec.checks.iter().find(|c| c.kind == "wordLimit");
+    let Some(check) = check else { return Ok(None) };
+    let Some(limit) = check.limit else { return Ok(None) };
+    let sections = locate_sections(doc, spec);
+    let words = word_count_with_check(doc, spec, &sections, check);
+    if words > limit {
+        let source = &check.source;
+        let id = if check.kind.is_empty() { "wordLimit".into() } else { check.kind.clone() };
+        Ok(Some(Finding::error(&id, format!("Word count {words} exceeds the limit of {limit} ({source})"))))
+    } else {
+        Ok(None)
+    }
+}
+
+fn word_count_with_check(doc: &Document, spec: &DocSpec, sections: &[LocatedSection], check: &CheckSpec) -> u32 {
+    let exclude: Vec<&str> = check.exclude_sections.iter().map(String::as_str).collect();
+    counted_words(doc, spec, sections, &exclude)
 }
 
 fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], exclude: &[&str]) -> u32 {
@@ -499,7 +539,10 @@ pub fn restore_export_registration(session: &mut Session) {
     let profile_id = session.doc.custom_prop(PROP_PROFILE);
     let doc_type = session.doc.custom_prop(PROP_DOC_TYPE);
     if let (Some(profile_id), Some(doc_type)) = (profile_id, doc_type) {
-        session.set_export_check_commands(vec![("law.checks.run".into(), json!({"id": profile_id, "doc": doc_type, "forExport": true}))]);
+        session.set_export_check_commands(vec![
+            ("law.certificate.refresh".into(), json!({})),
+            ("law.checks.run".into(), json!({"id": profile_id, "doc": doc_type, "forExport": true})),
+        ]);
     }
 }
 
@@ -509,6 +552,7 @@ static HOOK_ONCE: Once = Once::new();
 pub fn register_document_hook() {
     HOOK_ONCE.call_once(|| {
         wordcraft_engine::hooks::register_on_document_loaded(restore_export_registration);
+        wordcraft_engine::hooks::register_on_update_fields(crate::certificate::on_update_fields);
     });
 }
 
