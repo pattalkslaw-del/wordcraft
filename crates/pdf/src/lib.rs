@@ -39,11 +39,12 @@ pub fn extract_page_text(_bytes: &[u8]) -> Result<Vec<String>, String> {
 pub enum TextSearchability {
     /// The bytes carry extractable document text.
     Searchable,
-    /// The bytes are a PDF with no extractable document text (for example, image-only pages).
+    /// The bytes are a PDF with no extractable document text and no page-dominating picture (for
+    /// example, a font-only PDF). An image-only page is [`TextSearchability::Uncertain`], not this.
     NotSearchable,
-    /// The bytes carry text, but at least one page draws a picture that dominates it and its text
-    /// is neither clearly the page's own content nor clearly a caption: coverage cannot be
-    /// verified. This is **not** the same as success.
+    /// At least one page draws a picture that dominates it, so the page's own text (if any) cannot
+    /// verify the picture's content: coverage cannot be verified. This is **not** the same as
+    /// success.
     Uncertain,
     /// This build cannot inspect PDF text at all (wasm has no PDF interpreter); verification is
     /// unavailable, which is **not** the same as success.

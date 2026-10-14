@@ -471,6 +471,15 @@ fn searchable_pdf_passes_on_real_export() {
     assert!(!has_check(&f, "textSearchablePdf"), "{f:?}");
 }
 
+/// A document whose only text is numeric is still a full text layer: no PDF finding.
+#[test]
+fn numeric_text_pdf_passes_on_real_export() {
+    let mut d = Document::new();
+    d.body = vec![para_block(Paragraph::with_text("123", CharProps::default()))];
+    let bytes = wordcraft_engine::io::save_bytes_opts("export.pdf", &d, &Default::default()).expect("export a PDF");
+    assert!(crate::checks::searchability_finding(&bytes, "textSearchablePdf").is_none());
+}
+
 #[test]
 fn font_only_pdf_bytes_are_not_searchable() {
     let bytes = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 200 200]/Resources<</Font<</F1 4 0 R>>>>>>endobj\n4 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";

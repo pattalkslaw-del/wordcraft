@@ -104,8 +104,8 @@ fn text_searchability_inspects_real_bytes() {
 }
 
 /// A scanned filing with a searchable page number is still an unverified picture: the page number
-/// extracts, but it is incidental furniture, not the document's substantive text. The page is
-/// reported as uncertain (a warning naming the page), never certified as not searchable.
+/// extracts, but text on a page a picture dominates never certifies the picture's content. The page
+/// is reported as uncertain (a warning naming the page), never certified as not searchable.
 #[test]
 fn a_scanned_page_with_a_searchable_page_number_is_uncertain() {
     let mut d = Document::new();
@@ -153,16 +153,17 @@ fn an_image_only_scan_is_uncertain_not_not_searchable() {
     assert_eq!(detail.unverifiable_pages, vec![1]);
 }
 
-/// Incidental text alone (a lone page number, untagged) does not certify a text layer: a number
-/// is page furniture, a word is document text — whatever the producer tagged.
+/// Extractable numeric body text is a text layer: a short document that is all digits is
+/// searchable, just as alphabetic text is. (A number is only furniture when it is artifact-marked,
+/// or when it sits on a page a picture dominates; untagged body digits are the document's text.)
 #[test]
-fn incidental_text_alone_does_not_certify_a_text_layer() {
+fn numeric_body_text_is_a_text_layer() {
     let mut d = Document::new();
-    d.body = vec![para_block(Paragraph::with_text("1", CharProps::default()))];
+    d.body = vec![para_block(Paragraph::with_text("123", CharProps::default()))];
     let bytes = export(&d, &PdfOptions { tagged: false, ..Default::default() }).unwrap();
-    assert!(squash(&extract_text(&bytes).concat()).contains('1'));
-    assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable);
-    // A paragraph of real text does certify it.
+    assert!(squash(&extract_text(&bytes).concat()).contains("123"));
+    assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
+    // A paragraph of alphabetic text certifies it too.
     d.body = vec![para_block(Paragraph::with_text("The quick brown fox jumps over the lazy dog.", CharProps::default()))];
     let bytes = export(&d, &PdfOptions { tagged: false, ..Default::default() }).unwrap();
     assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);

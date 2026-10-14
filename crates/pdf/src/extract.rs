@@ -154,29 +154,28 @@ const SCAN_COVERAGE: f64 = 0.15;
 /// What a PDF's text layer looks like once every page is considered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// Every page carries document text, or is blank or furniture-only.
+    /// Every page carries its own extractable text, or is blank or furniture-only.
     Searchable,
-    /// The document carries no document text and no picture that could hold some: nothing is
-    /// extractable, so it is read as not searchable.
+    /// The document carries no extractable text of its own and no picture that could hold some:
+    /// nothing is extractable, so it is read as not searchable.
     NotSearchable,
-    /// A page draws a picture that dominates it and carries text that is neither clearly the
-    /// page's content nor clearly a caption: its text layer cannot be verified.
+    /// A page draws a picture that dominates it, so the page's own text (if any) cannot verify the
+    /// picture's content.
     Uncertain,
 }
 
 /// Judge a PDF's text layer page by page.
 ///
-/// A page counts as carrying document text when it has letters of its own outside artifact-marked
-/// furniture. A lone page number is numeric and stays furniture, whether or not the producer
-/// tagged it; a word is document text. There is no minimum document length, so a fully extractable
-/// one-line document is searchable.
+/// A page counts as carrying a text layer when it has any extractable character of its own outside
+/// artifact-marked furniture — a word, a number or a symbol all count; there is no minimum document
+/// length, so a fully extractable one-line (or numeric) document is searchable.
 ///
 /// Coverage is what matters, not a single page: a page that draws a picture of its own (a scan,
 /// photograph or figure, outside page furniture) and covers most of the page cannot be certified
 /// searchable from unrelated text on the same page (a caption, page number, or long paragraph
 /// beside the scan) — so a searchable cover followed by scanned body pages is **not** certified
-/// searchable, and a scan that is the whole document (with no substantive text anywhere) is
-/// uncertain too, not confidently without a text layer. Blank and furniture-only pages are allowed.
+/// searchable, and a scan that is the whole document (with no text layer anywhere) is uncertain
+/// too, not confidently without a text layer. Blank and furniture-only pages are allowed.
 pub fn extract_verdict(bytes: &[u8]) -> Verdict {
     extract_verdict_detail(bytes).verdict
 }
@@ -205,13 +204,13 @@ pub fn extract_verdict_detail(bytes: &[u8]) -> VerdictDetail {
                 unverifiable_pages.push(index + 1);
             }
         }
-        if has_substantive_text(&page.content) {
+        if has_text_layer(&page.content) {
             any_text = true;
         }
     }
     if uncertain {
         // A page dominated by a picture cannot be certified from unrelated text on it — and that
-        // holds whether or not the document carries substantive text anywhere. A scan with only a
+        // holds whether or not the document carries a text layer anywhere. A scan with only a
         // caption or a page number, or no extractable text at all, is an unverified picture, not a
         // document confidently without a text layer.
         return VerdictDetail { verdict: Verdict::Uncertain, unverifiable_pages };
@@ -245,8 +244,10 @@ fn page_coverage(page: &PageText) -> Coverage {
     Coverage::Uncertain
 }
 
-/// Does the page's own text (outside page furniture) contain letters? A page number or a numeric
-/// stamp is incidental furniture; a word is the document's text.
-fn has_substantive_text(content: &str) -> bool {
-    content.chars().any(char::is_alphabetic)
+/// Does the page carry any extractable text of its own (outside artifact-marked furniture)? Any
+/// non-whitespace character counts — a word, a number or a symbol — because a text layer is present
+/// whatever the characters. Whether that text certifies a page-dominating picture is a different
+/// question, answered by [`page_coverage`]: text on the same page never verifies the picture.
+fn has_text_layer(content: &str) -> bool {
+    content.chars().any(|c| !c.is_whitespace())
 }
