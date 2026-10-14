@@ -174,9 +174,15 @@ fn certificate_with_explicit_parameters_refreshes_on_an_unapplied_document() {
     // Add counted words before the certificate, then rebuild fields: the hook must find the binding.
     run(&mut s, "caret.docStart", json!({}));
     run(&mut s, "text.insert", json!({"text": "extra counted words added before the certificate.\r"}));
-    let want = checks::word_count(&s.doc, &profile, "brief").expect("count");
+    let rebuilt = checks::word_count(&s.doc, &profile, "brief").expect("count");
     run(&mut s, "references.updateFields", json!({}));
-    assert_eq!(cert_wordcount_in_doc(&s.doc), Some(want), "a field rebuild refreshes the persisted binding");
+    assert_eq!(cert_wordcount_in_doc(&s.doc), Some(rebuilt), "a field rebuild refreshes the persisted binding");
+    // Edit counted text again *after* the last field rebuild, so the export hook—not the rebuild—is
+    // what must refresh the saved field; the in-memory field is deliberately stale beforehand.
+    run(&mut s, "text.insert", json!({"text": "and even more counted words after the rebuild.\r"}));
+    let want = checks::word_count(&s.doc, &profile, "brief").expect("count");
+    assert_ne!(want, rebuilt, "the extra words change the count");
+    assert_ne!(cert_wordcount_in_doc(&s.doc), Some(want), "the field is stale before export");
     // The pre-export refresh must still find the binding too, and the saved artifact must carry it.
     let dir = temp_dir("cert-explicit-export");
     let path = dir.join("brief.docx");
@@ -185,6 +191,68 @@ fn certificate_with_explicit_parameters_refreshes_on_an_unapplied_document() {
     let reopened = wordcraft_engine::io::open_bytes("brief.docx", &bytes).expect("reopen");
     assert_eq!(cert_wordcount_in_doc(&reopened), Some(want), "the exported count is refreshed, never stale");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn top_level_heading_block(doc: &Document, name: &str) -> usize {
+    doc.para_paths(StoryRef::Body)
+        .iter()
+        .find_map(|p| {
+            (p.depth() == 0 && doc.para(StoryRef::Body, p).is_some_and(|para| para.plain_text().trim().eq_ignore_ascii_case(name)))
+                .then(|| p.0.first().copied().unwrap_or(0) as usize)
+        })
+        .unwrap_or_else(|| panic!("no top-level section heading `{name}`"))
+}
+
+/// Move a two-block skeleton section (its heading and body paragraph) to sit immediately before
+/// the `before` heading, producing an out-of-order document.
+fn move_section_before_heading(s: &mut Session, section: &str, before: &str) {
+    let start = top_level_heading_block(&s.doc, section);
+    let mut moved = Vec::new();
+    for _ in 0..2 {
+        moved.push(s.doc.remove_block(StoryRef::Body, &Path::top(start)).expect("remove a section block"));
+    }
+    let dest = top_level_heading_block(&s.doc, before);
+    for (k, block) in moved.into_iter().enumerate() {
+        s.doc.insert_block(StoryRef::Body, &Path::top(dest + k), block).expect("insert a section block");
+    }
+    s.touch();
+}
+
+/// P1 regression: replacement is bounded at the next recognized profile section whatever its
+/// profile order. An out-of-order document (an earlier section such as `Argument` after the
+/// certificate) must keep that section and its content across a refresh — it must not be deleted
+/// along with the old certificate, which is what happened when only the sections *after* the
+/// certificate in profile order ended the range.
+#[test]
+fn refresh_preserves_an_out_of_order_section_that_follows_the_certificate() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    compliance(&mut s, MISSOURI, "brief");
+    // Give `Argument` a unique body, then move the whole section to sit right after the
+    // certificate section, before `Certificate of Service`: a reordered document.
+    let paths = s.doc.para_paths(StoryRef::Body);
+    let arg_heading = paths
+        .iter()
+        .position(|p| s.doc.para(StoryRef::Body, p).is_some_and(|q| q.plain_text().trim().eq_ignore_ascii_case("Argument")))
+        .expect("Argument heading");
+    let arg_body = paths.get(arg_heading + 1).cloned().expect("Argument body paragraph");
+    *s.doc.para_mut(StoryRef::Body, &arg_body).expect("an argument paragraph") =
+        Paragraph::with_text("The argument content that must survive.", CharProps::default());
+    s.touch();
+    move_section_before_heading(&mut s, "Argument", "Certificate of Service");
+    // Rebuild the certificate. With the bug, everything from the certificate to the next
+    // *following* profile section (`Certificate of Service`) — including `Argument` — was deleted.
+    compliance(&mut s, MISSOURI, "brief");
+    let text = s.doc.plain_text(StoryRef::Body);
+    assert!(text.contains("Argument"), "the reordered Argument heading survives: {text}");
+    assert!(text.contains("The argument content that must survive."), "the reordered section's content survives: {text}");
+    // A second refresh must not remove it either (the previous certificate body is replaced in
+    // place).
+    compliance(&mut s, MISSOURI, "brief");
+    let text = s.doc.plain_text(StoryRef::Body);
+    assert!(text.contains("The argument content that must survive."), "the reordered section survives a second refresh: {text}");
+    assert_eq!(cert_wordcount_in_doc(&s.doc), Some(checks::word_count(&s.doc, &profile, "brief").expect("count")));
 }
 
 fn insert_table_with_headings(s: &mut Session, headings: &[&str]) {

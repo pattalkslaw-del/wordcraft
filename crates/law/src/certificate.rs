@@ -285,13 +285,15 @@ fn find_heading_index(doc: &Document, paths: &[Path], heading: &str) -> Option<u
 
 fn next_section_index(doc: &Document, spec: &DocSpec, paths: &[Path], heading_i: Option<usize>) -> usize {
     let Some(hi) = heading_i else { return paths.len() };
-    let cert_pos = spec.sections.iter().position(|s| s.id == CERT_SECTION_ID).unwrap_or(hi);
-    let after: Vec<&str> = spec.sections.iter().skip(cert_pos.saturating_add(1)).map(|s| s.name.trim()).collect();
+    // Bound the replacement at the next recognized profile section, whatever its position in the
+    // profile. A document whose sections are out of order (an earlier section such as `Argument`
+    // sitting after the certificate) must not have that section deleted along with the old
+    // certificate: any profile section heading ends the certificate's block range.
     for (offset, path) in paths.iter().enumerate().skip(hi + 1) {
         let Some(para) = doc.para(StoryRef::Body, path) else { continue };
-        let plain = para.plain_text();
-        let text = plain.trim();
-        if after.iter().any(|name| text.eq_ignore_ascii_case(name)) {
+        let text = para.plain_text();
+        let text = text.trim();
+        if spec.sections.iter().any(|s| text.eq_ignore_ascii_case(s.name.trim())) {
             return offset;
         }
     }
