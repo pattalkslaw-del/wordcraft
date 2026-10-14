@@ -1,6 +1,7 @@
 //! Court profile checks: compliant and violating documents per bundled profile.
 
 use serde_json::{Value, json};
+use wordcraft_doc::para::InlineObject;
 use wordcraft_doc::{CharProps, Document, Paragraph, StoryRef, para_block};
 use wordcraft_engine::Session;
 
@@ -488,6 +489,33 @@ fn unsearchable_pdf_produces_the_text_searchable_finding() {
     write_skeleton(&mut s, &profile_missouri(), "brief");
     let bytes = wordcraft_engine::io::save_bytes_opts("export.pdf", &s.doc, &Default::default()).expect("export a PDF");
     assert!(crate::checks::searchability_finding(&bytes, "textSearchablePdf").is_none());
+}
+
+/// A dominant scan with a long caption must surface the page-specific LawCraft warning, not pass or
+/// downgrade to a document-wide "not searchable" error.
+#[test]
+fn dominant_scan_with_long_caption_warns_on_the_page() {
+    let png = {
+        let img = image::RgbaImage::from_fn(16, 8, |x, y| image::Rgba([(x * 15) as u8, (y * 30) as u8, 200, 255]));
+        let mut buf = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).unwrap();
+        buf
+    };
+    let mut d = Document::new();
+    let media = d.add_media(png, "png");
+    let mut scan = Paragraph::with_text("", CharProps::default());
+    scan.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    let caption = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentyfour twentyfive";
+    d.body = vec![para_block(scan), para_block(Paragraph::with_text(caption, CharProps::default()))];
+    let bytes = wordcraft_engine::io::save_bytes_opts("export.pdf", &d, &Default::default()).expect("export a PDF");
+    let f = crate::checks::searchability_finding(&bytes, "textSearchablePdf").expect("a dominant scan must not pass");
+    assert_eq!(f.severity, "warning");
+    assert_eq!(f.message, "Page 1 has scanned content that could not be verified as searchable.");
 }
 
 fn profile_missouri() -> Profile {

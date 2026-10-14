@@ -151,15 +151,12 @@ pub fn extract_page_text(bytes: &[u8]) -> Result<Vec<String>, String> {
 /// How much of a page a picture has to cover before a page with only a little text on it is read
 /// as a scan rather than a text page with a small figure.
 const SCAN_COVERAGE: f64 = 0.15;
-/// Fewer words than this beside a page-dominating picture is a caption, not the page's content.
-const CAPTION_WORDS: usize = 4;
-
 /// What a PDF's text layer looks like once every page is considered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
     /// Every page carries document text, or is blank or furniture-only.
     Searchable,
-    /// At least one page carries no document text, or only a caption beside a scan.
+    /// At least one page carries no document text (for example a scan with no extractable letters).
     NotSearchable,
     /// A page draws a picture that dominates it and carries text that is neither clearly the
     /// page's content nor clearly a caption: its text layer cannot be verified.
@@ -201,7 +198,6 @@ pub fn extract_verdict_detail(bytes: &[u8]) -> VerdictDetail {
     for (index, page) in pages.iter().enumerate() {
         match page_coverage(page) {
             Coverage::Covered => {}
-            Coverage::Incidental => return VerdictDetail { verdict: Verdict::NotSearchable, unverifiable_pages: Vec::new() },
             Coverage::Uncertain => {
                 uncertain = true;
                 unverifiable_pages.push(index + 1);
@@ -221,7 +217,6 @@ pub fn extract_verdict_detail(bytes: &[u8]) -> VerdictDetail {
 /// One page's text coverage: its own words against any picture that dominates it.
 enum Coverage {
     Covered,
-    Incidental,
     Uncertain,
 }
 
@@ -236,20 +231,10 @@ fn page_coverage(page: &PageText) -> Coverage {
         // A small figure; the text beside it is the page's own content.
         return Coverage::Covered;
     }
-    let words = word_count(&page.content);
-    if words <= CAPTION_WORDS {
-        // A caption (or no text) beside a scan is not searchable document text.
-        Coverage::Incidental
-    } else {
-        // Unrelated extractable text does not certify the picture's content; coverage is unknown.
-        Coverage::Uncertain
-    }
-}
-
-/// Words in the page's own text: a run of non-space characters that has a letter, so a numeric
-/// page number or stamp stays furniture.
-fn word_count(content: &str) -> usize {
-    content.split_whitespace().filter(|w| w.chars().any(char::is_alphabetic)).count()
+    // A page-dominating picture (a scan) cannot be certified searchable from any extractable text on
+    // the same page — captions, page numbers, or long paragraphs beside the scan do not verify the
+    // image's content.
+    Coverage::Uncertain
 }
 
 /// Does the page's own text (outside page furniture) contain letters? A page number or a numeric

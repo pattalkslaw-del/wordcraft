@@ -1,5 +1,6 @@
 //! Court profile checks: evaluate a profile's `checks` against the open document.
 
+use std::collections::HashMap;
 use std::sync::Once;
 
 use serde_json::{Value, json};
@@ -141,6 +142,7 @@ fn word_limit(doc: &Document, spec: &DocSpec, sections: &[LocatedSection], check
 fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], exclude: &[&str]) -> u32 {
     let body_paths = doc.para_paths(StoryRef::Body);
     let section_by_para = section_ids_per_paragraph(&body_paths, sections);
+    let path_index: HashMap<&Path, usize> = body_paths.iter().enumerate().map(|(i, p)| (p, i)).collect();
     let mut total = 0u32;
     for (pi, path) in body_paths.iter().enumerate() {
         if let Some(sec) = section_by_para.get(pi).and_then(|s| s.as_deref())
@@ -161,7 +163,7 @@ fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], e
         // are counted, as FRAP's word count includes footnotes and endnotes.
         if let StoryRef::Part(id) = story
             && let Some(anchor) = doc.text_box_anchor(id)
-            && let Some(pi) = body_paths.iter().position(|p| p == &anchor.path)
+            && let Some(&pi) = path_index.get(&anchor.path)
             && let Some(sec) = section_by_para.get(pi).and_then(|s| s.as_deref())
             && exclude.contains(&sec)
         {
@@ -178,9 +180,10 @@ fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], e
 
 /// For each body paragraph index, the section id of the last located section heading at or before it.
 fn section_ids_per_paragraph(body_paths: &[Path], sections: &[LocatedSection]) -> Vec<Option<String>> {
+    let path_index: HashMap<&Path, usize> = body_paths.iter().enumerate().map(|(i, p)| (p, i)).collect();
     let mut boundaries: Vec<(usize, String)> = Vec::new();
     for loc in sections {
-        if let Some(i) = body_paths.iter().position(|p| p == &loc.path) {
+        if let Some(&i) = path_index.get(&loc.path) {
             boundaries.push((i, loc.id.clone()));
         }
     }

@@ -164,13 +164,15 @@ fn a_searchable_cover_with_scanned_body_pages_is_not_searchable() {
     let pages = extract_text(&bytes);
     assert_eq!(pages.len(), 2);
     assert!(squash(&pages[0]).contains("Cover page"));
-    assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable, "a scanned body page leaves the PDF unsearchable");
+    assert_eq!(text_searchability(&bytes), TextSearchability::Uncertain, "a scanned body page is unverifiable");
+    let detail = crate::extract::extract_verdict_detail(&bytes);
+    assert_eq!(detail.unverifiable_pages, vec![2]);
 }
 
-/// A scan with a caption beside it is still not text-searchable: the caption extracts, but the
-/// scanned writing it labels does not. This is the case a bare "any alphabetic text" rule passed.
+/// A scan with a caption beside it cannot be certified searchable: the caption extracts, but the
+/// scanned writing it labels does not.
 #[test]
-fn a_scan_with_a_caption_is_not_searchable() {
+fn a_scan_with_a_caption_is_uncertain() {
     let mut d = Document::new();
     let media = d.add_media(png(), "png");
     let mut scan = Paragraph::with_text("", CharProps::default());
@@ -185,10 +187,11 @@ fn a_scan_with_a_caption_is_not_searchable() {
     let bytes = export(&d, &PdfOptions::default()).unwrap();
     assert_eq!(extract_text(&bytes).len(), 1, "the scan and its caption share a page");
     assert!(squash(&extract_text(&bytes).concat()).contains("Exhibit A"), "the caption is extractable");
-    assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable, "a caption beside a scan must not certify the scan as searchable");
+    assert_eq!(text_searchability(&bytes), TextSearchability::Uncertain, "a caption beside a scan must not certify the scan as searchable");
+    assert_eq!(crate::extract::extract_verdict_detail(&bytes).unverifiable_pages, vec![1]);
 }
 
-/// A long caption beside a dominant scan must not pass as searchable: word count alone never
+/// Any caption beside a dominant scan must not pass as searchable: accompanying text never
 /// certifies picture content.
 #[test]
 fn a_dominant_scan_with_a_long_caption_is_uncertain() {

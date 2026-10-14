@@ -5259,6 +5259,7 @@ dependencies = [
 name = "wordcraft-law"
 version = "0.6.1"
 dependencies = [
+ "image",
  "log",
  "proptest",
  "serde",

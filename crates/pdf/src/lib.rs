@@ -39,8 +39,7 @@ pub fn extract_page_text(_bytes: &[u8]) -> Result<Vec<String>, String> {
 pub enum TextSearchability {
     /// The bytes carry extractable document text.
     Searchable,
-    /// The bytes are a PDF with no extractable text (for example, a scan of images), or a page
-    /// carries only a caption beside a scan.
+    /// The bytes are a PDF with no extractable document text (for example, image-only pages).
     NotSearchable,
     /// The bytes carry text, but at least one page draws a picture that dominates it and its text
     /// is neither clearly the page's own content nor clearly a caption: coverage cannot be
