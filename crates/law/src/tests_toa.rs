@@ -1,13 +1,13 @@
 //! Table of authorities: grouped entries, PAGEREF page lines, rebuild and undo.
 
 use serde_json::json;
-use wordcraft_doc::Path;
-use wordcraft_doc::StoryRef;
 use wordcraft_doc::para::{InlineObject, OBJ};
+use wordcraft_doc::{Block, Path, StoryRef};
 
 use crate::citations::find_entries;
 use crate::cmd::pack_by_id;
 use crate::tests::{MISSOURI, law, roundtrip, run};
+use crate::toa::{PROP_TOA_PASSIM, PROP_TOA_PASSIM_AT};
 use crate::{MODULE, install};
 use wordcraft_engine::Session;
 
@@ -453,4 +453,145 @@ fn table_exclusion_uses_the_top_level_block() {
     let entries = find_entries(&s.doc, pack, Some((0, 0)));
     assert!(entries.iter().all(|e| !e.label.contains("S.W.2d 679")), "the excluded paragraph is skipped: {entries:?}");
     assert!(entries.iter().any(|e| e.label.contains("S.W.3d 100")), "the table cell is kept: {entries:?}");
+}
+
+/// A field update must not destroy the table's stored bounds: the end bookmark sits on the last
+/// entry line, which the refresh rebuilds. Rebuilding then still replaces that one table, undo
+/// restores it, and both survive a .docx round trip.
+#[test]
+fn toa_survives_a_field_refresh_then_rebuild_and_undo() {
+    let mut s = law();
+    brief_with_citations(&mut s);
+    run(&mut s, "law.toa.build", json!({}));
+    let first = table_text(&s);
+
+    run(&mut s, "references.updateFields", json!({}));
+    assert_eq!(s.doc.bookmarks().into_iter().filter(|(n, _)| n == "_LawToaTbl").count(), 1, "the table start survives a refresh");
+    assert!(wordcraft_engine::cmd::references::bookmark_end_pos(&s.doc, "_LawToaTbl").is_some(), "the table end survives a refresh");
+    assert_eq!(table_text(&s), first, "the refresh keeps the table in place");
+
+    run(&mut s, "law.toa.build", json!({}));
+    assert_eq!(table_text(&s), first, "rebuild after a refresh keeps one table");
+    assert_eq!(s.doc.bookmarks().into_iter().filter(|(n, _)| n == "_LawToaTbl").count(), 1, "rebuilding did not stack a second table");
+    s.run("edit.undo", &json!({})).expect("undo rebuild");
+    assert_eq!(table_text(&s), first, "undo restores the refreshed table");
+
+    run(&mut s, "references.updateFields", json!({}));
+    let doc = roundtrip(&s);
+    let mut s2 = Session::new(doc);
+    s2.prefs.modules.insert(MODULE.into(), true);
+    assert_eq!(install(&mut s2), crate::specs().len());
+    run(&mut s2, "references.updateFields", json!({}));
+    run(&mut s2, "law.toa.build", json!({}));
+    assert_eq!(table_text(&s2), first, "rebuild after reopen and refresh keeps one table");
+    assert_eq!(s2.doc.bookmarks().into_iter().filter(|(n, _)| n == "_LawToaTbl").count(), 1, "one table after reopening the .docx");
+    s2.run("edit.undo", &json!({})).expect("undo rebuild");
+    assert_eq!(table_text(&s2), first, "undo after reopening restores the refreshed table");
+}
+
+/// A TOA entry line with the given cached page results, as `references.updateFields` leaves them.
+fn entry_line(pages: &[&str]) -> wordcraft_doc::Paragraph {
+    let bms: Vec<String> = (1..=pages.len()).map(|i| format!("_LawToa{i:09}")).collect();
+    let results: Vec<String> = pages.iter().map(|p| (*p).to_string()).collect();
+    wordcraft_engine::cmd::references::paragraph_pageref_line("Thummel v. King, 570 S.W.2d 679", &bms, false, 5, &results, 400.0, "Normal")
+        .expect("an entries line")
+}
+
+fn set_entry(s: &mut Session, pages: &[&str]) {
+    *s.doc.para_mut(StoryRef::Body, &Path::top(1)).expect("the entry paragraph") = entry_line(pages);
+}
+
+fn entry_shown(s: &Session) -> String {
+    shown(s.doc.para(StoryRef::Body, &Path::top(1)).expect("the entry paragraph"))
+}
+
+/// The refresh recomputes `passim` from the live page count but keeps the *stored* setting: it
+/// crosses the threshold in both directions without a rebuild, keeps a custom threshold, and never
+/// turns a disabled passim back on.
+#[test]
+fn toa_refresh_keeps_the_stored_passim_setting_across_threshold_crossings() {
+    let mut s = law();
+    s.doc.insert_block(StoryRef::Body, &Path::top(1), Block::Para(entry_line(&["1", "2", "3", "4"]))).expect("insert");
+    s.doc.set_custom_prop(PROP_TOA_PASSIM, "1");
+    s.doc.set_custom_prop(PROP_TOA_PASSIM_AT, "5");
+
+    crate::toa::refresh(&mut s).expect("refresh");
+    assert!(!entry_shown(&s).contains("passim"), "four pages under the default threshold five stay numeric");
+
+    // Upward crossing: a fifth distinct page and the line reads passim.
+    set_entry(&mut s, &["1", "2", "3", "4", "5"]);
+    crate::toa::refresh(&mut s).expect("refresh");
+    assert!(entry_shown(&s).contains("passim"), "five pages reach the default threshold");
+
+    // Downward crossing: back under the threshold and the page numbers return.
+    set_entry(&mut s, &["1", "2", "3", "4"]);
+    crate::toa::refresh(&mut s).expect("refresh");
+    assert!(!entry_shown(&s).contains("passim"), "dropping back to four pages restores the numbers");
+
+    // A custom threshold is kept through the refresh, not reset to five.
+    s.doc.set_custom_prop(PROP_TOA_PASSIM_AT, "3");
+    crate::toa::refresh(&mut s).expect("refresh");
+    assert!(entry_shown(&s).contains("passim"), "four pages reach a custom threshold of three");
+
+    set_entry(&mut s, &["1", "2"]);
+    crate::toa::refresh(&mut s).expect("refresh");
+    assert!(!entry_shown(&s).contains("passim"), "two pages are under a threshold of three");
+
+    // Disabling passim stays disabled however many pages pile up.
+    s.doc.set_custom_prop(PROP_TOA_PASSIM, "0");
+    set_entry(&mut s, &["1", "2", "3", "4", "5"]);
+    crate::toa::refresh(&mut s).expect("refresh");
+    assert!(!entry_shown(&s).contains("passim"), "a disabled passim stays off after a refresh");
+
+    // The stored settings survive a .docx round trip: a custom threshold still applies after a
+    // reopen, through the real field-update command.
+    s.doc.set_custom_prop(PROP_TOA_PASSIM, "1");
+    s.doc.set_custom_prop(PROP_TOA_PASSIM_AT, "3");
+    set_entry(&mut s, &["1", "2", "3", "4"]);
+    crate::toa::refresh(&mut s).expect("refresh");
+    assert!(entry_shown(&s).contains("passim"), "four pages reach a threshold of three");
+    let doc = roundtrip(&s);
+    let mut s2 = Session::new(doc);
+    s2.prefs.modules.insert(MODULE.into(), true);
+    assert_eq!(install(&mut s2), crate::specs().len());
+    run(&mut s2, "references.updateFields", json!({}));
+    assert!(
+        shown(s2.doc.para(StoryRef::Body, &Path::top(1)).expect("the reopened entry")).contains("passim"),
+        "a custom passim threshold survives a .docx round trip"
+    );
+}
+
+/// Field refresh follows passim across the threshold through the real command, with no rebuild.
+#[test]
+fn toa_passim_threshold_refreshes_without_rebuild() {
+    let mut s = law();
+    run(&mut s, "law.profiles.apply", json!({"id": MISSOURI, "doc": "brief"}));
+    run(&mut s, "text.insert", json!({"text": "Table of Authorities"}));
+    run(&mut s, "styles.apply", json!({"style": "Heading"}));
+    // Four page breaks, then five cites: the last two share the fourth page.
+    let mut cites = 0;
+    while cites < 5 {
+        run(&mut s, "text.newParagraph", json!({}));
+        if cites > 0 && cites < 4 {
+            run(&mut s, "text.insert", json!({"text": "\u{000c}"}));
+            run(&mut s, "text.newParagraph", json!({}));
+        }
+        run(&mut s, "text.insert", json!({"text": CASE_A}));
+        cites += 1;
+    }
+    run(&mut s, "law.toa.build", json!({}));
+    assert!(!table_text(&s).contains("passim"), "four distinct pages are under the threshold: {}", table_text(&s));
+
+    // Separate the shared-page cites: a fifth distinct page, and a field update alone turns passim on.
+    let last = s.doc.body.len().saturating_sub(1);
+    run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [last], "off": 0}}));
+    run(&mut s, "text.pageBreak", json!({}));
+    run(&mut s, "references.updateFields", json!({}));
+    assert!(table_text(&s).contains("passim"), "five pages after a refresh must print passim: {}", table_text(&s));
+
+    // Removing the separation and refreshing returns to the numbers, again without a rebuild.
+    run(&mut s, "caret.set", json!({"pos": {"story": "body", "path": [last], "off": 0}}));
+    run(&mut s, "text.delete", json!({}));
+    run(&mut s, "references.updateFields", json!({}));
+    assert!(!table_text(&s).contains("passim"), "back to four pages, the numbers return: {}", table_text(&s));
 }

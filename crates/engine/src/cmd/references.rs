@@ -831,7 +831,7 @@ pub fn update_fields(s: &mut Session) -> Result<(), CmdError> {
         }
         para.touch();
     }
-    refresh_law_toa_pageref_lines(s)?;
+    crate::hooks::run_after_field_update(s)?;
     super::citations::update_citations(s)?;
     update_toc(s)
 }
@@ -848,7 +848,7 @@ pub fn date_picture(instr: &str) -> Option<String> {
 
 /// A hidden bookmark from `start` through `end` in one paragraph (reuses an existing mark when
 /// it already covers the span, so rebuilding a table doesn't pile up marks or shift offsets).
-/// `prefix` is the bookmark name prefix (`_LawToa` → `_LawToa000000001`).
+/// `prefix` is the bookmark name prefix (`_Index` → `_Index000000001`).
 pub fn bookmark_range(s: &mut Session, start: &Pos, end: &Pos, prefix: &str) -> Result<String, CmdError> {
     if start.story != end.story || start.path != end.path || start.off > end.off {
         return Err(CmdError::Failed("bookmark range must lie in one paragraph".into()));
@@ -877,9 +877,6 @@ pub fn bookmark_range(s: &mut Session, start: &Pos, end: &Pos, prefix: &str) -> 
     s.doc.insert_object(start, InlineObject::BookmarkStart { name: name.clone() }, &props)?;
     Ok(name)
 }
-
-/// Bookmark prefix for table-of-authorities source marks (`PAGEREF` targets).
-pub const LAW_TOA_BOOKMARK_PREFIX: &str = "_LawToa";
 
 fn pageref_page_sort_key(page: &str) -> u64 {
     page.parse().unwrap_or(0)
@@ -960,61 +957,6 @@ pub fn paragraph_pageref_line(
     Ok(para)
 }
 
-fn pageref_line_citation(p: &Paragraph) -> Option<String> {
-    let shown: String = p.text.chars().filter(|c| *c != OBJ).collect();
-    let (cite, _) = shown.split_once('\t')?;
-    Some(cite.to_string())
-}
-
-fn pageref_line_passim_mode(p: &Paragraph) -> bool {
-    let shown: String = p.text.chars().filter(|c| *c != OBJ).collect();
-    let (_, after) = shown.split_once('\t').unwrap_or(("", ""));
-    after.trim_start().starts_with("passim")
-}
-
-/// Collect `_LawToa` `PAGEREF` bookmarks and their cached results (sorted by bookmark id).
-fn pageref_line_bookmarks(p: &Paragraph) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for o in &p.objects {
-        if let InlineObject::Field { instr, result, .. } = o
-            && let Some(rest) = instr.strip_prefix("PAGEREF ")
-        {
-            let name = rest.split_whitespace().next().unwrap_or(rest);
-            if name.starts_with(LAW_TOA_BOOKMARK_PREFIX) && !name.contains("Tbl") {
-                out.push((name.to_string(), result.clone()));
-            }
-        }
-    }
-    out.sort_by_key(|(n, _)| n.strip_prefix(LAW_TOA_BOOKMARK_PREFIX).and_then(|d| d.parse::<u64>().ok()).unwrap_or(0));
-    out
-}
-
-/// After `PAGEREF` results change, refresh which fields are visible so distinct pages stay current.
-pub fn refresh_law_toa_pageref_lines(s: &mut Session) -> Result<(), CmdError> {
-    for path in s.doc.para_paths(StoryRef::Body) {
-        let Some(p) = s.doc.para(StoryRef::Body, &path) else { continue };
-        let pairs = pageref_line_bookmarks(p);
-        if pairs.is_empty() {
-            continue;
-        }
-        let Some(citation) = pageref_line_citation(p) else { continue };
-        let passim = pageref_line_passim_mode(p);
-        let passim_at = 5;
-        let bookmarks: Vec<String> = pairs.iter().map(|(n, _)| n.clone()).collect();
-        let results: Vec<String> = pairs.iter().map(|(_, r)| r.clone()).collect();
-        let width = p.props.tabs.as_ref().and_then(|t| t.first()).map(|t| t.pos + 0.5).unwrap_or(400.0);
-        let style = p.props.style.clone().unwrap_or_else(|| "Normal".into());
-        let fresh = paragraph_pageref_line(&citation, &bookmarks, passim, passim_at, &results, width, &style)?;
-        *s.doc.para_mut(StoryRef::Body, &path)? = fresh;
-    }
-    Ok(())
-}
-
-/// True when a paragraph is a law table-of-authorities page-reference line.
-pub fn is_law_toa_pageref_line(p: &Paragraph) -> bool {
-    !pageref_line_bookmarks(p).is_empty()
-}
-
 /// The text a bookmark marks (field results included), up to its end in the same paragraph or
 /// the paragraph's end. `None` when there is no such bookmark.
 pub fn bookmark_text(doc: &wordcraft_doc::Document, name: &str) -> Option<String> {
@@ -1065,7 +1007,7 @@ mod tests {
         let path = s.doc.para_paths(StoryRef::Body)[0].clone();
         let start = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
         let end = Pos { story: StoryRef::Body, path, off: s.doc.para(StoryRef::Body, &start.path).unwrap().len() };
-        let name = bookmark_range(&mut s, &start, &end, "_LawToa").expect("bookmark");
+        let name = bookmark_range(&mut s, &start, &end, "_Index").expect("bookmark");
         let line = paragraph_pageref_line(
             "Thummel v. King, 570 S.W.2d 679 (Mo. banc 1978)",
             std::slice::from_ref(&name),
@@ -1112,47 +1054,12 @@ mod tests {
         assert!(bookmark_end_pos(&s.doc, "missing").is_none());
     }
 
-    /// Every occurrence keeps its own `PAGEREF`; when two land on the same page only one shows until
-    /// they separate, then updating fields reveals both pages without rebuilding the table.
-    #[test]
-    fn pageref_line_keeps_every_occurrence_when_pages_split() {
-        let mut s = Session::new(wordcraft_doc::Document::from_text("first cite\nsecond cite"));
-        let p0 = Path::top(0);
-        let p1 = Path::top(1);
-        let bm0 = bookmark_range(
-            &mut s,
-            &Pos { story: StoryRef::Body, path: p0.clone(), off: 0 },
-            &Pos { story: StoryRef::Body, path: p0, off: 10 },
-            LAW_TOA_BOOKMARK_PREFIX,
-        )
-        .expect("bm0");
-        let bm1 = bookmark_range(
-            &mut s,
-            &Pos { story: StoryRef::Body, path: p1.clone(), off: 0 },
-            &Pos { story: StoryRef::Body, path: p1, off: 11 },
-            LAW_TOA_BOOKMARK_PREFIX,
-        )
-        .expect("bm1");
-        let line = paragraph_pageref_line("Case", &[bm0.clone(), bm1.clone()], false, 5, &["2".into(), "2".into()], 400.0, "Normal").expect("line");
-        s.doc.insert_block(StoryRef::Body, &Path::top(2), Block::Para(line)).expect("insert");
-        assert_eq!(fields(&s).len(), 2, "both occurrences keep a PAGEREF");
-
-        s.doc.insert_block(StoryRef::Body, &Path::top(1), Block::Para(Paragraph::with_text("\u{000c}", CharProps::default()))).expect("break");
-        update_fields(&mut s).expect("update");
-        let table = s.doc.para(StoryRef::Body, &Path::top(3)).expect("table line");
-        let line_text = table.plain_text();
-        let pages = line_text.split('\t').nth(1).unwrap_or_default();
-        let parts: Vec<&str> = pages.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
-        assert_eq!(parts.len(), 2, "both pages show after the cites separate: {pages}");
-        assert_ne!(parts[0], parts[1]);
-    }
-
     /// Passim keeps the `PAGEREF` references (so they keep updating) but hides their results: the
     /// line reads `cite<TAB>passim`, never `passim54321`, before and after a round trip.
     #[test]
     fn passim_pageref_fields_are_hidden() {
         let mut s = Session::new(wordcraft_doc::Document::new());
-        let name = "_LawToa000000001".to_string();
+        let name = "_Index000000001".to_string();
         let line = paragraph_pageref_line(
             "Thummel v. King, 570 S.W.2d 679",
             std::slice::from_ref(&name),

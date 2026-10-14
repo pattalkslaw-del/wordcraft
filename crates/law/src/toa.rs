@@ -1,10 +1,11 @@
 //! Table of authorities: build from the citation finder with bookmark + PAGEREF page lines.
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
 use wordcraft_doc::collate::sort_key;
-use wordcraft_doc::para::InlineObject;
+use wordcraft_doc::para::{InlineObject, OBJ};
 use wordcraft_doc::props::CharProps;
 use wordcraft_doc::{Block, Paragraph, Path, Pos, StoryRef};
 use wordcraft_engine::cmd::page;
@@ -17,8 +18,13 @@ use crate::profile::{DocSpec, Profile};
 
 const PROP_TOA_START_BM: &str = "LAW_TOA_START_BM";
 const PROP_TOA_END_BM: &str = "LAW_TOA_END_BM";
+/// The passim setting the table was last built with, kept independently of what the entries
+/// currently display so a field refresh never changes the setting out from under the document.
+pub(crate) const PROP_TOA_PASSIM: &str = "LAW_TOA_PASSIM";
+pub(crate) const PROP_TOA_PASSIM_AT: &str = "LAW_TOA_PASSIM_AT";
 const BOOKMARK_PREFIX: &str = "_LawToa";
 const BOOKMARK_TBL: &str = "_LawToaTbl";
+const DEFAULT_PASSIM_AT: u32 = 5;
 
 /// Build or rebuild the table of authorities at the caret or at the profile's TOA section.
 pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
@@ -27,7 +33,7 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
     let (profile, doc_type) = applied_profile(s, v)?;
     let spec = profile.as_ref().and_then(|p| doc_type.as_ref().and_then(|d| p.docs.get(d)));
     let passim = p::bool(v, "passim").unwrap_or_else(|| spec.and_then(|d| d.toa_passim).unwrap_or(true));
-    let passim_at = p::u64(v, "passimAt").map(|n| n.clamp(1, 99) as u32).or_else(|| spec.and_then(|d| d.toa_passim_at)).unwrap_or(5);
+    let passim_at = p::u64(v, "passimAt").map(|n| n.clamp(1, 99) as u32).or_else(|| spec.and_then(|d| d.toa_passim_at)).unwrap_or(DEFAULT_PASSIM_AT);
 
     let (mut insert_at, replace) = insert_plan(s, spec, v)?;
     if let Some((start, end)) = replace
@@ -82,6 +88,11 @@ pub fn build(s: &mut Session, v: &Value) -> Result<Value, CmdError> {
         mark_table_bounds(s, insert_at, end)?;
         s.doc.set_custom_prop(PROP_TOA_START_BM, BOOKMARK_TBL);
         s.doc.set_custom_prop(PROP_TOA_END_BM, BOOKMARK_TBL);
+        // Record the settings this table was built with: a later field refresh recomputes which
+        // entries read `passim` from the live page counts, but keeps the user's setting, not the
+        // rendering.
+        s.doc.set_custom_prop(PROP_TOA_PASSIM, if passim { "1" } else { "0" });
+        s.doc.set_custom_prop(PROP_TOA_PASSIM_AT, &passim_at.to_string());
     }
     s.touch();
     Ok(json!({"pack": pack_id, "entries": entries.len(), "blocks": blocks.len(), "start": insert_at}))
@@ -249,4 +260,97 @@ fn pos_desc(start: &Pos) -> (i64, usize, usize) {
         StoryRef::Part(id) => id as i64 + 1,
     };
     (story, start.path.last(), start.off)
+}
+
+/// Register the table's page-reference refresh with the engine, once per process. The engine runs
+/// it after field results change (`references.updateFields`); the table itself knows nothing about
+/// fields, so the hook lives here, not in core.
+pub fn register_field_hook() {
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    if REGISTERED.set(()).is_ok() {
+        wordcraft_engine::hooks::register_after_field_update(refresh);
+    }
+}
+
+/// The passim setting the document's table was built with: enabled by default, five pages.
+fn stored_passim(s: &Session) -> bool {
+    s.doc.custom_prop(PROP_TOA_PASSIM).map(|v| v != "0").unwrap_or(true)
+}
+
+fn stored_passim_at(s: &Session) -> u32 {
+    s.doc.custom_prop(PROP_TOA_PASSIM_AT).and_then(|v| v.parse::<u32>().ok()).filter(|n| (1..=99).contains(n)).unwrap_or(DEFAULT_PASSIM_AT)
+}
+
+/// After field results change, redraw every table entry line from its cached page numbers so the
+/// distinct pages shown, and whether the line reads `passim`, stay current. The entry's paragraph
+/// is rebuilt in place: its other inline objects (the table's boundary bookmarks) and its
+/// formatting are kept, so the stored table range survives and rebuilding still replaces it.
+pub fn refresh(s: &mut Session) -> Result<(), CmdError> {
+    let passim = stored_passim(s);
+    let passim_at = stored_passim_at(s);
+    for path in s.doc.para_paths(StoryRef::Body) {
+        let Some(p) = s.doc.para(StoryRef::Body, &path) else { continue };
+        let pairs = entry_pageref_fields(p);
+        if pairs.is_empty() {
+            continue;
+        }
+        let Some(citation) = pageref_line_citation(p) else { continue };
+        let bookmarks: Vec<String> = pairs.iter().map(|(n, _)| n.clone()).collect();
+        let results: Vec<String> = pairs.iter().map(|(_, r)| r.clone()).collect();
+        let width = p.props.tabs.as_ref().and_then(|t| t.first()).map(|t| t.pos + 0.5).unwrap_or(400.0);
+        let style = p.props.style.clone().unwrap_or_else(|| "Normal".into());
+        // Everything the page-reference builder does not own: the table's boundary bookmarks and
+        // any other inline object, plus the paragraph's own formatting.
+        let kept_props = p.props.clone();
+        let kept_mark = p.mark.clone();
+        let kept_section = p.section.clone();
+        let kept_objects: Vec<InlineObject> = p.objects.iter().filter(|o| !is_entry_pageref(o)).cloned().collect();
+        let mut fresh = paragraph_pageref_line(&citation, &bookmarks, passim, passim_at, &results, width, &style)?;
+        let built_tabs = fresh.props.tabs.clone();
+        fresh.props = kept_props;
+        if fresh.props.tabs.is_none() {
+            fresh.props.tabs = built_tabs;
+        }
+        fresh.mark = kept_mark;
+        fresh.section = kept_section;
+        for obj in kept_objects {
+            fresh.insert_object(fresh.len(), obj, &CharProps::default())?;
+        }
+        *s.doc.para_mut(StoryRef::Body, &path)? = fresh;
+    }
+    Ok(())
+}
+
+/// The article's table entries: `(bookmark, cached result)` for every `_LawToa` `PAGEREF` on the
+/// line, in bookmark-number order. Short-form repeats the finder already links share a bookmark.
+fn entry_pageref_fields(p: &Paragraph) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for o in &p.objects {
+        if let InlineObject::Field { instr, result, .. } = o
+            && let Some(rest) = instr.strip_prefix("PAGEREF ")
+        {
+            let name = rest.split_whitespace().next().unwrap_or(rest);
+            if name.starts_with(BOOKMARK_PREFIX) && !name.contains("Tbl") {
+                out.push((name.to_string(), result.clone()));
+            }
+        }
+    }
+    out.sort_by_key(|(n, _)| n.strip_prefix(BOOKMARK_PREFIX).and_then(|d| d.parse::<u64>().ok()).unwrap_or(0));
+    out
+}
+
+fn is_entry_pageref(o: &InlineObject) -> bool {
+    if let InlineObject::Field { instr, .. } = o
+        && let Some(rest) = instr.strip_prefix("PAGEREF ")
+    {
+        let name = rest.split_whitespace().next().unwrap_or(rest);
+        return name.starts_with(BOOKMARK_PREFIX) && !name.contains("Tbl");
+    }
+    false
+}
+
+fn pageref_line_citation(p: &Paragraph) -> Option<String> {
+    let shown: String = p.text.chars().filter(|c| *c != OBJ).collect();
+    let (cite, _) = shown.split_once('\t')?;
+    Some(cite.to_string())
 }
