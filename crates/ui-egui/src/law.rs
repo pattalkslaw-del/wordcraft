@@ -31,6 +31,12 @@ pub struct LawUi {
     /// Check source text being edited (`profile_id` + document type + check index). Kept between
     /// frames so typing is not lost before the field loses focus and saves.
     pub check_source_drafts: BTreeMap<String, String>,
+    /// Style font name being edited (`profile_id` + document type + style index). Kept between
+    /// frames so a name with spaces is not trimmed to `TimesNewRoman` while typing.
+    pub style_font_drafts: BTreeMap<String, String>,
+    /// Check font name being edited (`profile_id` + document type + check index). The same
+    /// draft-until-commit rule as [`Self::style_font_drafts`].
+    pub check_font_drafts: BTreeMap<String, String>,
 }
 
 /// Install LawCraft commands when the module is on (safe to call every frame).
@@ -84,10 +90,23 @@ fn check_draft_key(profile_id: &str, doc_key: &str, index: usize) -> String {
     format!("{profile_id}\0{doc_key}\0{index}")
 }
 
-/// Drop drafts for one document type (its check list is about to change shape).
+fn style_font_draft_key(profile_id: &str, doc_key: &str, index: usize) -> String {
+    format!("{profile_id}\0{doc_key}\0style\0{index}")
+}
+
+/// Drop check drafts for one document type (its check list is about to change shape).
 fn clear_check_drafts(law: &mut LawUi, profile_id: &str, doc_key: &str) {
     let prefix = format!("{profile_id}\0{doc_key}\0");
     law.check_source_drafts.retain(|k, _| !k.starts_with(&prefix));
+    law.check_font_drafts.retain(|k, _| !k.starts_with(&prefix));
+}
+
+/// Forget every text draft for the profile being left or replaced.
+fn clear_profile_drafts(law: &mut LawUi) {
+    law.section_name_drafts.clear();
+    law.check_source_drafts.clear();
+    law.check_font_drafts.clear();
+    law.style_font_drafts.clear();
 }
 
 /// File › Options › Add-ins: optional modules.
@@ -155,8 +174,7 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                         app.law.selected = Some(id.to_string());
                         app.law.validation = None;
                         app.law.confirm_approve = false;
-                        app.law.section_name_drafts.clear();
-                        app.law.check_source_drafts.clear();
+                        clear_profile_drafts(&mut app.law);
                         if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
                             reconcile_doc_type(&mut app.law, &p);
                         }
@@ -230,7 +248,7 @@ fn profile_editor(app: &mut WordApp, ui: &mut Ui, id: &str, list: &[Value]) {
             for d in &docs {
                 if ui.selectable_label(app.law.doc_type == *d, d.as_str()).clicked() {
                     app.law.doc_type = d.clone();
-                    app.law.check_source_drafts.clear();
+                    clear_check_drafts(&mut app.law, id, d);
                 }
             }
         });
@@ -393,14 +411,23 @@ fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
         for (i, st) in styles.iter().enumerate() {
             let name = st["name"].as_str().unwrap_or("");
             ui.collapsing(name, |ui| {
-                let mut font = st.pointer("/chr/font").and_then(Value::as_str).unwrap_or("").to_string();
+                let draft_key = style_font_draft_key(profile_id, doc_key, i);
+                let stored_font = st.pointer("/chr/font").and_then(Value::as_str).unwrap_or("").to_string();
+                let mut font = app.law.style_font_drafts.get(&draft_key).cloned().unwrap_or_else(|| stored_font.clone());
                 let mut size = st.pointer("/chr/size").and_then(Value::as_f64).unwrap_or(0.0) as f32;
                 ui.horizontal(|ui| {
-                    ui.label(tl!("Font:"));
-                    let font_changed = ui.text_edit_singleline(&mut font).changed();
+                    let font_label = ui.label(tl!("Font:"));
+                    let font_resp = ui.text_edit_singleline(&mut font).labelled_by(font_label.id);
+                    // Keep the untrimmed text between frames: trimming on every keystroke would
+                    // drop the space in "Times New Roman" before the next character arrives.
+                    if font_resp.changed() {
+                        app.law.style_font_drafts.insert(draft_key.clone(), font.clone());
+                    }
                     ui.label(tl!("Size (pt):"));
                     let size_changed = ui.add(egui::DragValue::new(&mut size).speed(0.5).range(1.0..=4096.0)).changed();
-                    if font_changed || size_changed {
+                    let font_dirty = font.trim() != stored_font.trim();
+                    if size_changed || (font_resp.lost_focus() && font_dirty) {
+                        app.law.style_font_drafts.remove(&draft_key);
                         let mut styles = styles.clone();
                         if let Some(s) = styles.get_mut(i).and_then(Value::as_object_mut) {
                             let chr = s.entry("chr").or_insert(json!({}));
@@ -453,7 +480,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
         ui.label(RichText::new(tl!("Checks for this document type")).small().weak());
         if ui.button(tl!("Add check")).clicked() {
             clear_check_drafts(&mut app.law, profile_id, doc_key);
-            let mut checks = checks.clone();
+            let mut checks = current_checks(profile, doc_key);
             checks.push(json!({"kind": "wordLimit", "limit": 10000, "source": "Edited in LawCraft settings"}));
             save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
         }
@@ -482,7 +509,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                 );
                 if selected_kind != kind {
                     clear_check_drafts(&mut app.law, profile_id, doc_key);
-                    let mut checks = checks.clone();
+                    let mut checks = current_checks(profile, doc_key);
                     if let Some(c) = checks.get_mut(i) {
                         *c = default_check(&selected_kind, c);
                     }
@@ -491,8 +518,10 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                 }
                 if ui.button(tl!("Remove")).clicked() {
                     clear_check_drafts(&mut app.law, profile_id, doc_key);
-                    let mut checks = checks.clone();
-                    checks.remove(i);
+                    let mut checks = current_checks(profile, doc_key);
+                    if i < checks.len() {
+                        checks.remove(i);
+                    }
                     save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
                 }
             });
@@ -504,7 +533,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     ui.horizontal(|ui| {
                         ui.label(tl!("Word limit:"));
                         if ui.add(egui::DragValue::new(&mut limit).speed(100.0).range(1..=1_000_000)).changed() {
-                            patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"limit": limit}));
+                            patch_check(app, profile_id, doc_key, profile, i, json!({"limit": limit}));
                         }
                     });
                     check_id_list_editor(
@@ -513,7 +542,6 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                         profile_id,
                         doc_key,
                         profile,
-                        &checks,
                         i,
                         "excludeSections",
                         &section_ids,
@@ -522,14 +550,22 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                 }
                 "minFontSize" => {
                     let mut pt = ch["pt"].as_f64().unwrap_or(13.0) as f32;
-                    let mut font = ch["font"].as_str().unwrap_or("").to_string();
+                    let font_key = check_draft_key(profile_id, doc_key, i);
+                    let stored_font = ch["font"].as_str().unwrap_or("").to_string();
+                    let mut font = app.law.check_font_drafts.get(&font_key).cloned().unwrap_or_else(|| stored_font.clone());
                     ui.horizontal(|ui| {
                         ui.label(tl!("Minimum (pt):"));
                         let pt_changed = ui.add(egui::DragValue::new(&mut pt).speed(0.5).range(1.0..=4096.0)).changed();
-                        ui.label(tl!("Font:"));
-                        let font_changed = ui.text_edit_singleline(&mut font).changed();
-                        if pt_changed || font_changed {
-                            patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"pt": pt, "font": font.trim()}));
+                        let font_label = ui.label(tl!("Font:"));
+                        let font_resp = ui.text_edit_singleline(&mut font).labelled_by(font_label.id);
+                        // Untrimmed draft until commit: trimming each keystroke drops the spaces.
+                        if font_resp.changed() {
+                            app.law.check_font_drafts.insert(font_key.clone(), font.clone());
+                        }
+                        let font_dirty = font.trim() != stored_font.trim();
+                        if pt_changed || (font_resp.lost_focus() && font_dirty) {
+                            app.law.check_font_drafts.remove(&font_key);
+                            patch_check(app, profile_id, doc_key, profile, i, json!({"pt": pt, "font": font.trim()}));
                         }
                     });
                 }
@@ -538,7 +574,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     ui.horizontal(|ui| {
                         ui.label(tl!("Minimum margin (pt):"));
                         if ui.add(egui::DragValue::new(&mut pt).speed(1.0).range(1.0..=4096.0)).changed() {
-                            patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"pt": pt}));
+                            patch_check(app, profile_id, doc_key, profile, i, json!({"pt": pt}));
                         }
                     });
                 }
@@ -547,7 +583,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     ui.horizontal(|ui| {
                         ui.label(tl!("Minimum line spacing (multiple):"));
                         if ui.add(egui::DragValue::new(&mut spacing).speed(0.05).range(0.5..=4.0)).changed() {
-                            patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"spacing": spacing}));
+                            patch_check(app, profile_id, doc_key, profile, i, json!({"spacing": spacing}));
                         }
                     });
                     check_id_list_editor(
@@ -556,7 +592,6 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                         profile_id,
                         doc_key,
                         profile,
-                        &checks,
                         i,
                         "exceptStyles",
                         &style_names,
@@ -564,7 +599,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     );
                 }
                 "requiredSections" => {
-                    check_id_list_editor(app, ui, profile_id, doc_key, profile, &checks, i, "ids", &section_ids, tl!("Required section ids:"));
+                    check_id_list_editor(app, ui, profile_id, doc_key, profile, i, "ids", &section_ids, tl!("Required section ids:"));
                 }
                 "noHyperlinks" | "textSearchablePdf" => {
                     ui.label(RichText::new(tl!("No parameters for this check.")).small().weak());
@@ -586,7 +621,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                 if resp.lost_focus() {
                     app.law.check_source_drafts.remove(&draft_key);
                     if source.trim() != stored_source.trim() {
-                        patch_check(app, profile_id, doc_key, profile, &checks, i, json!({"source": source.trim()}));
+                        patch_check(app, profile_id, doc_key, profile, i, json!({"source": source.trim()}));
                     }
                 }
             });
@@ -611,8 +646,17 @@ fn default_check(kind: &str, previous: &Value) -> Value {
     }
 }
 
-fn patch_check(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut Value, checks: &[Value], index: usize, patch: Value) {
-    let mut checks = checks.to_vec();
+/// The checks the profile currently holds for one document type (the up-to-date value, not the
+/// snapshot a frame started with).
+fn current_checks(profile: &Value, doc_key: &str) -> Vec<Value> {
+    profile["docs"][doc_key]["checks"].as_array().cloned().unwrap_or_default()
+}
+
+/// Merge one patch into a check. It reads the profile's *current* checks, so a commit later in the
+/// same frame (the Source field losing focus after a parameter changed) cannot revert the earlier
+/// edit by cloning the frame's starting snapshot.
+fn patch_check(app: &mut WordApp, profile_id: &str, doc_key: &str, profile: &mut Value, index: usize, patch: Value) {
+    let mut checks = current_checks(profile, doc_key);
     if let Some(c) = checks.get_mut(index).and_then(Value::as_object_mut)
         && let Some(p) = patch.as_object()
     {
@@ -629,15 +673,17 @@ fn check_id_list_editor(
     profile_id: &str,
     doc_key: &str,
     profile: &mut Value,
-    checks: &[Value],
     index: usize,
     field: &str,
     choices: &[String],
     label: &str,
 ) {
-    let ch = checks.get(index).unwrap_or(&Value::Null);
-    let selected: Vec<String> =
-        ch.get(field).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default();
+    let selected: Vec<String> = current_checks(profile, doc_key)
+        .get(index)
+        .and_then(|c| c.get(field))
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
     ui.label(label);
     if choices.is_empty() {
         ui.label(RichText::new(tl!("No sections or styles to choose from yet.")).small().weak());
@@ -662,7 +708,7 @@ fn check_id_list_editor(
     });
     if changed {
         let ids: Vec<Value> = next.iter().map(|s| json!(s)).collect();
-        patch_check(app, profile_id, doc_key, profile, checks, index, json!({field: ids}));
+        patch_check(app, profile_id, doc_key, profile, index, json!({field: ids}));
     }
 }
 
@@ -710,8 +756,7 @@ pub(crate) fn finish_pick(app: &mut WordApp, after: AfterPick, picked: Option<St
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
                     app.law.selected = Some(id.to_string());
                     app.law.validation = None;
-                    app.law.section_name_drafts.clear();
-                    app.law.check_source_drafts.clear();
+                    clear_profile_drafts(&mut app.law);
                     if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
                         reconcile_doc_type(&mut app.law, &p);
                     }

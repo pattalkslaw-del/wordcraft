@@ -279,6 +279,150 @@ fn editing_a_section_name_across_frames_saves_on_blur() {
 }
 
 #[test]
+fn editing_a_style_font_across_frames_keeps_spaces() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-style-font");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Style font test",
+            "jurisdiction": "Test",
+            "verified": true,
+            "docs": {
+                "brief": {
+                    "styles": [{"name": "Norm1"}],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    a.run("law.profiles.approve", json!({"id": id})).unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(6);
+    h.get_by_label("Norm1").click();
+    h.run_steps(2);
+
+    // One character per frame, spaces included: the untrimmed draft must survive between frames.
+    h.get_by_label("Font:").focus();
+    h.run_steps(2);
+    for ch in "Times New Roman".chars() {
+        h.get_by_label("Font:").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    let shown = h.get_by_label("Font:").value().unwrap_or_default();
+    assert_eq!(shown, "Times New Roman", "the style font field keeps the spaces typed: {shown:?}");
+
+    h.get_by_label("Add check").focus();
+    h.run_steps(2);
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    assert_eq!(after["docs"]["brief"]["styles"][0]["chr"]["font"], json!("Times New Roman"));
+    assert_eq!(after["verified"], json!(false), "editing a style makes the profile unverified");
+}
+
+#[test]
+fn editing_a_check_font_across_frames_keeps_spaces() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-check-font");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Check font test",
+            "jurisdiction": "Test",
+            "verified": true,
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "minFontSize", "pt": 13.0, "font": "", "source": "Test"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    a.run("law.profiles.approve", json!({"id": id})).unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(6);
+
+    h.get_by_label("Font:").focus();
+    h.run_steps(2);
+    for ch in "Times New Roman".chars() {
+        h.get_by_label("Font:").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    let shown = h.get_by_label("Font:").value().unwrap_or_default();
+    assert_eq!(shown, "Times New Roman", "the check font field keeps the spaces typed: {shown:?}");
+
+    h.get_by_label("Add check").focus();
+    h.run_steps(2);
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    assert_eq!(after["docs"]["brief"]["checks"][0]["font"], json!("Times New Roman"));
+    assert_eq!(after["verified"], json!(false));
+}
+
+#[test]
+fn editing_source_and_exclusion_together_keeps_both() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-check-merge");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Check merge test",
+            "jurisdiction": "Test",
+            "verified": true,
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "s1", "name": "Section One"}, {"id": "s2", "name": "Section Two"}],
+                    "checks": [{"kind": "wordLimit", "limit": 10000, "excludeSections": [], "source": "Old"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    a.run("law.profiles.approve", json!({"id": id})).unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("Source:").focus();
+    h.run_steps(2);
+    for ch in "New".chars() {
+        h.get_by_label("Source:").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    // Clicking the exclusion checkbox also blurs Source in the same frame: both edits must survive.
+    h.get_by_label("s1").click();
+    h.run_steps(2);
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let check = &after["docs"]["brief"]["checks"][0];
+    assert!(check["source"].as_str().unwrap_or("").ends_with("New"), "the source edit is saved: {check}");
+    assert_eq!(check["excludeSections"], json!(["s1"]), "the exclusion survives the source commit: {check}");
+    assert_eq!(after["verified"], json!(false));
+}
+
+#[test]
 fn approve_profile_in_ui_and_block_automation() {
     let _lock = serial();
     let mut a = law_app();
