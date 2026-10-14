@@ -495,12 +495,7 @@ fn unsearchable_pdf_produces_the_text_searchable_finding() {
 /// downgrade to a document-wide "not searchable" error.
 #[test]
 fn dominant_scan_with_long_caption_warns_on_the_page() {
-    let png = {
-        let img = image::RgbaImage::from_fn(16, 8, |x, y| image::Rgba([(x * 15) as u8, (y * 30) as u8, 200, 255]));
-        let mut buf = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).unwrap();
-        buf
-    };
+    let png = test_png();
     let mut d = Document::new();
     let media = d.add_media(png, "png");
     let mut scan = Paragraph::with_text("", CharProps::default());
@@ -516,6 +511,60 @@ fn dominant_scan_with_long_caption_warns_on_the_page() {
     let f = crate::checks::searchability_finding(&bytes, "textSearchablePdf").expect("a dominant scan must not pass");
     assert_eq!(f.severity, "warning");
     assert_eq!(f.message, "Page 1 has scanned content that could not be verified as searchable.");
+}
+
+/// An image-only scan (no text anywhere) must warn about the page it is on, not produce the generic
+/// document-wide "not searchable" error: the scan is unverified content, and its page is named.
+#[test]
+fn image_only_scan_warns_on_the_page() {
+    let mut d = Document::new();
+    let media = d.add_media(test_png(), "png");
+    let mut scan = Paragraph::with_text("", CharProps::default());
+    scan.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    d.body = vec![para_block(scan)];
+    let bytes = wordcraft_engine::io::save_bytes_opts("export.pdf", &d, &Default::default()).expect("export a PDF");
+    let f = crate::checks::searchability_finding(&bytes, "textSearchablePdf").expect("an image-only scan must not pass");
+    assert_eq!(f.severity, "warning");
+    assert_eq!(f.message, "Page 1 has scanned content that could not be verified as searchable.");
+}
+
+/// A scan whose only text is a page-number footer must warn about the page: a page number is
+/// furniture, so it never certifies the scanned content as searchable.
+#[test]
+fn scan_with_only_a_page_number_footer_warns_on_the_page() {
+    let mut d = Document::new();
+    let media = d.add_media(test_png(), "png");
+    let mut scan = Paragraph::with_text("", CharProps::default());
+    scan.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    d.body = vec![para_block(scan)];
+    let mut footer = Paragraph::with_text("", CharProps::default());
+    footer
+        .insert_object(0, InlineObject::Field { instr: "PAGE".into(), result: String::new(), locked: false, code: false }, &CharProps::default())
+        .unwrap();
+    let id = d.add_part(wordcraft_doc::PartKind::Footer, vec![para_block(footer)]);
+    d.last_section.footers.default = Some(id);
+    let bytes = wordcraft_engine::io::save_bytes_opts("export.pdf", &d, &Default::default()).expect("export a PDF");
+    let f = crate::checks::searchability_finding(&bytes, "textSearchablePdf").expect("a page-number-only scan must not pass");
+    assert_eq!(f.severity, "warning");
+    assert_eq!(f.message, "Page 1 has scanned content that could not be verified as searchable.");
+}
+
+/// A tiny in-memory PNG for building a "scan" (a page-dominating picture) in a test document.
+fn test_png() -> Vec<u8> {
+    let img = image::RgbaImage::from_fn(16, 8, |x, y| image::Rgba([(x * 15) as u8, (y * 30) as u8, 200, 255]));
+    let mut buf = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png).unwrap();
+    buf
 }
 
 fn profile_missouri() -> Profile {

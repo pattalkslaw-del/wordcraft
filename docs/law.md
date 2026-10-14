@@ -139,15 +139,18 @@ findings are reported, not blocking.
   stories, so a single-spaced box is caught like a single-spaced paragraph. The profile's
   single-spaced exceptions (Caption, Heading, Block Quote, Signature, Certificate) still apply in
   a box, and no exception may go below single spacing.
-- `textSearchablePdf` exports the document in memory and inspects the result: a page that draws a
-  scan and carries no text (or only a caption beside the scan) is reported as not searchable, and a
-  page dominated by a picture whose text cannot be told from its content is a warning, not a
-  silent pass. It runs only when the output being written is a PDF.
+- `textSearchablePdf` exports the document in memory and inspects the result: a page dominated by a
+  picture (a scan, photograph or figure) is a **warning** naming that page — `Page N has scanned
+  content that could not be verified as searchable.` — because text on the same page (a caption, a
+  page number, even a long paragraph) never certifies the picture's own content. That stays a
+  warning even when the document has no other text at all. A PDF with no picture and no text layer
+  is reported as not searchable. It runs only when the output being written is a PDF.
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-14 | patch | `textSearchablePdf` now names the page for a picture-dominated page even when the document has no substantive text: an image-only scan and a scan with only a caption or page-number footer are a page-specific warning, not a document-wide "not searchable" error |
 | 2026-10-13 | minor | Court-profile checks engine: `law.checks.run`, pre-export checks through the engine's export-check hook, text-box-aware line spacing, and a PDF searchability verdict that no longer passes a scan with a caption |
 
 ## How it works

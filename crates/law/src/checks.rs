@@ -142,30 +142,27 @@ fn word_limit(doc: &Document, spec: &DocSpec, sections: &[LocatedSection], check
 fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], exclude: &[&str]) -> u32 {
     let body_paths = doc.para_paths(StoryRef::Body);
     let section_by_para = section_ids_per_paragraph(&body_paths, sections);
-    let path_index: HashMap<&Path, usize> = body_paths.iter().enumerate().map(|(i, p)| (p, i)).collect();
     let mut total = 0u32;
     for (pi, path) in body_paths.iter().enumerate() {
-        if let Some(sec) = section_by_para.get(pi).and_then(|s| s.as_deref())
-            && exclude.contains(&sec)
-        {
+        if section_by_para.get(pi).and_then(|s| s.as_deref()).is_some_and(|sec| exclude.contains(&sec)) {
             continue;
         }
         if let Some(p) = doc.para(StoryRef::Body, path) {
             total = total.saturating_add(para_words(p) as u32);
         }
     }
+    // Which section owns each text box, precomputed in one pass so counting stays linear: a box's
+    // section is the one that holds the paragraph anchoring it. A box under an excluded section (a
+    // label on the cover, say) is part of that section and is left out with its other words; a box
+    // counted with its section is counted. Notes have no text-box anchor and are counted, as FRAP's
+    // word count includes footnotes and endnotes.
+    let owner: BoxOwnership = box_ownership(doc, &body_paths, &section_by_para, exclude);
     for story in doc.counted_stories() {
         if story == StoryRef::Body {
             continue;
         }
-        // A text box belonging to an excluded section (a label on the cover, say) is part of that
-        // section: leave it out with the section's other words. Notes have no text-box anchor and
-        // are counted, as FRAP's word count includes footnotes and endnotes.
         if let StoryRef::Part(id) = story
-            && let Some(anchor) = doc.text_box_anchor(id)
-            && let Some(&pi) = path_index.get(&anchor.path)
-            && let Some(sec) = section_by_para.get(pi).and_then(|s| s.as_deref())
-            && exclude.contains(&sec)
+            && owner.excluded(id)
         {
             continue;
         }
@@ -176,6 +173,34 @@ fn counted_words(doc: &Document, _spec: &DocSpec, sections: &[LocatedSection], e
         }
     }
     total
+}
+
+/// Which text-box story belongs to an excluded section. Built in a single body pass so no per-story
+/// anchor search is needed; [`Document::text_box_anchor`] would rescan the whole document each time.
+struct BoxOwnership {
+    excluded: HashMap<u32, bool>,
+}
+
+impl BoxOwnership {
+    fn excluded(&self, part: u32) -> bool {
+        self.excluded.get(&part).copied().unwrap_or(false)
+    }
+}
+
+fn box_ownership(doc: &Document, body_paths: &[Path], section_by_para: &[Option<String>], exclude: &[&str]) -> BoxOwnership {
+    let mut excluded = HashMap::new();
+    for (pi, path) in body_paths.iter().enumerate() {
+        let skip = section_by_para.get(pi).and_then(|s| s.as_deref()).is_some_and(|sec| exclude.contains(&sec));
+        let Some(p) = doc.para(StoryRef::Body, path) else { continue };
+        for off in p.object_offsets() {
+            let Some(obj) = p.object_at(off) else { continue };
+            for part in obj.text_boxes() {
+                // The first anchor wins, matching the body-first scan of `text_box_anchor`.
+                excluded.entry(part).or_insert(skip);
+            }
+        }
+    }
+    BoxOwnership { excluded }
 }
 
 /// For each body paragraph index, the section id of the last located section heading at or before it.

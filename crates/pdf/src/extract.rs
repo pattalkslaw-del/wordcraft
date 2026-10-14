@@ -156,7 +156,8 @@ const SCAN_COVERAGE: f64 = 0.15;
 pub enum Verdict {
     /// Every page carries document text, or is blank or furniture-only.
     Searchable,
-    /// At least one page carries no document text (for example a scan with no extractable letters).
+    /// The document carries no document text and no picture that could hold some: nothing is
+    /// extractable, so it is read as not searchable.
     NotSearchable,
     /// A page draws a picture that dominates it and carries text that is neither clearly the
     /// page's content nor clearly a caption: its text layer cannot be verified.
@@ -173,8 +174,9 @@ pub enum Verdict {
 /// Coverage is what matters, not a single page: a page that draws a picture of its own (a scan,
 /// photograph or figure, outside page furniture) and covers most of the page cannot be certified
 /// searchable from unrelated text on the same page (a caption, page number, or long paragraph
-/// beside the scan) — so a searchable cover followed by scanned body pages is **not** searchable,
-/// while blank and furniture-only pages are allowed.
+/// beside the scan) — so a searchable cover followed by scanned body pages is **not** certified
+/// searchable, and a scan that is the whole document (with no substantive text anywhere) is
+/// uncertain too, not confidently without a text layer. Blank and furniture-only pages are allowed.
 pub fn extract_verdict(bytes: &[u8]) -> Verdict {
     extract_verdict_detail(bytes).verdict
 }
@@ -207,11 +209,17 @@ pub fn extract_verdict_detail(bytes: &[u8]) -> VerdictDetail {
             any_text = true;
         }
     }
+    if uncertain {
+        // A page dominated by a picture cannot be certified from unrelated text on it — and that
+        // holds whether or not the document carries substantive text anywhere. A scan with only a
+        // caption or a page number, or no extractable text at all, is an unverified picture, not a
+        // document confidently without a text layer.
+        return VerdictDetail { verdict: Verdict::Uncertain, unverifiable_pages };
+    }
     if !any_text {
         return VerdictDetail { verdict: Verdict::NotSearchable, unverifiable_pages: Vec::new() };
     }
-    let verdict = if uncertain { Verdict::Uncertain } else { Verdict::Searchable };
-    VerdictDetail { verdict, unverifiable_pages }
+    VerdictDetail { verdict: Verdict::Searchable, unverifiable_pages: Vec::new() }
 }
 
 /// One page's text coverage: its own words against any picture that dominates it.

@@ -103,10 +103,11 @@ fn text_searchability_inspects_real_bytes() {
     assert_eq!(text_searchability(&bytes), TextSearchability::Searchable);
 }
 
-/// A scanned filing with a searchable page number is still not text-searchable: the page number
-/// extracts, but it is incidental furniture, not the document's substantive text.
+/// A scanned filing with a searchable page number is still an unverified picture: the page number
+/// extracts, but it is incidental furniture, not the document's substantive text. The page is
+/// reported as uncertain (a warning naming the page), never certified as not searchable.
 #[test]
-fn a_scanned_page_with_a_searchable_page_number_is_not_searchable() {
+fn a_scanned_page_with_a_searchable_page_number_is_uncertain() {
     let mut d = Document::new();
     // The "scan": a full-page picture with no text of its own.
     let media = d.add_media(png(), "png");
@@ -127,7 +128,29 @@ fn a_scanned_page_with_a_searchable_page_number_is_not_searchable() {
 
     let bytes = export(&d, &PdfOptions::default()).unwrap();
     assert!(squash(&extract_text(&bytes).concat()).contains('1'), "the page number is extractable");
-    assert_eq!(text_searchability(&bytes), TextSearchability::NotSearchable);
+    assert_eq!(text_searchability(&bytes), TextSearchability::Uncertain);
+    assert_eq!(crate::extract::extract_verdict_detail(&bytes).unverifiable_pages, vec![1]);
+}
+
+/// A scan with no extractable text at all is an unverified picture, not a document confidently
+/// without a text layer: the verdict preserves the page detail so it can be warned about.
+#[test]
+fn an_image_only_scan_is_uncertain_not_not_searchable() {
+    let mut d = Document::new();
+    let media = d.add_media(png(), "png");
+    let mut scan = Paragraph::with_text("", CharProps::default());
+    scan.insert_object(
+        0,
+        InlineObject::Image { media, w: 300.0, h: 400.0, alt: String::new(), float: Default::default(), crop: [0.0; 4], ole: None },
+        &CharProps::default(),
+    )
+    .unwrap();
+    d.body = vec![para_block(scan)];
+    let bytes = export(&d, &PdfOptions::default()).unwrap();
+    assert_eq!(text_searchability(&bytes), TextSearchability::Uncertain);
+    let detail = crate::extract::extract_verdict_detail(&bytes);
+    assert_eq!(detail.verdict, crate::extract::Verdict::Uncertain);
+    assert_eq!(detail.unverifiable_pages, vec![1]);
 }
 
 /// Incidental text alone (a lone page number, untagged) does not certify a text layer: a number
