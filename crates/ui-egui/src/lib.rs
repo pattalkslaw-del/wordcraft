@@ -56,6 +56,7 @@ pub mod icons;
 pub mod ink;
 pub mod keys;
 pub mod keytips;
+pub mod law;
 pub mod mini_toolbar;
 pub mod objects;
 pub mod options;
@@ -417,6 +418,8 @@ pub struct WordApp {
     pub(crate) outline_prev_tab: Option<String>,
     /// Zotero commands in flight (`ui.zotero.*`).
     pub zotero: zotero::ZoteroLink,
+    /// File › Options › LawCraft.
+    pub law: law::LawUi,
     /// The egui context, once the first frame has run (background work wakes the UI with it).
     pub(crate) ctx: Option<egui::Context>,
     /// Read Aloud: the start of the sentence the caret was last moved to, and the last error shown.
@@ -506,6 +509,7 @@ impl WordApp {
             smart_art_typing: None,
             outline_prev_tab: None,
             zotero: zotero::ZoteroLink::default(),
+            law: law::LawUi::default(),
             ctx: None,
             read_aloud_at: None,
             read_aloud_error: None,
@@ -641,6 +645,10 @@ impl WordApp {
     /// Run a command for a script or an agent (control channel, MCP bridge): never asks first.
     /// UI-level commands (`ui.*`) are handled here, the rest by the engine.
     pub fn execute(&mut self, id: &str, params: Value) -> Result<Value, String> {
+        // Turning LawCraft off hides its settings pane. Commit the pane's pending edits first and
+        // cancel the change when they cannot be saved, so the error stays visible. This is the one
+        // choke point for both the Add-ins checkbox and a direct `file.options`.
+        law::guard_module_change(self, id, &params)?;
         // A pending Change Picture only survives until the next action (#147).
         if !matches!(id, "ui.changePicture" | "picture.change" | "insert.picture") {
             self.change_picture_target = None;
@@ -903,7 +911,11 @@ impl WordApp {
                     self.ui.backstage = true;
                     self.ui.backstage_page = "options".into();
                     if let Some(pane) = req.get("pane").and_then(Value::as_str) {
-                        self.ui.options_pane = pane.into();
+                        if self.ui.options_pane == "law" && pane != "law" && !law::commit_pending_drafts(self) {
+                            // Stay on LawCraft until pending edits save or are fixed.
+                        } else {
+                            self.ui.options_pane = pane.into();
+                        }
                     }
                 }
                 "pasteSpecial" => self.dialog = Some(dialogs::Dialog::paste_special(self, req)),
@@ -952,6 +964,8 @@ impl WordApp {
                 let tab = s("tab").unwrap_or("Home").to_string();
                 if tab == "File" {
                     self.ui.backstage = true;
+                } else if law::on_settings_page(self) && !law::commit_pending_drafts(self) {
+                    // Stay in Options on LawCraft until pending edits save.
                 } else {
                     self.ui.tab = tab;
                     self.ui.backstage = false;
@@ -959,12 +973,26 @@ impl WordApp {
                 json!({"tab": self.ui.tab})
             }
             "ui.backstage" => {
-                self.ui.backstage = p.get("value").and_then(Value::as_bool).unwrap_or(!self.ui.backstage);
+                let want = p.get("value").and_then(Value::as_bool).unwrap_or(!self.ui.backstage);
+                if !want && law::on_settings_page(self) && !law::commit_pending_drafts(self) {
+                    // Leave backstage open.
+                } else {
+                    self.ui.backstage = want;
+                }
                 if let Some(pg) = s("page") {
-                    self.ui.backstage_page = pg.into();
+                    let leave_options = self.ui.backstage_page == "options" && pg != "options" && law::on_settings_page(self);
+                    if leave_options && !law::commit_pending_drafts(self) {
+                        // Stay on the LawCraft pane.
+                    } else {
+                        self.ui.backstage_page = pg.into();
+                    }
                 }
                 if let Some(pane) = s("pane") {
-                    self.ui.options_pane = pane.into();
+                    if self.ui.options_pane == "law" && pane != "law" && !law::commit_pending_drafts(self) {
+                        // Stay on LawCraft.
+                    } else {
+                        self.ui.options_pane = pane.into();
+                    }
                 }
                 json!({"backstage": self.ui.backstage})
             }

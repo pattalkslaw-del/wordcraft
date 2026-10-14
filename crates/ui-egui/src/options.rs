@@ -92,20 +92,38 @@ fn pane_label(id: &str) -> &'static str {
         "accessibility" => "Accessibility",
         "advanced" => "Advanced",
         "agents" => "Agents",
+        "addins" => "Add-ins",
+        "law" => "LawCraft",
         _ => "General",
+    }
+}
+
+/// Whether an options pane is listed for this app state (`law` only when LawCraft is on).
+pub(crate) fn pane_listed(id: &str, app: &WordApp) -> bool {
+    match id {
+        "law" => crate::law::enabled(app),
+        _ => true,
     }
 }
 
 /// The Options page.
 pub fn page(app: &mut WordApp, ui: &mut Ui) {
+    crate::law::sync_module(app);
     let t = Tokens::get(ui.ctx());
     ui.label(RichText::new(tl!("Options")).font(semibold(26.0)));
     ui.add_space(16.0);
-    let current = if PANES.contains(&app.ui.options_pane.as_str()) { app.ui.options_pane.clone() } else { "general".to_string() };
+    let current = if PANES.contains(&app.ui.options_pane.as_str()) && pane_listed(&app.ui.options_pane, app) {
+        app.ui.options_pane.clone()
+    } else {
+        "general".to_string()
+    };
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(170.0);
             for id in PANES {
+                if !pane_listed(id, app) {
+                    continue;
+                }
                 let label = tl!(pane_label(id));
                 let active = current == id;
                 let (r, resp) = ui.allocate_exact_size(vec2(170.0, 30.0), egui::Sense::click());
@@ -118,7 +136,12 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                 let font = if active { semibold(14.0) } else { crate::theme::regular(14.0) };
                 ui.painter().text(egui::pos2(r.min.x + 12.0, r.center().y), egui::Align2::LEFT_CENTER, label, font, t.text);
                 if resp.clicked() {
-                    app.ui.options_pane = id.to_string();
+                    let leaving_law = current == "law" && id != "law";
+                    if leaving_law && !crate::law::commit_pending_drafts(app) {
+                        // Stay on LawCraft: drafts could not be saved.
+                    } else {
+                        app.ui.options_pane = id.to_string();
+                    }
                 }
             }
         });
@@ -136,13 +159,15 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                 "accessibility" => accessibility(app, ui),
                 "advanced" => advanced(app, ui),
                 "agents" => agents(ui),
+                "addins" => crate::law::addins(app, ui),
+                "law" => crate::law::page(app, ui),
                 _ => general(app, ui),
             }
         });
     });
 }
 
-fn section(ui: &mut Ui, title: &str) {
+pub(crate) fn section(ui: &mut Ui, title: &str) {
     ui.add_space(6.0);
     ui.label(RichText::new(tl!(title)).font(semibold(15.0)));
     ui.add_space(2.0);
