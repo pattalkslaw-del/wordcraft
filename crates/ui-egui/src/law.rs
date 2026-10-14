@@ -163,7 +163,7 @@ fn apply_drafts(law: &LawUi, profile_id: &str, profile: &mut Value) {
                     o.insert("source".into(), json!(source.trim()));
                 }
                 if let Some(font) = law.check_font_drafts.get(&key) {
-                    o.insert("font".into(), json!(font.trim()));
+                    set_font(o, font.trim());
                 }
             }
         }
@@ -174,11 +174,23 @@ fn apply_drafts(law: &LawUi, profile_id: &str, profile: &mut Value) {
                 {
                     let chr = o.entry("chr").or_insert(json!({}));
                     if let Some(c) = chr.as_object_mut() {
-                        c.insert("font".into(), json!(font.trim()));
+                        set_font(c, font.trim());
                     }
                 }
             }
         }
+    }
+}
+
+/// Write a font draft into a character-props (or check) object consistently. A font is
+/// `Option<String>`: the supported representation of "no font" is the key being absent, so an
+/// empty draft removes it. Persisting `""` would fail validation (`font is empty`), so treating
+/// blank as unset lets a cleared field commit instead of silently dropping the edit.
+fn set_font(obj: &mut serde_json::Map<String, Value>, font: &str) {
+    if font.is_empty() {
+        obj.remove("font");
+    } else {
+        obj.insert("font".into(), json!(font));
     }
 }
 
@@ -620,9 +632,10 @@ fn styles_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                         && patch_style(app, profile_id, doc_key, profile, i, |s| {
                             let chr = s.entry("chr").or_insert(json!({}));
                             if let Some(c) = chr.as_object_mut() {
-                                if !font.trim().is_empty() {
-                                    c.insert("font".into(), json!(font.trim()));
-                                }
+                                // Blank means "no font", the supported unset value; the shared
+                                // commit path ([`apply_drafts`]) applies the same rule so a
+                                // cleared field is saved rather than silently discarded.
+                                set_font(c, font.trim());
                                 if size > 0.0 {
                                     c.insert("size".into(), json!(size));
                                 }
@@ -752,8 +765,9 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                             app.law.check_font_drafts.insert(font_key.clone(), font.clone());
                         }
                         let font_dirty = font.trim() != stored_font.trim();
+                        let font_value = if font.trim().is_empty() { Value::Null } else { json!(font.trim()) };
                         if (pt_changed || (font_resp.lost_focus() && font_dirty))
-                            && patch_check(app, profile_id, doc_key, profile, i, json!({"pt": pt, "font": font.trim()}))
+                            && patch_check(app, profile_id, doc_key, profile, i, json!({"pt": pt, "font": font_value}))
                             && font_resp.lost_focus()
                             && font_dirty
                         {

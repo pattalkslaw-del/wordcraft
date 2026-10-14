@@ -358,6 +358,59 @@ fn editing_a_style_font_across_frames_keeps_spaces() {
 }
 
 #[test]
+fn clearing_a_style_font_unsets_it_on_blur() {
+    let (_lock, _) = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-style-font-clear");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Style font clear test",
+            "jurisdiction": "Test",
+            "verified": true,
+            "docs": {
+                "brief": {
+                    "styles": [{"name": "Norm1", "chr": {"font": "Old"}}],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    a.run("law.profiles.approve", json!({"id": id})).unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(6);
+    h.get_by_label("Norm1").click();
+    h.run_steps(2);
+
+    // Erase the existing font and blur. The erase is an edit like any other: it must be committed
+    // (as the supported "no font" representation, the key absent) instead of being silently
+    // dropped while the draft is cleared.
+    h.get_by_label("Font:").focus();
+    h.run_steps(2);
+    for _ in 0..8 {
+        h.key_press(egui::Key::Backspace);
+        h.run_steps(1);
+    }
+    assert_eq!(h.get_by_label("Font:").value().unwrap_or_default(), "", "the field is cleared");
+    h.get_by_label("Add check").focus();
+    h.run_steps(2);
+
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let style = &after["docs"]["brief"]["styles"][0];
+    assert!(style["chr"].get("font").is_none(), "clearing the font unsets it, not drops the edit: {style}");
+    assert_eq!(after["verified"], json!(false), "clearing a style makes the profile unverified");
+    assert!(!h.state().law.style_font_drafts.contains_key(&format!("{id}\0brief\0style\00")), "the draft is cleared once the erase saves");
+}
+
+#[test]
 fn editing_a_check_font_across_frames_keeps_spaces() {
     let (_lock, _) = serial();
     let mut a = law_app();
