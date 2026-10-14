@@ -68,7 +68,7 @@
       "id": "moStatuteForm",
       "kind": "statute",
       "source": "Show Me Citations (statutes)",
-      "detect": "\\b(?:Section|Sec\\.|§)\\s*\\d+\\.\\d+(?:\\s*,\\s*|\\s+)RSMo\\b",
+      "detect": "(?:\\b(?:Section|Sec\\.)|§)\\s*\\d+\\.\\d+(?:\\s*,\\s*|\\s+)RSMo\\b",
       "valid": "^(?:Section|§)\\s*\\d+\\.\\d+(?:,\\s*RSMo(?:\\s+\\d{4})?|\\s+RSMo(?:\\s+\\d{4})?)$",
       "message": "Statute citations use Section or § with the RSMo year when given, e.g. Section 537.080, RSMo 2016 or § 537.080 RSMo."
     },

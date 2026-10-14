@@ -27,7 +27,9 @@ fn missouri_good_citations_have_no_findings() {
     for cite in [
         "Thummel v. King, 570 S.W.2d 679 (Mo. banc 1978)",
         "Thummel v. King, 570 S.W.2d 679, 680 (Mo. banc 1978)",
-        "See also (Mo. App. E.D. 2020) and (Mo. App. W.D. 2019) and (Mo. App. S.D. 2021)",
+        "Smith v. Jones, 600 S.W.3d 100 (Mo. App. E.D. 2020)",
+        "Smith v. Jones, 590 S.W.3d 200 (Mo. App. W.D. 2019)",
+        "Smith v. Jones, 580 S.W.3d 300 (Mo. App. S.D. 2021)",
         "Section 537.080, RSMo 2016",
         "§ 537.080 RSMo",
         "Rule 84.04(d)",
@@ -42,8 +44,21 @@ fn missouri_good_citations_have_no_findings() {
 }
 
 #[test]
+fn missouri_section_symbol_form_is_detected() {
+    let packs = crate::citation_pack::bundled_map();
+    let mo = packs.get("missouri").expect("missouri pack");
+    let rule = mo.rules.iter().find(|r| r.id == "moStatuteForm").expect("moStatuteForm rule");
+    for cite in ["§ 537.080 RSMo", "Section 537.080, RSMo 2016"] {
+        assert!(rule.detect.is_match(cite), "detect must find `{cite}`");
+        assert!(rule.valid.as_ref().is_some_and(|v| v.is_match(cite)), "`{cite}` is the listed valid form");
+    }
+    assert!(rule.detect.is_match("Sec. 537.080 RSMo"), "detect must find the wrong prefix");
+    assert!(!rule.valid.as_ref().is_some_and(|v| v.is_match("Sec. 537.080 RSMo")));
+}
+
+#[test]
 fn missouri_bad_citations_are_reported() {
-    let cases: [(&str, &str); 11] = [
+    let cases = [
         ("Thummel v. King, 570 S.W. 2d 679 (Mo. banc 1978)", "moCaseReporter"),
         ("Thummel v. King, 570 S. W. 2d 679 (Mo. banc 1978)", "moCaseReporter"),
         ("Thummel v. King, 570 SW2d 679 (Mo. banc 1978)", "moCaseReporterWrong"),
@@ -52,8 +67,11 @@ fn missouri_bad_citations_are_reported() {
         ("Thummel v. King, 570 S.W.2d 679,680 (Mo. banc 1978)", "moPinCite"),
         ("Thummel v. King, 570 S.W.2d 679 (Mo. Banc 1978)", "moBancCaps"),
         ("Thummel v. King, 570 S.W.2d 679 (Mo. banc)", "moBancMissingYear"),
-        ("Thummel v. King, 570 S.W.2d 679 (Mo. App. 2020)", "moAppDistrict"),
+        ("Smith v. Jones, 600 S.W.3d 100 (Mo. App. 2020)", "moAppDistrict"),
+        ("Smith v. Jones, 600 S.W.3d 100 (Mo. App. E.D.)", "moAppMissingYear"),
         ("Sec. 537.080 RSMo", "moStatuteForm"),
+        ("§ 537.080 , RSMo", "moStatuteForm"),
+        ("Rule 84.4", "moRuleForm"),
         ("(R. 42)", "moRecordCite"),
     ];
     for (cite, rule) in cases {
@@ -69,13 +87,13 @@ fn federal_good_citations_have_no_findings() {
     let mut s = law();
     for cite in [
         "Brown v. Board, 347 U.S. 483 (1954)",
-        "Roe v. Wade, 410 U.S. 113 (1973)",
         "Miranda v. Arizona, 384 U.S. 436, 444 (1966)",
         "Obergefell v. Hodges, 576 U.S. 644, 675 (2015)",
         "United States v. Nixon, 418 U.S. 683, 713 (1974)",
+        "Roe v. Wade, 410 S. Ct. 113 (1973)",
+        "Old case, 123 F.2d 456 (8th Cir. 1941)",
         "Smith v. Jones, 567 F.3d 890 (8th Cir. 2009)",
         "Smith v. Jones, 567 F.3d 890, 891 (8th Cir. 2009)",
-        "Old case, 123 F.2d 456 (8th Cir. 1941)",
         "Recent case, 99 F.4th 100 (D.C. Cir. 2024)",
         "Doe v. Roe, 123 F. Supp. 2d 456 (E.D. Mo. 2005)",
         "Doe v. Roe, 200 F. Supp. 3d 789 (S.D.N.Y. 2016)",
@@ -84,6 +102,7 @@ fn federal_good_citations_have_no_findings() {
         "Fed. R. Civ. P. 12(b)(6)",
         "(R. at 12)",
         "(Tr. at 3)",
+        "(J.A. 12)",
     ] {
         insert(&mut s, cite);
         insert(&mut s, "\r");
@@ -94,14 +113,19 @@ fn federal_good_citations_have_no_findings() {
 
 #[test]
 fn federal_bad_citations_are_reported() {
-    let cases: [(&str, &str); 11] = [
+    let cases = [
         ("Brown v. Board, 347 U.S. 483", "usReporter"),
         ("Roe v. Wade, 410 S.Ct. 113 (1973)", "sCtReporterTight"),
         ("Roe v. Wade, 410 S. Ct. 113", "sCtReporter"),
         ("Smith v. Jones, 567 F3d 890 (8th Cir. 2009)", "federalReporterWrong"),
+        ("Old case, 123 F.2d 456 (1941)", "federalCourtParen"),
         ("Smith v. Jones, 567 F.3d 890", "federalCourtParen"),
         ("Smith v. Jones, 567 F.3d 890, 891", "federalCourtParen"),
+        ("Smith v. Jones, 567 F.3d 890 (2009)", "federalCourtParen"),
+        ("Recent case, 99 F.4th 100 (2024)", "federalCourtParen"),
         ("Smith v. Jones, 567 F.3d 890 (8th Cir.)", "federalCirMissingYear"),
+        ("Doe v. Roe, 123 F. Supp. 2d 456 (2005)", "federalCourtParen"),
+        ("Doe v. Roe, 200 F. Supp. 3d 789 (2016)", "federalCourtParen"),
         ("42 U.S.C. 1983", "uscSection"),
         ("Fed R App P 32(a)", "fedRuleApp"),
         ("Fed. R. Civ. P 12", "fedRuleCiv"),

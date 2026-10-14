@@ -18,7 +18,7 @@
       "id": "sCtReporter",
       "kind": "case",
       "source": "Bluebook R. 10.4 (Supreme Court Reporter)",
-      "detect": "\\b\\d+\\s+S\\.\\s*Ct\\.\\s+\\d+\\b",
+      "detect": "\\b\\d+\\s+S\\.\\s+Ct\\.\\s+\\d+\\b",
       "extendTail": true,
       "valid": "^\\d+\\s+S\\.\\s+Ct\\.\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*\\d{4}[^)]*\\)$",
       "message": "Supreme Court Reporter citations use S. Ct. with a space after S. and a year parenthetical."
@@ -50,7 +50,7 @@
       "source": "Bluebook R. 10.4 (court parenthetical)",
       "detect": "\\b\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+\\b",
       "extendTail": true,
-      "valid": "^\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*\\d{4}[^)]*\\)$",
+      "valid": "^\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*[A-Za-z][^)]*\\d{4}[^)]*\\)$",
       "message": "Federal appellate and district reporter citations need a court parenthetical with the year, e.g. (8th Cir. 2009)."
     },
     {

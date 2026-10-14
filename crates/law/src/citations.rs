@@ -134,6 +134,6 @@ mod tests {
     #[test]
     fn s_ct_spacing_without_space_is_flagged() {
         let ids = check_text("federal", "Roe v. Wade, 410 S.Ct. 113 (1973)");
-        assert!(ids.iter().any(|id| id == "sCtReporter"));
+        assert!(ids.iter().any(|id| id == "sCtReporterTight"));
     }
 }
