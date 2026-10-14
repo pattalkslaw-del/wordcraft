@@ -136,36 +136,6 @@ const CONFUSION_PHRASES: &[ConfusionPhrase] = &[
         message: "The main place of business is the \"principal\" place, not \"principle\".",
     },
     ConfusionPhrase {
-        words: &["council", "for", "the", "plaintiff"],
-        wrong_index: 0,
-        right: "counsel",
-        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
-    },
-    ConfusionPhrase {
-        words: &["council", "for", "the", "appellant"],
-        wrong_index: 0,
-        right: "counsel",
-        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
-    },
-    ConfusionPhrase {
-        words: &["council", "for", "the", "respondent"],
-        wrong_index: 0,
-        right: "counsel",
-        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
-    },
-    ConfusionPhrase {
-        words: &["council", "for", "the", "petitioner"],
-        wrong_index: 0,
-        right: "counsel",
-        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
-    },
-    ConfusionPhrase {
-        words: &["council", "for", "the", "movant"],
-        wrong_index: 0,
-        right: "counsel",
-        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
-    },
-    ConfusionPhrase {
         words: &["averse", "possession"],
         wrong_index: 0,
         right: "adverse",

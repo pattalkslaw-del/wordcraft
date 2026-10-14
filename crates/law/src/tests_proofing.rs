@@ -191,42 +191,6 @@ fn principle_as_noun_before_a_verb_is_quiet() {
     }
 }
 
-confusion_pair!(
-    counsel_council_plaintiff,
-    "The council for the plaintiff filed a motion.",
-    "The city council for the district met yesterday.",
-    "council",
-    "counsel"
-);
-confusion_pair!(
-    counsel_council_appellant,
-    "The council for the appellant argued first.",
-    "The city council for the district met yesterday.",
-    "council",
-    "counsel"
-);
-confusion_pair!(
-    counsel_council_respondent,
-    "The council for the respondent replied.",
-    "The city council for the district met yesterday.",
-    "council",
-    "counsel"
-);
-confusion_pair!(
-    counsel_council_petitioner,
-    "The council for the petitioner filed the petition.",
-    "The city council for the district met yesterday.",
-    "council",
-    "counsel"
-);
-confusion_pair!(
-    counsel_council_movant,
-    "The council for the movant argued the motion.",
-    "The city council for the district met yesterday.",
-    "council",
-    "counsel"
-);
-
 confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.", "averse", "adverse");
 
 /// Removed phrases must stay quiet (regression guard).
@@ -243,7 +207,14 @@ fn removed_confusion_phrases_stay_quiet() {
         "There are three discreet issues before us.",
         "We assessed the effect the outcome had on the parties.",
         "The physician testified that the regulation will proscribe medication advertising to minors.",
+        // `council for the <role>` is ambiguous: here `council` correctly names the
+        // municipality's governing body, with the role word modifying `municipality`.
+        "The city council for the plaintiff municipality approved the settlement.",
         "The city council for the defendant municipality approved the settlement.",
+        "The city council for the appellant municipality approved the settlement.",
+        "The city council for the respondent municipality approved the settlement.",
+        "The city council for the petitioner municipality approved the settlement.",
+        "The city council for the movant municipality approved the settlement.",
     ] {
         let issues = confusion_issues(text);
         assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
