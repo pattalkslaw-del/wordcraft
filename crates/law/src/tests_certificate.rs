@@ -2,7 +2,8 @@
 
 use serde_json::json;
 use wordcraft_doc::para::InlineObject;
-use wordcraft_doc::{Block, Document, Path, StoryRef, Table};
+use wordcraft_doc::props::CharProps;
+use wordcraft_doc::{Block, Document, Paragraph, Path, StoryRef, Table};
 use wordcraft_engine::Session;
 
 use crate::certificate::FIELD_WORDCOUNT;
@@ -51,14 +52,20 @@ fn editing_then_save_refreshes_the_certificate_count() {
     let mut s = apply_session(MISSOURI, "brief");
     write_skeleton(&mut s, &profile, "brief");
     compliance(&mut s, MISSOURI, "brief");
-    run(&mut s, "styles.apply", json!({"style": "Body"}));
-    run(&mut s, "text.insert", json!({"text": "extra extra extra words added after the certificate.\r"}));
-    let before = checks::word_count(&s.doc, &profile, "brief").expect("count");
+    // Type at the very start, before the first section heading, so the added words are counted and
+    // the certificate's current count must actually move.
+    run(&mut s, "caret.docStart", json!({}));
+    run(&mut s, "text.insert", json!({"text": "extra extra extra words added before the certificate.\r"}));
+    let after = checks::word_count(&s.doc, &profile, "brief").expect("count");
     let dir = super::tests::temp_dir("cert-save");
     let path = dir.join("brief.docx");
     run(&mut s, "file.save", json!({"path": path.to_string_lossy()}));
     let after_field = cert_wordcount_in_doc(&s.doc).expect("field");
-    assert_eq!(after_field, before, "export refresh must update the certificate field");
+    assert_eq!(after_field, after, "export refresh must update the certificate field");
+    // The saved artifact itself carries the refreshed count, not just the in-memory document.
+    let bytes = std::fs::read(&path).expect("read the saved file");
+    let reopened = wordcraft_engine::io::open_bytes("brief.docx", &bytes).expect("reopen");
+    assert_eq!(cert_wordcount_in_doc(&reopened), Some(after), "the saved .docx holds the refreshed count");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -153,6 +160,62 @@ fn certificate_inserts_after_heading_when_a_table_precedes_the_section() {
     assert_eq!(cert_wordcount_in_doc(&s.doc), Some(checks::word_count(&s.doc, &profile, "brief").expect("count")));
 }
 
+/// P1 regression: the command given explicit parameters on a document that never had a profile
+/// applied must remember the binding, so a later field rebuild and the export hook still refresh.
+#[test]
+fn certificate_with_explicit_parameters_refreshes_on_an_unapplied_document() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": "Certificate of Compliance\r"}));
+    compliance(&mut s, MISSOURI, "brief");
+    assert_eq!(s.doc.custom_prop(checks::PROP_PROFILE), Some(MISSOURI), "the chosen profile is persisted");
+    assert_eq!(s.doc.custom_prop(checks::PROP_DOC_TYPE), Some("brief"), "the chosen document type is persisted");
+    assert!(cert_wordcount_in_doc(&s.doc).is_some(), "the certificate carries a live word-count field");
+    // Add counted words before the certificate, then rebuild fields: the hook must find the binding.
+    run(&mut s, "caret.docStart", json!({}));
+    run(&mut s, "text.insert", json!({"text": "extra counted words added before the certificate.\r"}));
+    let want = checks::word_count(&s.doc, &profile, "brief").expect("count");
+    run(&mut s, "references.updateFields", json!({}));
+    assert_eq!(cert_wordcount_in_doc(&s.doc), Some(want), "a field rebuild refreshes the persisted binding");
+    // The pre-export refresh must still find the binding too, and the saved artifact must carry it.
+    let dir = temp_dir("cert-explicit-export");
+    let path = dir.join("brief.docx");
+    run(&mut s, "file.save", json!({"path": path.to_string_lossy()}));
+    let bytes = std::fs::read(&path).expect("read the saved file");
+    let reopened = wordcraft_engine::io::open_bytes("brief.docx", &bytes).expect("reopen");
+    assert_eq!(cert_wordcount_in_doc(&reopened), Some(want), "the exported count is refreshed, never stale");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn insert_table_with_headings(s: &mut Session, headings: &[&str]) {
+    let mut t = Table::new(headings.len(), 1, 400.0);
+    for (r, heading) in headings.iter().enumerate() {
+        if let Some(cell) = t.rows.get_mut(r).and_then(|row| row.cells.get_mut(0)) {
+            cell.blocks = vec![Block::Para(Paragraph::with_text(heading, CharProps::default())).into()];
+        }
+    }
+    let at = s.doc.story(StoryRef::Body).map(|b| b.len()).unwrap_or(0);
+    s.doc.insert_block(StoryRef::Body, &Path::top(at), Block::Table(t)).expect("insert table");
+    s.touch();
+}
+
+/// P2 regression: a section heading inside a table has no top-level place for the certificate.
+/// The command must refuse before touching the document, and repeating it must not leave a stray
+/// certificate (or a duplicate) outside the table.
+#[test]
+fn certificate_is_refused_when_the_section_heading_is_inside_a_table() {
+    let mut s = apply_session(MISSOURI, "brief");
+    insert_table_with_headings(&mut s, &["Certificate of Compliance", "Certificate of Service"]);
+    let before = s.doc.plain_text(StoryRef::Body);
+    let e = err(&mut s, "law.certificate.compliance", json!({"id": MISSOURI, "doc": "brief"})).to_string();
+    assert!(e.contains("table"), "a nested heading is refused: {e}");
+    assert!(cert_wordcount_in_doc(&s.doc).is_none(), "nothing was inserted");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), before, "the document is unchanged");
+    let e = err(&mut s, "law.certificate.compliance", json!({"id": MISSOURI, "doc": "brief"})).to_string();
+    assert!(e.contains("table"), "repeated runs still refuse: {e}");
+    assert_eq!(s.doc.plain_text(StoryRef::Body), before, "no duplicate certificate appears after repeated runs");
+}
+
 #[test]
 fn explicit_profile_parameters_must_match_applied_metadata() {
     let profile = store().get(MISSOURI).expect("profile").clone();
@@ -163,7 +226,6 @@ fn explicit_profile_parameters_must_match_applied_metadata() {
     let e = err(&mut s, "law.certificate.compliance", json!({"id": MISSOURI, "doc": "appendix"})).to_string();
     assert!(e.contains("document type"), "{e}");
 }
-
 #[test]
 fn export_succeeds_when_profile_has_no_word_limit_and_no_certificate_field() {
     let mut s = law();

@@ -43,6 +43,11 @@ pub fn insert_or_refresh(session: &mut Session, profile: &Profile, doc_type: &st
     let values = template_values(&session.doc, profile, doc_type, spec, &template)?;
     session.checkpoint("Certificate of Compliance");
     write_certificate(session, spec, sec, &template, &values)?;
+    // Persist the profile/document binding the certificate was built for, even when the command
+    // was given explicit `id`/`doc` on a document that had no profile applied. Field rebuilds and
+    // the pre-export refresh read this document metadata, so the count can never go stale; this
+    // also (re-)registers the pre-export refresh hook. Nothing is mutated before this point.
+    crate::checks::remember_applied(session, &profile.id, doc_type);
     refresh_wordcount_fields_for(session, Some(&profile.id), Some(doc_type)).map_err(|e| LawError::Failed(e.to_string()))?;
     let mut out = json!({
         "profile": profile.id,
@@ -221,7 +226,6 @@ fn write_certificate(
     let heading = sec.name.trim();
     let body_paths = session.doc.para_paths(StoryRef::Body);
     let heading_i = find_heading_index(&session.doc, &body_paths, heading);
-    let next_para_i = next_section_index(&session.doc, spec, &body_paths, heading_i);
     let cert_style = sec.style.as_deref().or(Some("Certificate"));
     let style_id = cert_style.and_then(|name| session.doc.styles.find(name).map(|s| s.id.clone()));
 
@@ -229,6 +233,15 @@ fn write_certificate(
         append_certificate(session, heading, style_id.as_deref(), template, values)?;
         return Ok(());
     };
+    // A section heading inside a table cell has no top-level place to put the certificate: taking
+    // only its first path component would insert after the whole table and, on a re-run, leave the
+    // previous certificate outside the searched section. Refuse before changing anything.
+    ensure_top_level_heading(&body_paths, hi, heading)?;
+    let next_para_i = next_section_index(&session.doc, spec, &body_paths, heading_i);
+    if next_para_i < body_paths.len() {
+        let next_heading = session.doc.para(StoryRef::Body, &body_paths[next_para_i]).map(|p| p.plain_text().trim().to_string());
+        ensure_top_level_heading(&body_paths, next_para_i, next_heading.as_deref().unwrap_or(""))?;
+    }
     let heading_block = top_level_block_index(&body_paths[hi]);
     let next_block =
         if next_para_i < body_paths.len() { top_level_block_index(&body_paths[next_para_i]) } else { top_level_block_count(&session.doc) };
@@ -240,6 +253,16 @@ fn write_certificate(
     }
     session.touch();
     Ok(())
+}
+
+/// A section heading a certificate can be placed under must sit at the top level of the body.
+fn ensure_top_level_heading(paths: &[Path], index: usize, heading: &str) -> Result<(), LawError> {
+    if paths.get(index).is_some_and(|p| p.depth() == 0) {
+        return Ok(());
+    }
+    Err(LawError::Failed(format!(
+        "the `{heading}` section heading is inside a table; a certificate can only be placed under a top-level section heading"
+    )))
 }
 
 fn append_certificate(session: &mut Session, heading: &str, style_id: Option<&str>, template: &str, values: &TemplateValues) -> Result<(), LawError> {
