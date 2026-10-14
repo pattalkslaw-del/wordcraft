@@ -56,6 +56,7 @@ pub struct Notice {
     pub notes: String,
     pub page_url: String,
     pub one_click: bool,
+    pub verified_update: bool,
     pub external_updater: bool,
 }
 
@@ -74,6 +75,7 @@ fn notice_from_fields(v: &Value) -> Option<Notice> {
         notes: v.get("notes").and_then(Value::as_str).unwrap_or("").into(),
         page_url: v.get("pageUrl").and_then(Value::as_str).unwrap_or(wordcraft_engine::update::RELEASES_PAGE).into(),
         one_click: v.get("oneClick").and_then(Value::as_bool) == Some(true),
+        verified_update: v.get("verifiedUpdate").and_then(Value::as_bool) == Some(true),
         external_updater: v.get("externalUpdater").and_then(Value::as_bool) == Some(true),
     })
 }
@@ -325,7 +327,7 @@ pub fn bar(app: &mut WordApp, ui: &mut Ui) {
                     ui.spacing_mut().item_spacing = vec2(8.0, 4.0);
                     let text = crate::i18n::fmt(tl!("WordCraft {version} is available."), &[("version", &notice.version)]);
                     ui.label(egui::RichText::new(text).font(TypeRung::Control.medium()).color(t.text));
-                    if notice.one_click && !notice.external_updater {
+                    if (notice.one_click || notice.verified_update) && !notice.external_updater {
                         if ui.button(tl!("Update")).clicked() {
                             if app.session.dirty {
                                 let name = app
@@ -509,5 +511,17 @@ mod tests {
         assert!(app.quit_requested, "the update still asks to quit through the close path");
         app.update.reboot_notice = false;
         assert!(!app.update.reboot_notice, "acknowledging the banner clears it");
+    }
+
+    #[test]
+    fn reboot_notice_defers_update_quit_until_acknowledged() {
+        let mut app = crate::WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), crate::Services::default());
+        app.update.quit_pending = true;
+        app.apply_ui_requests(vec![json!({"updateReboot": true})]);
+        assert!(app.update.reboot_notice);
+        assert!(!app.update_quit_requested(), "do not close while the restart banner is visible");
+        assert!(app.update.quit_pending, "the quit stays pending until after acknowledgement");
+        app.update.reboot_notice = false;
+        assert!(app.update_quit_requested(), "after OK, the close may proceed");
     }
 }

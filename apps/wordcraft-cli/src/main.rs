@@ -70,6 +70,11 @@ fn run_update_check(http: wordcraft_engine::update::HttpGet, env: Option<wordcra
     s.run("file.checkForUpdates", &serde_json::json!({"force": true})).map_err(|e| e.to_string())
 }
 
+/// Pretty JSON for `wordcraft-cli update --check` (one value, trailing newline).
+fn format_update_check_json(v: &Value) -> String {
+    serde_json::to_string_pretty(v).unwrap_or_default()
+}
+
 /// Build the headless MCP session, wiring the same update HTTP hook the desktop app uses so
 /// `file.checkForUpdates` is reachable through MCP too (#15). `http` is injected so tests run with
 /// an offline fake and no request ever leaves the machine.
@@ -337,7 +342,7 @@ fn run(args: &[String]) -> Result<(), Failure> {
                 return Err(format!("update: pass --check\n\n{USAGE}").into());
             }
             let v = run_update_check(update_check::http_get(), None)?;
-            write_stdout(|o| writeln!(o, "{}", serde_json::to_string_pretty(&v).unwrap_or_default()))
+            write_stdout(|o| writeln!(o, "{}", format_update_check_json(&v)))
         }
         "mcp" => {
             let (roots, rest) = automation_roots("mcp", &rest)?;
@@ -613,8 +618,8 @@ mod tests {
         let http: wordcraft_engine::update::HttpGet =
             std::sync::Arc::new(|_, _| Ok(br#"{"tag_name":"v0.0.1","draft":false,"prerelease":false,"assets":[]}"#.to_vec()));
         let v = run_update_check(http, Some(std::sync::Arc::new(FakeEnv))).expect("offline check");
-        let text = serde_json::to_string_pretty(&v).unwrap();
-        let _: Value = serde_json::from_str(&text).expect("the response is one JSON value");
+        let text = format_update_check_json(&v);
+        let _: Value = serde_json::from_str(text.trim()).expect("the response is one JSON value");
         assert!(text.trim_start().starts_with('{') && text.trim_end().ends_with('}'), "no probe output wraps the JSON: {text:?}");
     }
 }

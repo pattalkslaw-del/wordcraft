@@ -130,9 +130,13 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
                 }));
             }
         }
-        s.ui_requests.push(json!({"quit": true}));
-        if reboot_required {
-            s.ui_requests.push(json!({"updateReboot": true}));
+        if kind.supports_one_click() {
+            s.ui_requests.push(json!({"quit": true}));
+            if reboot_required {
+                s.ui_requests.push(json!({"updateReboot": true}));
+            }
+        } else if matches!(kind, crate::update::InstallKind::MacApp | crate::update::InstallKind::MacDmg) {
+            s.ui_requests.push(json!({"updateMacDmg": true}));
         }
     } else {
         s.ui_requests.push(json!({
@@ -141,6 +145,7 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
                 "notes": offer.notes,
                 "pageUrl": offer.page_url,
                 "oneClick": offer.one_click,
+                "verifiedUpdate": offer.verified_update,
                 "externalUpdater": offer.external_updater,
                 "installKind": offer.install_kind,
             }
@@ -466,6 +471,35 @@ mod tests {
             assert_eq!(Some(h.file_name), pick_asset_name_with_arch((9, 0, 0), kind, arch), "asset for {kind:?}");
             assert_eq!(h.bytes, b"hello", "verified bytes for {kind:?}");
         }
+    }
+
+    #[test]
+    fn mac_apply_requests_manual_dmg_notice_not_quit() {
+        let bytes = b"hello";
+        let asset = pick_asset_name_with_arch((9, 0, 0), InstallKind::MacApp, "x86_64").unwrap();
+        let sums = format!("{}  {asset}\n", sha256_hex(bytes));
+        let latest = latest_for(&asset);
+        let mut s = session_with_kind_arch(
+            Arc::new(move |u, _| {
+                Ok(if u == LATEST_API {
+                    latest.clone().into_bytes()
+                } else if u.contains("sums") {
+                    sums.clone().into_bytes()
+                } else {
+                    bytes.to_vec()
+                })
+            }),
+            InstallKind::MacApp,
+            "x86_64",
+        );
+        s.update_install = Some(Arc::new(|_| Ok(InstallOutcome::default())));
+        let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
+        assert_eq!(r["status"], "available");
+        assert!(s.ui_requests.iter().any(|x| x.get("updateMacDmg").is_some()));
+        assert!(!s.ui_requests.iter().any(|x| x.get("quit").and_then(Value::as_bool) == Some(true)));
+        let offer = r.get("release").expect("release");
+        assert_eq!(offer.get("oneClick").and_then(Value::as_bool), Some(false));
+        assert_eq!(offer.get("verifiedUpdate").and_then(Value::as_bool), Some(true));
     }
 
     #[test]

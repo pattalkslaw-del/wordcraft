@@ -881,6 +881,9 @@ impl WordApp {
     /// worker finished still gets the save prompt. Returns true once the close may begin; false
     /// when the document is dirty and the prompt was shown (or nothing was pending).
     pub fn update_quit_requested(&mut self) -> bool {
+        if self.update.reboot_notice {
+            return false;
+        }
         if !std::mem::take(&mut self.update.quit_pending) {
             return false;
         }
@@ -968,6 +971,9 @@ impl WordApp {
         }
         if req.get("updateReboot").is_some() {
             self.update.reboot_notice = true;
+        }
+        if req.get("updateMacDmg").and_then(Value::as_bool) == Some(true) {
+            self.status(tl!("Drag WordCraft into Applications, then reopen it."));
         }
     }
 

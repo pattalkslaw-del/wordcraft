@@ -84,9 +84,14 @@ impl InstallKind {
         matches!(self, InstallKind::Flatpak | InstallKind::AppImage)
     }
 
-    /// One-click install is implemented for these kinds (portable zip and unknown paths use the release page).
+    /// One-click install (`msiexec`, `pkexec dpkg`) — the app quits after a verified handoff.
     pub fn supports_one_click(self) -> bool {
-        matches!(self, InstallKind::WindowsMsi | InstallKind::MacApp | InstallKind::LinuxDeb)
+        matches!(self, InstallKind::WindowsMsi | InstallKind::LinuxDeb)
+    }
+
+    /// **Update** downloads a release asset, verifies SHA-256, then hands off (installer, or open `.dmg` on macOS).
+    pub fn offers_verified_update(self) -> bool {
+        matches!(self, InstallKind::WindowsMsi | InstallKind::LinuxDeb | InstallKind::MacApp | InstallKind::MacDmg)
     }
 }
 
@@ -370,6 +375,8 @@ pub struct ReleaseOffer {
     pub page_url: String,
     pub install_kind: InstallKind,
     pub one_click: bool,
+    /// Show **Update** (verified download); macOS opens the `.dmg` in Finder instead of replacing the bundle.
+    pub verified_update: bool,
     pub external_updater: bool,
 }
 
@@ -419,6 +426,7 @@ pub fn offer(release: ReleaseInfo, _skipped: &str, kind: InstallKind) -> Release
         page_url: release.page_url,
         install_kind: kind,
         one_click: kind.supports_one_click(),
+        verified_update: kind.offers_verified_update(),
         external_updater: kind.external_updater(),
     }
 }
