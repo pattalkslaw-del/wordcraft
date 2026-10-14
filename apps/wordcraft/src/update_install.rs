@@ -295,12 +295,15 @@ struct RealDmgRunner;
 #[cfg(target_os = "macos")]
 impl DmgRunner for RealDmgRunner {
     fn attach(&self, dmg: &str, mount: &str) -> Result<(), String> {
-        let status =
-            run_command_status(Command::new("hdiutil").args(["attach", "-nobrowse", "-readonly", "-mountpoint", mount, dmg]), DMG_COMMAND_WAIT_SECS)?;
+        let mut cmd = Command::new("hdiutil");
+        cmd.args(["attach", "-nobrowse", "-readonly", "-mountpoint", mount, dmg]);
+        let status = run_command_status(cmd, DMG_COMMAND_WAIT_SECS)?;
         if status.success() { Ok(()) } else { Err("Could not open the disk image.".into()) }
     }
     fn detach(&self, mount: &str) {
-        let _ = run_command_status(Command::new("hdiutil").args(["detach", mount]), DMG_COMMAND_WAIT_SECS);
+        let mut cmd = Command::new("hdiutil");
+        cmd.args(["detach", mount]);
+        let _ = run_command_status(cmd, DMG_COMMAND_WAIT_SECS);
     }
 }
 
@@ -557,20 +560,22 @@ mod tests {
     #[test]
     fn dmg_runner_detach_runs_after_attach_failure() {
         use std::cell::Cell;
-        struct FailAttach(Cell<bool>);
+        struct FailAttach {
+            detached: Cell<bool>,
+        }
         impl DmgRunner for FailAttach {
             fn attach(&self, _: &str, _: &str) -> Result<(), String> {
                 Err("attach failed".into())
             }
             fn detach(&self, _: &str) {
-                self.0.set(true);
+                self.detached.set(true);
             }
         }
-        let detached = Cell::new(false);
+        let runner = FailAttach { detached: Cell::new(false) };
         let dir = private_staging_dir().unwrap();
         let dmg = write_exclusive_file(&dir, "wordcraft.dmg", b"x").unwrap();
-        let err = mac_dmg_with(&dmg, &dir, "/Applications/WordCraft.app/Contents/MacOS/wordcraft", &FailAttach(detached)).unwrap_err();
+        let err = mac_dmg_with(&dmg, &dir, "/Applications/WordCraft.app/Contents/MacOS/wordcraft", &runner).unwrap_err();
         assert!(err.contains("attach"), "{err}");
-        assert!(!detached.get(), "detach is only needed after a successful attach");
+        assert!(!runner.detached.get(), "detach is only needed after a successful attach");
     }
 }
