@@ -2,7 +2,7 @@
 
 use serde_json::json;
 use wordcraft_doc::para::InlineObject;
-use wordcraft_doc::{Document, StoryRef};
+use wordcraft_doc::{Block, Document, Path, StoryRef, Table};
 use wordcraft_engine::Session;
 
 use crate::certificate::FIELD_WORDCOUNT;
@@ -11,7 +11,7 @@ use crate::cmd::store;
 use crate::specs;
 use crate::tests_checks::write_skeleton;
 
-use super::tests::{FEDERAL, MISSOURI, apply_session, law, roundtrip, run};
+use super::tests::{FEDERAL, MISSOURI, apply_session, err, law, profile_json, roundtrip, run, temp_dir};
 
 fn cert_wordcount_in_doc(doc: &Document) -> Option<u32> {
     for path in doc.para_paths(StoryRef::Body) {
@@ -117,14 +117,63 @@ fn compliance_and_refresh_commands_are_installed() {
     assert!(ids.contains(&"law.certificate.refresh"));
 }
 
+fn insert_top_level_table_before_heading(s: &mut Session, heading: &str) {
+    let paths = s.doc.para_paths(StoryRef::Body);
+    let idx = paths
+        .iter()
+        .position(|p| s.doc.para(StoryRef::Body, p).is_some_and(|para| para.plain_text().trim().eq_ignore_ascii_case(heading)))
+        .expect("heading");
+    let block = paths[idx].0.first().copied().unwrap_or(0) as usize;
+    s.doc.insert_block(StoryRef::Body, &Path::top(block), Block::Table(Table::new(1, 1, 200.0))).expect("insert table");
+    s.touch();
+}
+
+fn certificate_para_follows_heading(doc: &Document, heading: &str) -> bool {
+    let paths = doc.para_paths(StoryRef::Body);
+    let hi = paths
+        .iter()
+        .position(|p| doc.para(StoryRef::Body, p).is_some_and(|para| para.plain_text().trim().eq_ignore_ascii_case(heading)))
+        .expect("heading");
+    paths.get(hi + 1).and_then(|p| doc.para(StoryRef::Body, p)).is_some_and(|para| {
+        para.plain_text().contains("certify")
+            || para.objects.iter().any(|o| matches!(o, InlineObject::Field { instr, .. } if instr == FIELD_WORDCOUNT))
+    })
+}
+
 #[test]
-fn install_registers_the_field_update_hook() {
+fn certificate_inserts_after_heading_when_a_table_precedes_the_section() {
     let profile = store().get(MISSOURI).expect("profile").clone();
     let mut s = apply_session(MISSOURI, "brief");
     write_skeleton(&mut s, &profile, "brief");
+    insert_top_level_table_before_heading(&mut s, "Certificate of Compliance");
     compliance(&mut s, MISSOURI, "brief");
-    run(&mut s, "text.insert", json!({"text": "hook test words.\r"}));
-    let want = checks::word_count(&s.doc, &profile, "brief").expect("count");
-    run(&mut s, "references.updateFields", json!({}));
-    assert_eq!(cert_wordcount_in_doc(&s.doc), Some(want));
+    assert!(certificate_para_follows_heading(&s.doc, "Certificate of Compliance"));
+    compliance(&mut s, MISSOURI, "brief");
+    assert!(s.doc.plain_text(StoryRef::Body).contains("certify"));
+    assert_eq!(cert_wordcount_in_doc(&s.doc), Some(checks::word_count(&s.doc, &profile, "brief").expect("count")));
+}
+
+#[test]
+fn explicit_profile_parameters_must_match_applied_metadata() {
+    let profile = store().get(MISSOURI).expect("profile").clone();
+    let mut s = apply_session(MISSOURI, "brief");
+    write_skeleton(&mut s, &profile, "brief");
+    let e = err(&mut s, "law.certificate.compliance", json!({"id": FEDERAL, "doc": "brief"})).to_string();
+    assert!(e.contains("applied"), "{e}");
+    let e = err(&mut s, "law.certificate.compliance", json!({"id": MISSOURI, "doc": "appendix"})).to_string();
+    assert!(e.contains("document type"), "{e}");
+}
+
+#[test]
+fn export_succeeds_when_profile_has_no_word_limit_and_no_certificate_field() {
+    let mut s = law();
+    let mut p = profile_json("test-no-word-limit");
+    p["docs"]["brief"]["checks"] = json!([{"kind": "noHyperlinks", "source": "Test Rule"}]);
+    run(&mut s, "law.profiles.create", p);
+    run(&mut s, "law.profiles.apply", json!({"id": "test-no-word-limit", "doc": "brief"}));
+    run(&mut s, "text.insert", json!({"text": "Body text without a certificate.\r"}));
+    let dir = temp_dir("cert-export-no-wl");
+    let path = dir.join("brief.docx");
+    run(&mut s, "file.save", json!({"path": path.to_string_lossy()}));
+    let _ = std::fs::remove_dir_all(&dir);
 }

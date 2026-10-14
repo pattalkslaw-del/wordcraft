@@ -32,6 +32,7 @@ struct TemplateValues {
 
 /// Insert or refresh the certificate of compliance for `doc_type` in `profile`.
 pub fn insert_or_refresh(session: &mut Session, profile: &Profile, doc_type: &str) -> Result<Value, LawError> {
+    ensure_matching_applied_metadata(session, &profile.id, doc_type)?;
     let spec = profile.docs.get(doc_type).ok_or_else(|| missing_doc(profile, doc_type))?;
     let sec = spec
         .sections
@@ -42,7 +43,7 @@ pub fn insert_or_refresh(session: &mut Session, profile: &Profile, doc_type: &st
     let values = template_values(&session.doc, profile, doc_type, spec, &template)?;
     session.checkpoint("Certificate of Compliance");
     write_certificate(session, spec, sec, &template, &values)?;
-    refresh_wordcount_fields(session).map_err(|e| LawError::Failed(e.to_string()))?;
+    refresh_wordcount_fields_for(session, Some(&profile.id), Some(doc_type)).map_err(|e| LawError::Failed(e.to_string()))?;
     let mut out = json!({
         "profile": profile.id,
         "doc": doc_type,
@@ -58,11 +59,19 @@ pub fn insert_or_refresh(session: &mut Session, profile: &Profile, doc_type: &st
 
 /// Refresh every [`FIELD_WORDCOUNT`] result in the document (export hook and `law.certificate.refresh`).
 pub fn refresh_wordcount_fields(session: &mut Session) -> Result<(), CmdError> {
-    let profile_id = session
-        .doc
-        .custom_prop(PROP_PROFILE)
+    refresh_wordcount_fields_for(session, None, None)
+}
+
+fn refresh_wordcount_fields_for(session: &mut Session, profile_id: Option<&str>, doc_type: Option<&str>) -> Result<(), CmdError> {
+    if !has_lawwordcount_fields(&session.doc) {
+        return Ok(());
+    }
+    let profile_id = profile_id
+        .or_else(|| session.doc.custom_prop(PROP_PROFILE))
         .ok_or_else(|| CmdError::Params("no court profile is applied to this document (apply a profile first)".into()))?;
-    let doc_type = session.doc.custom_prop(PROP_DOC_TYPE).ok_or_else(|| CmdError::Params("no court document type is set on this document".into()))?;
+    let doc_type = doc_type
+        .or_else(|| session.doc.custom_prop(PROP_DOC_TYPE))
+        .ok_or_else(|| CmdError::Params("no court document type is set on this document".into()))?;
     let profile = store().get(profile_id).cloned().ok_or_else(|| CmdError::Failed(format!("no court profile `{profile_id}`")))?;
     let count = word_count(&session.doc, &profile, doc_type).map_err(|e| CmdError::Failed(e.to_string()))?;
     let want = field_name_instr(FIELD_WORDCOUNT);
@@ -104,6 +113,45 @@ pub fn on_update_fields(session: &mut Session) -> Result<(), CmdError> {
 
 fn missing_doc(profile: &Profile, doc_type: &str) -> LawError {
     LawError::Failed(format!("profile `{}` has no document type `{doc_type}` (it has {})", profile.id, profile.doc_types().join(", ")))
+}
+
+fn ensure_matching_applied_metadata(session: &Session, profile_id: &str, doc_type: &str) -> Result<(), LawError> {
+    if let Some(applied) = session.doc.custom_prop(PROP_PROFILE)
+        && applied != profile_id
+    {
+        return Err(LawError::Failed(format!("document has profile `{applied}` applied but the command requested `{profile_id}`")));
+    }
+    if let Some(applied) = session.doc.custom_prop(PROP_DOC_TYPE)
+        && applied != doc_type
+    {
+        return Err(LawError::Failed(format!("document has document type `{applied}` applied but the command requested `{doc_type}`")));
+    }
+    Ok(())
+}
+
+fn has_lawwordcount_fields(doc: &Document) -> bool {
+    let want = field_name_instr(FIELD_WORDCOUNT);
+    for story in doc.counted_stories() {
+        for path in doc.para_paths(story) {
+            let Some(para) = doc.para(story, &path) else { continue };
+            for obj in &para.objects {
+                if let InlineObject::Field { instr, .. } = obj
+                    && field_name_instr(instr.as_str()) == want
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+fn top_level_block_index(path: &Path) -> usize {
+    path.0.first().copied().unwrap_or(0) as usize
+}
+
+fn top_level_block_count(doc: &Document) -> usize {
+    doc.story(StoryRef::Body).map(|b| b.len()).unwrap_or(0)
 }
 
 fn resolve_template(profile: &Profile, spec: &DocSpec) -> Result<String, LawError> {
@@ -173,7 +221,7 @@ fn write_certificate(
     let heading = sec.name.trim();
     let body_paths = session.doc.para_paths(StoryRef::Body);
     let heading_i = find_heading_index(&session.doc, &body_paths, heading);
-    let next_i = next_section_index(&session.doc, spec, &body_paths, heading_i);
+    let next_para_i = next_section_index(&session.doc, spec, &body_paths, heading_i);
     let cert_style = sec.style.as_deref().or(Some("Certificate"));
     let style_id = cert_style.and_then(|name| session.doc.styles.find(name).map(|s| s.id.clone()));
 
@@ -181,12 +229,13 @@ fn write_certificate(
         append_certificate(session, heading, style_id.as_deref(), template, values)?;
         return Ok(());
     };
-    if hi + 1 < next_i {
-        for path in body_paths[hi + 1..next_i].iter().rev() {
-            session.doc.remove_block(StoryRef::Body, path).map_err(|e| LawError::Failed(e.to_string()))?;
-        }
+    let heading_block = top_level_block_index(&body_paths[hi]);
+    let next_block =
+        if next_para_i < body_paths.len() { top_level_block_index(&body_paths[next_para_i]) } else { top_level_block_count(&session.doc) };
+    for bi in ((heading_block + 1)..next_block).rev() {
+        session.doc.remove_block(StoryRef::Body, &Path::top(bi)).map_err(|e| LawError::Failed(e.to_string()))?;
     }
-    for (insert_at, para) in (hi + 1..).zip(paragraphs_from_template(template, values, style_id.as_deref())) {
+    for (insert_at, para) in (heading_block + 1..).zip(paragraphs_from_template(template, values, style_id.as_deref())) {
         session.doc.insert_block(StoryRef::Body, &Path::top(insert_at), Block::Para(para)).map_err(|e| LawError::Failed(e.to_string()))?;
     }
     session.touch();
@@ -194,7 +243,7 @@ fn write_certificate(
 }
 
 fn append_certificate(session: &mut Session, heading: &str, style_id: Option<&str>, template: &str, values: &TemplateValues) -> Result<(), LawError> {
-    let at = session.doc.para_paths(StoryRef::Body).len();
+    let at = top_level_block_count(&session.doc);
     let mut head = Paragraph::with_text(heading, CharProps::default());
     if let Some(id) = style_id {
         head.props.style = Some(id.to_string());
