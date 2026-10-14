@@ -16,7 +16,13 @@ fn unique_id(prefix: &str) -> String {
 static LAW_SETTINGS_LOCK: Mutex<()> = Mutex::new(());
 
 fn serial() -> std::sync::MutexGuard<'static, ()> {
-    LAW_SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    let guard = LAW_SETTINGS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Keep the tests' profile store out of the person's real settings folder: point it at a fresh
+    // temp folder for each test, so runs do not accumulate profiles or read another run's.
+    let dir = std::env::temp_dir().join(format!("wc-ui-law-store-{}", unique_id("test")));
+    let _ = std::fs::create_dir_all(&dir);
+    wordcraft_law::set_profiles_dir(Some(dir));
+    guard
 }
 use std::rc::Rc;
 use std::sync::mpsc::{Sender, channel};
@@ -91,7 +97,7 @@ fn law_options_lists_bundled_profiles_with_verification_badges() {
     assert!(h.query_by_label("Missouri appellate brief").is_some());
     assert!(h.query_by_label("Federal appellate brief").is_some());
     assert!(h.query_by_label("Missouri").is_some());
-    assert!(h.query_by_label("Verified").is_some());
+    assert!(h.query_all_by_label("Verified").next().is_some());
     assert!(h.query_by_label("missouri-appellate-brief").is_some());
 }
 
@@ -553,6 +559,134 @@ fn editing_style_font_and_line_spacing_together_keeps_both() {
     assert!(style["chr"]["size"].as_f64().unwrap_or(0.0) > 12.0, "the size edit survives the spacing save: {style}");
     assert!(style["para"]["lineSpacing"]["value"].as_f64().unwrap_or(0.0) > 1.0, "the line-spacing edit is saved: {style}");
     assert_eq!(after["verified"], json!(false));
+}
+
+#[test]
+fn switching_profiles_commits_a_field_that_never_blurred() {
+    let _lock = serial();
+    let mut a = law_app();
+    let first = unique_id("ui-law-switch-a");
+    let second = unique_id("ui-law-switch-b");
+    for (id, name) in [(&first, "Switch A"), (&second, "Switch B")] {
+        a.run(
+            "law.profiles.create",
+            json!({
+                "schema": 1,
+                "id": id,
+                "name": name,
+                "jurisdiction": "Test",
+                "verified": true,
+                "docs": {
+                    "brief": {
+                        "styles": [],
+                        "sections": [{"id": "cover", "name": "Cover"}],
+                        "source": "Test"
+                    }
+                }
+            }),
+        )
+        .unwrap();
+    }
+    a.run("law.profiles.approve", json!({"id": first})).unwrap();
+    open_law_options(&mut a);
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    // Select A, type into its section name, then click B without blurring the field first.
+    h.get_by_label("Switch A").click();
+    h.run_steps(6);
+    h.get_by_label("1.").focus();
+    h.run_steps(2);
+    for ch in " Page".chars() {
+        h.get_by_label("1.").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    h.get_by_label("Switch B").click();
+    h.run_steps(6);
+    assert_eq!(h.state().law.selected.as_deref(), Some(second.as_str()), "the click still switches profiles");
+
+    // The edit made before switching is committed, not discarded, and the profile is unverified.
+    let committed = h.state_mut().run("law.profiles.get", json!({"id": first})).unwrap();
+    assert_eq!(committed["docs"]["brief"]["sections"][0]["name"], json!("Cover Page"), "the typed name is saved before the switch");
+    assert_eq!(committed["verified"], json!(false), "committing an edit unverifies the profile");
+
+    // Returning to A shows the saved name, not a lost draft.
+    h.get_by_label("Switch A").click();
+    h.run_steps(6);
+    assert_eq!(h.state().law.selected.as_deref(), Some(first.as_str()));
+    let shown = h.get_by_label("1.").value().unwrap_or_default();
+    assert_eq!(shown, "Cover Page");
+}
+
+#[test]
+fn toggling_required_marks_the_section_required() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-required");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Required toggle test",
+            "jurisdiction": "Test",
+            "verified": true,
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    a.run("law.profiles.approve", json!({"id": id})).unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("Required").click();
+    h.run_steps(4);
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let checks = after["docs"]["brief"]["checks"].as_array().cloned().unwrap_or_default();
+    let req = checks.iter().find(|c| c["kind"] == json!("requiredSections")).expect("a requiredSections check is saved");
+    assert_eq!(req["ids"], json!(["cover"]), "the section id becomes required");
+    assert_eq!(after["verified"], json!(false), "editing the profile makes it unverified");
+}
+
+#[test]
+fn validation_errors_are_shown_inline() {
+    let _lock = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-validation");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Validation test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    a.law.validation = Some("the profile is not valid: missing court".into());
+    let mut h = harness(a);
+    h.run_steps(6);
+    assert!(h.query_by_label("the profile is not valid: missing court").is_some(), "a validation error is shown inline");
 }
 
 #[test]

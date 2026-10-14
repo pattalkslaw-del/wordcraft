@@ -82,8 +82,8 @@ fn reconcile_doc_type(law: &mut LawUi, profile: &Value) {
     }
 }
 
-fn section_draft_key(profile_id: &str, section_id: &str) -> String {
-    format!("{profile_id}\0{section_id}")
+fn section_draft_key(profile_id: &str, doc_key: &str, section_id: &str) -> String {
+    format!("{profile_id}\0{doc_key}\0section\0{section_id}")
 }
 
 fn check_draft_key(profile_id: &str, doc_key: &str, index: usize) -> String {
@@ -101,12 +101,99 @@ fn clear_check_drafts(law: &mut LawUi, profile_id: &str, doc_key: &str) {
     law.check_font_drafts.retain(|k, _| !k.starts_with(&prefix));
 }
 
-/// Forget every text draft for the profile being left or replaced.
-fn clear_profile_drafts(law: &mut LawUi) {
-    law.section_name_drafts.clear();
-    law.check_source_drafts.clear();
-    law.check_font_drafts.clear();
-    law.style_font_drafts.clear();
+/// Every draft key for one profile starts with its id and a NUL.
+fn draft_prefix(profile_id: &str) -> String {
+    format!("{profile_id}\0")
+}
+
+/// Forget one profile's text drafts (the ones just saved). Drafts for other profiles stay.
+fn clear_drafts_for(law: &mut LawUi, profile_id: &str) {
+    let prefix = draft_prefix(profile_id);
+    law.section_name_drafts.retain(|k, _| !k.starts_with(&prefix));
+    law.check_source_drafts.retain(|k, _| !k.starts_with(&prefix));
+    law.check_font_drafts.retain(|k, _| !k.starts_with(&prefix));
+    law.style_font_drafts.retain(|k, _| !k.starts_with(&prefix));
+}
+
+/// Whether the profile has text typed in a field that has not been committed yet.
+fn has_drafts(law: &LawUi, profile_id: &str) -> bool {
+    let prefix = draft_prefix(profile_id);
+    law.section_name_drafts.keys().any(|k| k.starts_with(&prefix))
+        || law.check_source_drafts.keys().any(|k| k.starts_with(&prefix))
+        || law.check_font_drafts.keys().any(|k| k.starts_with(&prefix))
+        || law.style_font_drafts.keys().any(|k| k.starts_with(&prefix))
+}
+
+/// Write every pending text draft of `profile_id` into `profile`, in place. The values are the
+/// same trimmed strings the field's own blur handler would have committed.
+fn apply_drafts(law: &LawUi, profile_id: &str, profile: &mut Value) {
+    let Some(docs) = profile.get_mut("docs").and_then(Value::as_object_mut) else { return };
+    for (doc_key, doc) in docs.iter_mut() {
+        if let Some(sections) = doc.get_mut("sections").and_then(Value::as_array_mut) {
+            for sec in sections.iter_mut() {
+                let sid = sec.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                if let Some(name) = law.section_name_drafts.get(&section_draft_key(profile_id, doc_key, &sid))
+                    && let Some(o) = sec.as_object_mut()
+                {
+                    o.insert("name".into(), json!(name.trim()));
+                }
+            }
+        }
+        if let Some(checks) = doc.get_mut("checks").and_then(Value::as_array_mut) {
+            for (i, ch) in checks.iter_mut().enumerate() {
+                let key = check_draft_key(profile_id, doc_key, i);
+                let Some(o) = ch.as_object_mut() else { continue };
+                if let Some(source) = law.check_source_drafts.get(&key) {
+                    o.insert("source".into(), json!(source.trim()));
+                }
+                if let Some(font) = law.check_font_drafts.get(&key) {
+                    o.insert("font".into(), json!(font.trim()));
+                }
+            }
+        }
+        if let Some(styles) = doc.get_mut("styles").and_then(Value::as_array_mut) {
+            for (i, st) in styles.iter_mut().enumerate() {
+                if let Some(font) = law.style_font_drafts.get(&style_font_draft_key(profile_id, doc_key, i))
+                    && let Some(o) = st.as_object_mut()
+                {
+                    let chr = o.entry("chr").or_insert(json!({}));
+                    if let Some(c) = chr.as_object_mut() {
+                        c.insert("font".into(), json!(font.trim()));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Save every pending text edit for the profile being left through `law.profiles.update`. A field
+/// that never received its blur — because another profile was clicked before it lost focus — would
+/// otherwise be wiped when its draft keys are cleared. Drafts are kept when the save fails, so
+/// returning to the profile shows the text again and it can be retried.
+fn flush_drafts(app: &mut WordApp, profile_id: &str) -> bool {
+    if !has_drafts(&app.law, profile_id) {
+        return true;
+    }
+    let mut profile = match app.run("law.profiles.get", json!({"id": profile_id})) {
+        Ok(p) => p,
+        Err(e) => {
+            app.law.validation = Some(e);
+            return false;
+        }
+    };
+    apply_drafts(&app.law, profile_id, &mut profile);
+    match app.run("law.profiles.update", json!({"id": profile_id, "docs": profile["docs"].clone()})) {
+        Ok(_) => {
+            clear_drafts_for(&mut app.law, profile_id);
+            validate_profile(app, profile_id);
+            true
+        }
+        Err(e) => {
+            app.law.validation = Some(e.clone());
+            app.status(e);
+            false
+        }
+    }
 }
 
 /// File › Options › Add-ins: optional modules.
@@ -171,12 +258,21 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                         }));
                     });
                     if clicked {
-                        app.law.selected = Some(id.to_string());
-                        app.law.validation = None;
-                        app.law.confirm_approve = false;
-                        clear_profile_drafts(&mut app.law);
-                        if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
-                            reconcile_doc_type(&mut app.law, &p);
+                        // A field whose blur never came (the click landed elsewhere first) still
+                        // has its text in a draft. Commit it through `law.profiles.update` before
+                        // the selection changes and the drafts are cleared.
+                        let previous = app.law.selected.clone().filter(|p| p != id);
+                        let allowed = match previous {
+                            Some(p) => flush_drafts(app, &p),
+                            None => true,
+                        };
+                        if allowed {
+                            app.law.selected = Some(id.to_string());
+                            app.law.validation = None;
+                            app.law.confirm_approve = false;
+                            if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
+                                reconcile_doc_type(&mut app.law, &p);
+                            }
                         }
                     }
                     ui.label(RichText::new(id).small().weak());
@@ -304,7 +400,7 @@ fn sections_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &s
     let required = required_section_ids(doc);
     for (i, sec) in sections.iter().enumerate() {
         let sid = sec["id"].as_str().unwrap_or("");
-        let draft_key = section_draft_key(profile_id, sid);
+        let draft_key = section_draft_key(profile_id, doc_key, sid);
         let stored_name = sec["name"].as_str().unwrap_or("");
         let mut name = app.law.section_name_drafts.get(&draft_key).cloned().unwrap_or_else(|| stored_name.to_string());
         let is_req = required.iter().any(|r| r == sid);
@@ -787,9 +883,14 @@ pub(crate) fn finish_pick(app: &mut WordApp, after: AfterPick, picked: Option<St
             let r = app.run("law.profiles.import", json!({"path": path}));
             if let Ok(v) = &r {
                 if let Some(id) = v.get("id").and_then(Value::as_str) {
+                    // Commit any pending edit on the profile being replaced, then drop only the
+                    // imported profile's drafts (a stale draft must not overwrite what was read).
+                    if let Some(previous) = app.law.selected.clone().filter(|p| p != id) {
+                        flush_drafts(app, &previous);
+                    }
+                    clear_drafts_for(&mut app.law, id);
                     app.law.selected = Some(id.to_string());
                     app.law.validation = None;
-                    clear_profile_drafts(&mut app.law);
                     if let Ok(p) = app.run("law.profiles.get", json!({"id": id})) {
                         reconcile_doc_type(&mut app.law, &p);
                     }
