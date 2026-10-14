@@ -36,6 +36,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod apply;
+mod certificate;
 pub mod checks;
 pub mod citation_pack;
 pub mod citations;
@@ -84,3 +85,4 @@ mod tests_checks;
 mod tests_proofing;
 mod tests_symbols;
 mod tests_citations;
+mod tests_certificate;

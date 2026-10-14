@@ -13,9 +13,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use serde_json::{Value, json};
-use wordcraft_engine::{CmdError, CommandSpec, p};
+use wordcraft_engine::{CmdError, CommandSpec, Session, p};
 
 use crate::apply;
+use crate::certificate;
 use crate::checks;
 use crate::citation_pack::CompiledPack;
 use crate::citations;
@@ -39,6 +40,7 @@ fn packs() -> &'static BTreeMap<String, CompiledPack> {
 fn pack_by_id(id: &str) -> Result<&'static CompiledPack, CmdError> {
     packs().get(id).ok_or_else(|| CmdError::Failed(format!("no citation pack `{id}`")))
 }
+const CERT_LOC: &str = "Law › Certificates";
 
 /// The profiles WordCraft knows: the ones it ships and the user's own.
 static STORE: OnceLock<Mutex<Store>> = OnceLock::new();
@@ -236,9 +238,46 @@ pub fn specs() -> Vec<CommandSpec> {
             r#"{"pack"?: string (defaults to the applied court profile's citationPack), "store"?: bool (default true: show findings in Review › Proofing)} → {"pack", "findings": [{checkId, severity, message, start?, end?}]}"#,
         )
         .pure(),
+        CommandSpec::new("law.certificate.compliance", "Certificate of Compliance", CERT_LOC, |s, v| {
+            let (profile, doc_type) = profile_and_doc(s, v)?;
+            certificate::insert_or_refresh(s, &profile, &doc_type).map_err(|e| CmdError::Failed(e.to_string()))
+        })
+        .params(
+            r#"{"id"?: string, "doc"?: string} → {"profile", "doc", "wordCount", "wordLimit", "section", "findings"?: [{checkId, severity, message}]} (includes a word-limit finding when over the limit)"#,
+        ),
+        CommandSpec::new("law.certificate.refresh", "Refresh Certificate Word Count", CERT_LOC, |s, _| {
+            certificate::refresh_wordcount_fields(s)?;
+            Ok(json!({"refreshed": true}))
+        })
+        .params(r#"{} → {"refreshed": true} (updates LAWWORDCOUNT fields; runs before export when a profile is applied)"#),
     ]
     ]);
     v
+}
+
+fn profile_and_doc(s: &Session, v: &Value) -> Result<(Profile, String), CmdError> {
+    let profile_id = match p::str(v, "id") {
+        Some(id) => id.to_string(),
+        None => s
+            .doc
+            .custom_prop(checks::PROP_PROFILE)
+            .ok_or_else(|| CmdError::Params("`id` (profile id) is required when no court profile is applied".into()))?
+            .to_string(),
+    };
+    let profile = store().get(&profile_id).cloned().ok_or_else(|| not_found(&profile_id))?;
+    let doc_type = match p::str(v, "doc") {
+        Some(d) => d.to_string(),
+        None => s
+            .doc
+            .custom_prop(checks::PROP_DOC_TYPE)
+            .or_else(|| {
+                let mut types = profile.doc_types();
+                (types.len() == 1).then(|| types.remove(0))
+            })
+            .ok_or_else(|| CmdError::Params(format!("`doc` is required: `{}` has {}", profile.name, profile.doc_types().join(", "))))?
+            .to_string(),
+    };
+    Ok((profile, doc_type))
 }
 
 fn not_found(id: &str) -> CmdError {
