@@ -4,7 +4,7 @@ use std::sync::Once;
 
 use serde_json::{Value, json};
 use wordcraft_doc::para::NBSP;
-use wordcraft_doc::{Pos, StoryRef};
+use wordcraft_doc::{Paragraph, Pos, StoryRef};
 use wordcraft_engine::cmd::{delete_selection, sel_result, type_text};
 use wordcraft_engine::{CmdError, CmdResult, CommandSpec, Selection, Session, p};
 
@@ -131,7 +131,7 @@ fn maybe_append_sign_nbsp(s: &mut Session) -> Result<(), CmdError> {
     let f = s.sel.focus.clone();
     let Some(para) = s.doc.para_at(&f) else { return Ok(()) };
     let rest = para.text.get(f.off..).unwrap_or("");
-    if rest.is_empty() || rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+    if rest.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         let mut b = [0u8; 4];
         type_text(s, NBSP.encode_utf8(&mut b))?;
     }
@@ -166,48 +166,93 @@ pub fn fix_sign_spacing_in_str(text: &str) -> (String, bool) {
     (out, changed)
 }
 
+/// Byte ranges `[start, end)` of ASCII spaces after §/¶ runs that should become NBSP, wholly inside `text[from..to]`.
+pub fn sign_spacing_space_ranges(text: &str, from: usize, to: usize) -> Vec<(usize, usize)> {
+    let from = from.min(text.len());
+    let to = to.min(text.len());
+    if from >= to {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut i = from;
+    while i < to {
+        let Some(first) = text.get(i..).and_then(|s| s.chars().next()) else { break };
+        if first == '§' || first == '¶' {
+            let sign = first;
+            let sign_start = i;
+            let mut j = i + first.len_utf8();
+            while let Some(c) = text.get(j..).and_then(|s| s.chars().next())
+                && c == sign
+            {
+                j += c.len_utf8();
+            }
+            if j < text.len()
+                && text.get(j..j + 1) == Some(" ")
+                && text.get(j + 1..).and_then(|s| s.chars().next()).is_some_and(|c| c.is_ascii_digit())
+            {
+                let space_start = j;
+                let space_end = j + 1;
+                let digit = text[space_end..].chars().next().unwrap_or('\0');
+                let digit_end = space_end + digit.len_utf8();
+                if sign_start >= from && digit_end <= to {
+                    out.push((space_start, space_end));
+                }
+                i = digit_end;
+                continue;
+            }
+        }
+        i += first.len_utf8();
+    }
+    out
+}
+
+fn fix_sign_spacing_in_para(para: &mut Paragraph, from: usize, to: usize) -> Result<bool, wordcraft_doc::DocError> {
+    let spaces = sign_spacing_space_ranges(&para.text, from, to);
+    if spaces.is_empty() {
+        return Ok(false);
+    }
+    for (space_start, space_end) in spaces.into_iter().rev() {
+        let props = para.props_of_char(space_start).clone();
+        para.delete(space_start, space_end)?;
+        let mut buf = [0u8; 4];
+        para.insert_text(space_start, NBSP.encode_utf8(&mut buf), &props)?;
+    }
+    para.touch();
+    Ok(true)
+}
+
 fn fix_spacing(s: &mut Session, v: &Value) -> CmdResult {
     let scope = p::str(v, "scope");
     let whole = scope == Some("document") || (scope != Some("selection") && s.sel.is_collapsed());
-    let (sel_start, sel_end) = if whole {
-        (None, None)
+    let mut fixes = 0usize;
+    if whole {
+        for path in s.doc.para_paths(StoryRef::Body) {
+            let para = s.doc.para_mut(StoryRef::Body, &path)?;
+            let len = para.len();
+            if fix_sign_spacing_in_para(para, 0, len)? {
+                fixes += 1;
+            }
+        }
     } else {
         let (a, b) = s.sel.ordered();
-        (Some(a), Some(b))
-    };
-    let mut fixes = 0usize;
-    for path in s.doc.para_paths(StoryRef::Body) {
-        let p = Pos { story: StoryRef::Body, path: path.clone(), off: 0 };
-        if let (Some(start), Some(end)) = (&sel_start, &sel_end)
-            && !para_overlaps_selection(&p, start, end)
-        {
-            continue;
+        for path in s.doc.paths_between(&a, &b) {
+            let para = s.doc.para_mut(a.story, &path)?;
+            let from = if path == a.path { a.off } else { 0 };
+            let to = if path == b.path { b.off } else { para.len() };
+            if from >= to {
+                continue;
+            }
+            if fix_sign_spacing_in_para(para, from, to)? {
+                fixes += 1;
+            }
         }
-        let para = s.doc.para(StoryRef::Body, &path).cloned();
-        let Some(para) = para else { continue };
-        let (fixed, changed) = fix_sign_spacing_in_str(&para.text);
-        if !changed {
-            continue;
-        }
-        let para = s.doc.para_mut(StoryRef::Body, &path)?;
-        para.text = fixed;
-        para.touch();
-        fixes += 1;
     }
     Ok(json!({"fixes": fixes}))
 }
 
-fn para_overlaps_selection(para_pos: &Pos, start: &Pos, end: &Pos) -> bool {
-    if para_pos.story != start.story || para_pos.path != start.path {
-        return false;
-    }
-    // Same paragraph as either end of the selection.
-    start.path == para_pos.path || end.path == para_pos.path
-}
-
 /// After a digit is typed, turn `§ 1` into `§` NBSP `1`.
 fn on_text_autoformat(s: &mut Session, text: &str) -> Result<bool, CmdError> {
-    if !s.prefs.autocorrect.enabled {
+    if !s.module_enabled(crate::MODULE) || !s.prefs.autocorrect.enabled {
         return Ok(false);
     }
     let ch = text.chars().next().unwrap_or('\0');
@@ -225,24 +270,31 @@ fn on_text_autoformat(s: &mut Session, text: &str) -> Result<bool, CmdError> {
     if digit_start >= bytes.len() {
         return Ok(false);
     }
-    let space_end = digit_start;
-    if space_end == 0 {
-        return Ok(false);
-    }
-    let space_start = space_end.saturating_sub(1);
-    if para.text.get(space_start..space_end) != Some(" ") {
-        return Ok(false);
-    }
-    let before_space = para.text.get(..space_start).unwrap_or("");
-    let run = sign_run_end(before_space);
-    if run == 0 {
+    let has_ascii_space = digit_start > 0 && para.text.get(digit_start - 1..digit_start) == Some(" ");
+    let sign_run = if has_ascii_space {
+        let before_space = para.text.get(..digit_start - 1).unwrap_or("");
+        sign_run_end(before_space)
+    } else {
+        sign_run_end(para.text.get(..digit_start).unwrap_or(""))
+    };
+    if sign_run == 0 {
         return Ok(false);
     }
     let para = s.doc.para_mut(f.story, &f.path)?;
-    let props = para.props_of_char(space_start).clone();
-    para.delete(space_start, space_end)?;
-    para.insert_text(space_start, NBSP.encode_utf8(&mut [0u8; 4]), &props)?;
-    s.sel = Selection::caret(f);
+    let mut buf = [0u8; 4];
+    let nbsp = NBSP.encode_utf8(&mut buf);
+    let delta = if has_ascii_space {
+        let space_start = digit_start - 1;
+        let props = para.props_of_char(space_start).clone();
+        para.delete(space_start, digit_start)?;
+        para.insert_text(space_start, nbsp, &props)?;
+        NBSP.len_utf8() - 1
+    } else {
+        let props = para.props_of_char(digit_start).clone();
+        para.insert_text(digit_start, nbsp, &props)?;
+        NBSP.len_utf8()
+    };
+    s.sel = Selection::caret(Pos { off: f.off + delta, ..f });
     Ok(true)
 }
 
@@ -295,9 +347,21 @@ mod tests {
         s.run("text.insert", &json!({"text": " "})).unwrap();
         s.run("text.insert", &json!({"text": "1"})).unwrap();
         let text = s.doc.para_at(&s.sel.focus).unwrap().text.clone();
-        assert!(text.contains(NBSP), "expected NBSP: {text:?}");
+        assert_eq!(text, format!("§{NBSP}1"));
+        run(&mut s, "text.insert", json!({"text": "0"}));
+        let text = s.doc.para_at(&s.sel.focus).unwrap().text.clone();
+        assert_eq!(text, format!("§{NBSP}10"));
+        assert_eq!(s.undo_label(), Some("Typing"));
         assert!(s.undo());
         let text = s.doc.para_at(&s.sel.focus).unwrap().text.clone();
-        assert!(text.contains("§ 1"), "undo restores the ordinary space: {text:?}");
+        assert_eq!(text, format!("§{NBSP}1"));
+        assert_eq!(s.undo_label(), Some("AutoFormat"));
+        assert!(s.undo());
+        let text = s.doc.para_at(&s.sel.focus).unwrap().text.clone();
+        assert_eq!(text, "§ 1", "undo restores the ordinary space: {text:?}");
+    }
+
+    fn run(s: &mut Session, id: &str, v: serde_json::Value) {
+        s.run(id, &v).unwrap_or_else(|e| panic!("{id}: {e}"));
     }
 }
