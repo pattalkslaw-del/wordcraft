@@ -134,8 +134,8 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
 
 /// Report a manual **Check for updates** in the status bar when the notice bar won't: a newer
 /// release already shows its own notice, but "up to date" and network errors produced no visible
-/// answer before (#15 review).
-fn report_update_check(app: &mut WordApp, result: Result<serde_json::Value, String>) {
+/// answer before (#15 review). Shared with the ribbon's Help ▸ Check for Updates.
+pub(crate) fn report_update_check(app: &mut WordApp, result: Result<serde_json::Value, String>) {
     match result {
         Ok(v) => match v.get("status").and_then(serde_json::Value::as_str) {
             // `available` draws the update notice through the command's UI request.
