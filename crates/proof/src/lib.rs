@@ -167,7 +167,9 @@ impl Eq for ModuleEn {}
 
 impl std::hash::Hash for ModuleEn {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.spelling.map(|w| w.as_ptr()).hash(state);
+        // Hash the spelling *contents*, matching the content comparison in `PartialEq`: two
+        // separate slices holding the same words must compare equal *and* hash equally.
+        self.spelling.hash(state);
         self.grammar.map(|g| g as usize).hash(state);
     }
 }
@@ -936,6 +938,25 @@ mod tests {
         assert!(
             check_text_with("Ok hello", &[(0..8, ProofLang::En)], &Options::default(), true, ModuleEn::default()).iter().all(|i| i.message != "test")
         );
+    }
+
+    /// `Eq` compares spelling by contents, so `Hash` must too: two separate slices holding the
+    /// same words compare equal *and* hash equally (a contract a `HashMap<ModuleEn, _>` relies on).
+    #[test]
+    fn module_en_eq_and_hash_agree_on_spelling_contents() {
+        use std::hash::{Hash, Hasher};
+        static A: [&str; 2] = ["affidavit", "voir"];
+        static B: [&str; 2] = ["affidavit", "voir"];
+        let a = ModuleEn::with_spelling(Some(&A));
+        let b = ModuleEn::with_spelling(Some(&B));
+        assert_eq!(a, b, "equal contents compare equal");
+        let hash = |m: ModuleEn| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            m.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(a), hash(b), "equal values must hash equally");
+        assert_ne!(a, ModuleEn::with_spelling(Some(&["affidavit"])));
     }
 
     /// #40: the user dictionary survives a save and a fresh load.

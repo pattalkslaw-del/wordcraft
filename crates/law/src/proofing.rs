@@ -125,17 +125,13 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["of", "law"],
         preceding: &[],
     },
+    // Note: `council for the …` is deliberately absent. "The city council for the district" is
+    // correct, and immediate adjacency to `for the` doesn't make `council` likely wrong. Only the
+    // unambiguous `council of record` fires below.
     ConfusionRule {
         wrong: "council",
         right: "counsel",
-        message: "A party's lawyer is \"counsel\", not \"council\" (a governing body).",
-        following: &["for", "the"],
-        preceding: &[],
-    },
-    ConfusionRule {
-        wrong: "council",
-        right: "counsel",
-        message: "Court-appointed representation is \"counsel\", not \"council\".",
+        message: "Court-appointed representation is \"counsel\", not \"council\" (a governing body).",
         following: &["of", "record"],
         preceding: &[],
     },
@@ -174,13 +170,10 @@ const CONFUSION_RULES: &[ConfusionRule] = &[
         following: &["medication"],
         preceding: &[],
     },
-    ConfusionRule {
-        wrong: "prescribe",
-        right: "proscribe",
-        message: "To forbid conduct by rule is to \"proscribe\" it, not \"prescribe\".",
-        following: &["such", "conduct"],
-        preceding: &[],
-    },
+    // Note: `prescribe such conduct` is deliberately absent. A rule can affirmatively *prescribe*
+    // conduct, so `prescribe` there is correct, not a reversed `proscribe`; adjacency to `such
+    // conduct` doesn't establish that the word is likely wrong. The clear `proscribe medication`
+    // case still fires below.
     ConfusionRule {
         wrong: "averse",
         right: "adverse",
@@ -243,38 +236,45 @@ fn is_sentence_end(c: char) -> bool {
     matches!(c, '.' | '!' | '?')
 }
 
-fn sentence_start(text: &str, before: usize) -> usize {
-    text.get(..before).and_then(|head| head.rfind(is_sentence_end)).map(|i| i + 1).unwrap_or(0)
-}
-
-fn sentence_end(text: &str, after: usize) -> usize {
-    text.get(after..).and_then(|tail| tail.find(is_sentence_end)).map(|i| after + i).unwrap_or_else(|| text.len())
-}
-
-fn following_words_in_sentence<'a>(tokens: &'a [(usize, usize, String)], idx: usize, text: &str) -> Vec<&'a str> {
-    let end = sentence_end(text, tokens.get(idx).map(|t| t.1).unwrap_or(0));
-    tokens.iter().skip(idx + 1).take_while(|t| t.0 < end).map(|t| t.2.as_str()).collect()
-}
-
-fn preceding_words_in_sentence<'a>(tokens: &'a [(usize, usize, String)], idx: usize, text: &str) -> Vec<&'a str> {
-    let start = sentence_start(text, tokens.get(idx).map(|t| t.0).unwrap_or(0));
-    tokens.iter().take(idx).filter(|t| t.0 >= start).map(|t| t.2.as_str()).collect()
+/// Whether the raw text between two adjacent tokens holds a sentence end. Phrase words are
+/// immediate neighbours, so checking each gap keeps the work proportional to the phrase length
+/// instead of collecting every word in the sentence for every candidate token (which was
+/// quadratic on a long sentence with many candidates).
+fn gap_has_sentence_end(text: &str, from: usize, to: usize) -> bool {
+    text.get(from..to).is_some_and(|gap| gap.chars().any(is_sentence_end))
 }
 
 fn phrase_follows(tokens: &[(usize, usize, String)], idx: usize, text: &str, phrase: &[&str]) -> bool {
     if phrase.is_empty() {
         return true;
     }
-    let next = following_words_in_sentence(tokens, idx, text);
-    next.len() >= phrase.len() && next[..phrase.len()] == *phrase
+    let Some(first) = tokens.get(idx) else { return false };
+    let mut prev_end = first.1;
+    for (n, want) in phrase.iter().enumerate() {
+        let Some(t) = tokens.get(idx.saturating_add(1).saturating_add(n)) else { return false };
+        if t.2 != *want || gap_has_sentence_end(text, prev_end, t.0) {
+            return false;
+        }
+        prev_end = t.1;
+    }
+    true
 }
 
 fn phrase_precedes(tokens: &[(usize, usize, String)], idx: usize, text: &str, phrase: &[&str]) -> bool {
     if phrase.is_empty() {
         return true;
     }
-    let prev = preceding_words_in_sentence(tokens, idx, text);
-    prev.len() >= phrase.len() && prev[prev.len() - phrase.len()..] == *phrase
+    let Some(first) = tokens.get(idx) else { return false };
+    let mut next_start = first.0;
+    for (n, want) in phrase.iter().rev().enumerate() {
+        let Some(i) = idx.checked_sub(n.saturating_add(1)) else { return false };
+        let Some(t) = tokens.get(i) else { return false };
+        if t.2 != *want || gap_has_sentence_end(text, t.1, next_start) {
+            return false;
+        }
+        next_start = t.0;
+    }
+    true
 }
 
 fn capitalize_like(original: &str, replacement: &str) -> String {

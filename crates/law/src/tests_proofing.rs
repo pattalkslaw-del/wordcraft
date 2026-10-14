@@ -3,10 +3,10 @@
 use serde_json::json;
 use wordcraft_doc::Document;
 use wordcraft_engine::Session;
-use wordcraft_proof::{IssueKind, Options, ProofLang, check_text_with, is_correct_with_module};
+use wordcraft_proof::{Options, ProofLang, check_text_with, is_correct_with_module};
 
 use crate::install;
-use crate::proofing::{confusion_issues, legal_words, module_hooks};
+use crate::proofing::{confusion_issues, legal_words};
 use crate::tests::{law, run};
 
 #[test]
@@ -63,11 +63,25 @@ fn confusion_check_command_finds_statute_statue() {
     assert!(findings.iter().any(|f| f["message"].as_str().is_some_and(|m| m.contains("statute"))));
 }
 
+/// The confusion check reaches the real Review › Proofing path: an enabled session's module hook
+/// is carried on `Session::module_en` into layout proofing, so `review.issues` (what the Review
+/// pane and F7 read) reports it — and an uninstalled session does not.
 #[test]
 fn confusion_issues_hook_into_review_proofing() {
     let text = "The statue of limitations has run.";
-    let issues = check_text_with(text, &[(0..text.len(), ProofLang::En)], &Options::default(), true, module_hooks());
-    assert!(issues.iter().any(|i| i.kind == IssueKind::Grammar && i.message.contains("statute")));
+    let mut s = law();
+    run(&mut s, "text.insert", json!({"text": text}));
+    let issues = run(&mut s, "review.issues", json!({}));
+    assert!(
+        issues.as_array().is_some_and(|a| a.iter().any(|i| i["message"].as_str().is_some_and(|m| m.contains("statute")))),
+        "review.issues should report the confusion: {issues}"
+    );
+
+    let mut off = Session::new(Document::new());
+    assert_eq!(install(&mut off), 0);
+    run(&mut off, "text.insert", json!({"text": text}));
+    let issues = run(&mut off, "review.issues", json!({}));
+    assert!(issues.as_array().is_some_and(|a| a.is_empty()), "without LawCraft the same text is quiet: {issues}");
 }
 
 macro_rules! confusion_pair {
@@ -84,13 +98,29 @@ macro_rules! confusion_pair {
 
 confusion_pair!(statute_statue, "The statue of limitations has run.", "A bronze statue stands in the plaza.");
 confusion_pair!(principal_principle_issue, "The principle issue is liability.", "A moral principle guides the court.");
-confusion_pair!(counsel_council, "Attorney council for the defendant filed a brief.", "The city council met last night.");
-confusion_pair!(counsel_council_ordinance, "Attorney council for the defendant filed a brief.", "The city council voted for the ordinance.");
+confusion_pair!(counsel_council, "Attorney council of record filed a brief.", "The city council for the district met yesterday.");
+confusion_pair!(counsel_council_ordinance, "The council of record filed an appearance.", "The city council voted for the ordinance.");
 confusion_pair!(affect_effect, "The affect of the ruling was clear.", "The new rule will affect the outcome.");
 confusion_pair!(affect_statute, "The affect of the ruling was clear.", "The rule will affect enforcement of the statute.");
 confusion_pair!(precedent_precedence, "This is binding precedence in our circuit.", "Federal law takes precedence over state law.");
-confusion_pair!(prescribe_proscribe, "The doctor proscribe medication for the patient.", "The regulation proscribe such conduct.");
-confusion_pair!(proscribe_prescribe, "The rule prescribe such conduct by counsel.", "The physician prescribe antibiotics.");
+confusion_pair!(prescribe_proscribe, "The doctor proscribe medication for the patient.", "The rules prescribe such conduct by counsel.");
+
+/// #5 review: correct wording must not be flagged. A governing-body `council` — even "council for
+/// the district" — and a rule that affirmatively `prescribe`s conduct are both correct; adjacency
+/// alone doesn't make the word likely wrong. The clear `council of record` and `proscribe
+/// medication` cases still fire (see the pairs above).
+#[test]
+fn correct_council_and_prescribe_contexts_are_quiet() {
+    for text in [
+        "The city council for the district met yesterday.",
+        "The county council for the region approved the plan.",
+        "The rules prescribe such conduct by counsel.",
+        "The statute prescribe such conduct.",
+    ] {
+        let issues = confusion_issues(text);
+        assert!(issues.is_empty(), "unexpected finding in: {text} → {issues:?}");
+    }
+}
 confusion_pair!(adverse_averse, "The tenant claimed averse possession.", "The investor was averse to risk.");
 confusion_pair!(elicit_illicit, "Counsel illicit testimony about the contract.", "Police seized illicit drugs.");
 confusion_pair!(complement_compliment, "The exhibit compliment the record.", "She compliment the judge after argument.");
