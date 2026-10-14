@@ -3,8 +3,9 @@
 //! The platform installers run only after `file.checkForUpdates` verified the download against the
 //! release's published SHA-256 checksums. Each path is arranged so a failure never leaves a
 //! half-installed application: the macOS bundle is staged, validated and swapped with the old
-//! bundle kept until the new one is in place, and the portable helper waits for us to exit before
-//! touching the running folder.
+//! bundle kept until the new one is in place, and the Windows portable update stages a validated
+//! copy on the install's own volume, then renames the old installation aside and restores it if the
+//! new one cannot be moved into place (see [`replace_portable`]).
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -21,8 +22,9 @@ fn run(job: InstallHandoff) -> Result<(), String> {
     let kind = job.kind;
     let staging = private_staging_dir()?;
     let result = install_into(&job, &staging);
-    // The portable helper still needs the staged extract after we exit; it removes it when done.
-    // Every other outcome (including a failed attempt) can drop its staging right away.
+    // A started portable launcher owns the staging and removes it once the helper has run (success
+    // or failure). Every other outcome, including a portable attempt that failed before the
+    // launcher started, can drop its staging right away.
     if !(result.is_ok() && kind == InstallKind::WindowsPortableZip) {
         let _ = std::fs::remove_dir_all(&staging);
     }
@@ -101,10 +103,87 @@ fn windows_msi(_path: &Path) -> Result<(), String> {
     Err("MSI install is only on Windows".into())
 }
 
-/// Arguments for the Windows portable replace-and-relaunch helper. Owned strings keep the array a
-/// single element type (a mixed `&str`/`String` array does not compile on Windows).
+/// Filesystem operations the portable replace needs, so tests cover failure handling offline.
 #[cfg(any(target_os = "windows", test))]
-fn portable_helper_args(script: &str, pid: u32, src: &str, dest: &str, exe: &str) -> Vec<String> {
+pub trait PortableOps {
+    fn is_dir(&self, path: &Path) -> bool;
+    fn is_file(&self, path: &Path) -> bool;
+    fn exists(&self, path: &Path) -> bool;
+    fn copy_tree(&self, from: &Path, to: &Path) -> Result<(), String>;
+    fn move_path(&self, from: &Path, to: &Path) -> Result<(), String>;
+    fn remove_tree(&self, path: &Path) -> Result<(), String>;
+}
+
+/// A portable update is only acceptable when it really is an application folder holding the
+/// executable we are running. A checksummed zip can still be packed wrong, and swapping one in
+/// would replace a working installation with a broken one.
+#[cfg(any(target_os = "windows", test))]
+pub fn validate_portable(ops: &dyn PortableOps, root: &Path, exe_name: &str) -> Result<(), String> {
+    if exe_name.is_empty() {
+        return Err("could not find the running executable name".into());
+    }
+    if !ops.is_dir(root) {
+        return Err("the downloaded update is not an application folder".into());
+    }
+    if !ops.is_file(&root.join(exe_name)) {
+        return Err("the downloaded update has no WordCraft executable".into());
+    }
+    Ok(())
+}
+
+/// Copy the validated download beside the installation (`staged`), so the swap that follows is a
+/// rename on the same volume rather than a copy over the live files. A failed or partial copy is
+/// removed and never touches the installation.
+#[cfg(any(target_os = "windows", test))]
+pub fn stage_portable(ops: &dyn PortableOps, app_root: &Path, staged: &Path, exe_name: &str) -> Result<(), String> {
+    if let Err(e) = ops.copy_tree(app_root, staged) {
+        let _ = ops.remove_tree(staged);
+        return Err(e);
+    }
+    if let Err(e) = validate_portable(ops, staged, exe_name) {
+        let _ = ops.remove_tree(staged);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Replace `dest` with the staged build. The previous installation is renamed aside before the new
+/// one goes in and restored if that fails, so a failure never leaves a half-replaced folder. With
+/// no previous installation the staged build simply takes its place.
+#[cfg(any(target_os = "windows", test))]
+pub fn replace_portable(ops: &dyn PortableOps, staged: &Path, dest: &Path, exe_name: &str) -> Result<(), String> {
+    validate_portable(ops, staged, exe_name)?;
+    let parent = dest.parent().ok_or("could not find the running install folder")?;
+    if !ops.exists(dest) {
+        return match ops.move_path(staged, dest) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = ops.remove_tree(staged);
+                Err(e)
+            }
+        };
+    }
+    let backup = parent.join(format!(".wordcraft-previous-{}", random_hex(8)?));
+    if let Err(e) = ops.move_path(dest, &backup) {
+        return Err(format!("could not set the previous installation aside: {e}"));
+    }
+    if let Err(e) = ops.move_path(staged, dest) {
+        // The new build is still staged: drop it, then put the previous installation back.
+        let _ = ops.remove_tree(staged);
+        let detail = match ops.move_path(&backup, dest) {
+            Ok(()) => e,
+            Err(restore) => format!("{e}; restoring the previous installation also failed: {restore}"),
+        };
+        return Err(detail);
+    }
+    let _ = ops.remove_tree(&backup);
+    Ok(())
+}
+
+/// Arguments for the Windows portable launcher. Owned strings keep the array a single element type
+/// (a mixed `&str`/`String` array does not compile on Windows).
+#[cfg(any(target_os = "windows", test))]
+fn portable_helper_args(script: &str, pid: u32, helper: &str, staged: &str, dest: &str, exe_name: &str, staging: &str) -> Vec<String> {
     vec![
         "-NoProfile".into(),
         "-ExecutionPolicy".into(),
@@ -113,17 +192,45 @@ fn portable_helper_args(script: &str, pid: u32, src: &str, dest: &str, exe: &str
         script.into(),
         "-WaitPid".into(),
         pid.to_string(),
-        "-Src".into(),
-        src.into(),
+        "-Helper".into(),
+        helper.into(),
+        "-Staged".into(),
+        staged.into(),
         "-Dest".into(),
         dest.into(),
-        "-Exe".into(),
-        exe.into(),
+        "-ExeName".into(),
+        exe_name.into(),
+        "-Staging".into(),
+        staging.into(),
     ]
 }
 
-// Compiled on every platform so a host build type-checks the argument construction; `powershell`
-// only exists on Windows, where this path actually runs.
+/// The launcher waits for the running app to exit (freeing its files), starts the copied helper
+/// that performs the swap in Rust, then removes the helper and the private staging whatever the
+/// outcome. It is only a waiter: the replacement itself is [`replace_portable`].
+#[cfg(any(target_os = "windows", test))]
+fn portable_script() -> &'static str {
+    r#"param([int]$WaitPid, [string]$Helper, [string]$Staged, [string]$Dest, [string]$ExeName, [string]$Staging)
+$ErrorActionPreference = 'Stop'
+Wait-Process -Id $WaitPid -ErrorAction SilentlyContinue
+try { Start-Process -FilePath $Helper -ArgumentList ('--apply-portable-update "{0}" "{1}" "{2}"' -f $Staged, $Dest, $ExeName) -Wait } catch {}
+Remove-Item -Force -LiteralPath $Helper -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force -LiteralPath $Staging -ErrorAction SilentlyContinue
+"#
+}
+
+/// The application folder inside the extracted zip: the release wraps its files in one top-level
+/// folder (`wordcraft-…-portable/`), but a flat zip is accepted too.
+#[cfg(target_os = "windows")]
+fn find_portable_root(extract: &Path, exe_name: &str) -> Option<PathBuf> {
+    if extract.join(exe_name).is_file() {
+        return Some(extract.to_path_buf());
+    }
+    let first = std::fs::read_dir(extract).ok()?.flatten().next()?;
+    (first.file_type().ok()?.is_dir() && first.path().join(exe_name).is_file()).then(|| first.path())
+}
+
+// `powershell` only exists on Windows, where this path actually runs.
 #[cfg(target_os = "windows")]
 fn windows_portable(zip: &Path, exe: &str, staging: &Path) -> Result<(), String> {
     let extract = staging.join("extract");
@@ -135,32 +242,106 @@ fn windows_portable(zip: &Path, exe: &str, staging: &Path) -> Result<(), String>
     if !status.success() {
         return Err("Could not unpack the portable zip.".into());
     }
+    let exe_name = Path::new(exe).file_name().and_then(|n| n.to_str()).ok_or("could not find the running executable name")?;
+    let app_root = find_portable_root(&extract, exe_name).ok_or("the downloaded update has no WordCraft executable")?;
     let dest = Path::new(exe);
     let parent = dest.parent().ok_or("could not find the running install folder")?;
+    // Stage on the installation's own volume, so the swap the helper performs is a rename.
+    let staged = parent.join(format!(".wordcraft-update-{}", random_hex(8)?));
+    let ops = RealPortableOps;
+    stage_portable(&ops, &app_root, &staged, exe_name)?;
+    // The helper must not run from `staged` (that folder becomes the installation): copy the new
+    // build's own executable out of it first, so the folder being moved is never a running program.
+    let helper = parent.join(format!(".wordcraft-helper-{}", random_hex(8)?)).with_extension("exe");
+    match write_portable_launcher(&staged, &helper, staging, exe_name, dest) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&helper);
+            let _ = std::fs::remove_dir_all(&staged);
+            Err(e)
+        }
+    }
+}
+
+/// Copy the helper executable out of the staged build and start the launcher, which waits for this
+/// process to exit before running the helper. On any failure the caller removes the helper and the
+/// staged folder.
+#[cfg(target_os = "windows")]
+fn write_portable_launcher(staged: &Path, helper: &Path, staging: &Path, exe_name: &str, dest: &Path) -> Result<(), String> {
+    std::fs::copy(staged.join(exe_name), helper).map_err(|e| e.to_string())?;
     let script = staging.join("apply-portable.ps1");
-    // `robocopy` copies the new build over the folder, then relaunches. It waits for our PID, so
-    // the files are not in use when they are replaced.
-    let ps = r#"param([int]$WaitPid, [string]$Src, [string]$Dest, [string]$Exe)
-$ErrorActionPreference = 'Stop'
-Wait-Process -Id $WaitPid -ErrorAction SilentlyContinue
-robocopy $Src $Dest /E /NFL /NDL /NJH /NJS /nc /ns /np | Out-Null
-if ($LASTEXITCODE -ge 8) { exit 1 }
-Start-Process -FilePath $Exe
-Remove-Item -Recurse -Force (Split-Path -Parent $Src) -ErrorAction SilentlyContinue
-"#;
-    std::fs::write(&script, ps).map_err(|e| e.to_string())?;
+    std::fs::write(&script, portable_script()).map_err(|e| e.to_string())?;
     let args = portable_helper_args(
         script.to_str().ok_or("bad path")?,
         std::process::id(),
-        extract.to_str().ok_or("bad path")?,
-        parent.to_str().ok_or("bad path")?,
-        exe,
+        helper.to_str().ok_or("bad path")?,
+        staged.to_str().ok_or("bad path")?,
+        dest.to_str().ok_or("bad path")?,
+        exe_name,
+        staging.to_str().ok_or("bad path")?,
     );
     let child = Command::new("powershell").args(&args).spawn().map_err(|e| e.to_string())?;
     if child.id() == 0 {
         return Err("Could not start the portable update helper.".into());
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+struct RealPortableOps;
+
+#[cfg(target_os = "windows")]
+impl PortableOps for RealPortableOps {
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
+    }
+    fn is_file(&self, path: &Path) -> bool {
+        path.is_file()
+    }
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+    fn copy_tree(&self, from: &Path, to: &Path) -> Result<(), String> {
+        copy_dir_all(from, to)
+    }
+    fn move_path(&self, from: &Path, to: &Path) -> Result<(), String> {
+        std::fs::rename(from, to).map_err(|e| e.to_string())
+    }
+    fn remove_tree(&self, path: &Path) -> Result<(), String> {
+        std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+    }
+}
+
+/// When the process was started as the portable-update helper (`--apply-portable-update <staged>
+/// <dest> <exe>`), apply the swap and relaunch, and return the exit code. `None` for a normal
+/// start, so the interface runs.
+#[cfg(target_os = "windows")]
+pub fn run_portable_helper_from_args() -> Option<i32> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("--apply-portable-update") {
+        return None;
+    }
+    let rest: Vec<String> = args.collect();
+    Some(if portable_helper_main(&rest).is_ok() { 0 } else { 1 })
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn run_portable_helper_from_args() -> Option<i32> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn portable_helper_main(args: &[String]) -> Result<(), String> {
+    let [staged, dest, exe_name] = args else { return Err("bad portable-update arguments".into()) };
+    let (staged, dest) = (Path::new(staged), Path::new(dest));
+    let result = replace_portable(&RealPortableOps, staged, dest, exe_name);
+    // Relaunch whatever is now installed: the restored previous build after a failure, the new one
+    // after a success. A failed update must never leave the user without a running copy.
+    let launch = dest.join(exe_name);
+    if launch.is_file() {
+        let _ = Command::new(&launch).spawn();
+    }
+    result
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -304,7 +485,7 @@ impl BundleOps for RealBundleOps {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn copy_dir_all(from: &Path, to: &Path) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|e| e.to_string())?;
     for entry in std::fs::read_dir(from).map_err(|e| e.to_string())? {
@@ -392,14 +573,25 @@ mod tests {
 
     #[test]
     fn windows_helper_args_carry_owned_scripts_and_pid() {
-        let args = portable_helper_args("s.ps1", 42, "/src", "/dest", "C:/dest/wordcraft.exe");
+        let args = portable_helper_args("s.ps1", 42, "h.exe", "/upd", "/dest", "wordcraft.exe", "/stage");
         assert_eq!(args.first().map(String::as_str), Some("-NoProfile"));
         let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).map(String::as_str);
         assert_eq!(after("-File"), Some("s.ps1"));
         assert_eq!(after("-WaitPid"), Some("42"));
-        assert_eq!(after("-Src"), Some("/src"));
+        assert_eq!(after("-Helper"), Some("h.exe"));
+        assert_eq!(after("-Staged"), Some("/upd"));
         assert_eq!(after("-Dest"), Some("/dest"));
-        assert_eq!(after("-Exe"), Some("C:/dest/wordcraft.exe"));
+        assert_eq!(after("-ExeName"), Some("wordcraft.exe"));
+        assert_eq!(after("-Staging"), Some("/stage"));
+    }
+
+    #[test]
+    fn portable_script_restores_and_cleans_up() {
+        let s = portable_script();
+        assert!(s.contains("Wait-Process"), "the launcher waits for the app to exit");
+        assert!(s.contains("--apply-portable-update"), "it runs the Rust helper");
+        assert!(s.contains("Remove-Item -Force -LiteralPath $Helper"), "the helper is removed");
+        assert!(s.contains("Remove-Item -Recurse -Force -LiteralPath $Staging"), "staging is removed");
     }
 
     #[test]
@@ -571,5 +763,182 @@ mod tests {
         let ops = FakeOps::default().with_dir("/apps/WordCraft.app");
         assert!(run_replace(&ops).is_err());
         assert!(ops.is_dir(&dest()), "the installed bundle is untouched");
+    }
+
+    // ---- Windows portable replace (#15, review P1) --------------------------------------------
+
+    const PEXE: &str = "wordcraft.exe";
+
+    fn pstaged() -> PathBuf {
+        PathBuf::from("/apps/.wordcraft-update-test")
+    }
+
+    fn pdest() -> PathBuf {
+        PathBuf::from("/apps/wordcraft")
+    }
+
+    /// A fake filesystem with the staged build (`staged`, holding the executable) and, when
+    /// `installed`, an existing installation at [`pdest`].
+    fn portable(staged: &Path, installed: bool) -> FakePortable {
+        let mut ops = FakePortable::default().with_dir(staged).with_file(staged.join(PEXE));
+        if installed {
+            ops = ops.with_dir(pdest()).with_file(pdest().join(PEXE));
+        }
+        ops
+    }
+
+    /// A fake filesystem for the portable replace, recording moves and able to fail parts of it.
+    #[derive(Default)]
+    struct FakePortable {
+        dirs: RefCell<HashSet<PathBuf>>,
+        files: RefCell<HashSet<PathBuf>>,
+        moves: RefCell<Vec<(PathBuf, PathBuf)>>,
+        /// `copy_tree` writes a partial tree, then fails.
+        partial_copy: bool,
+        /// The staged build cannot be moved into place.
+        fail_swap: bool,
+        /// The previous installation cannot be renamed aside.
+        fail_aside: bool,
+    }
+
+    impl FakePortable {
+        fn with_dir(self, path: impl AsRef<Path>) -> Self {
+            self.dirs.borrow_mut().insert(path.as_ref().to_path_buf());
+            self
+        }
+        fn with_file(self, path: impl AsRef<Path>) -> Self {
+            self.files.borrow_mut().insert(path.as_ref().to_path_buf());
+            self
+        }
+        fn retain_not_under(&self, root: &Path) {
+            let keep = |p: &PathBuf| p != root && !p.starts_with(root);
+            self.dirs.borrow_mut().retain(keep);
+            self.files.borrow_mut().retain(|p| keep(p));
+        }
+        /// Any leftover staging or backup folder.
+        fn has_artifact(&self) -> bool {
+            self.dirs
+                .borrow()
+                .iter()
+                .chain(self.files.borrow().iter())
+                .filter_map(|p| p.file_name().and_then(|n| n.to_str()))
+                .any(|n| n.starts_with(".wordcraft-update-") || n.starts_with(".wordcraft-previous-"))
+        }
+    }
+
+    impl PortableOps for FakePortable {
+        fn is_dir(&self, path: &Path) -> bool {
+            self.dirs.borrow().contains(path)
+        }
+        fn is_file(&self, path: &Path) -> bool {
+            self.files.borrow().contains(path)
+        }
+        fn exists(&self, path: &Path) -> bool {
+            self.dirs.borrow().contains(path) || self.files.borrow().contains(path)
+        }
+        fn copy_tree(&self, from: &Path, to: &Path) -> Result<(), String> {
+            if !self.is_dir(from) {
+                return Err("source folder is missing".into());
+            }
+            if self.partial_copy {
+                // Some files landed before the failure; they must be cleaned up, never installed.
+                self.dirs.borrow_mut().insert(to.to_path_buf());
+                self.files.borrow_mut().insert(to.join(format!("{PEXE}.partial")));
+                return Err("copy failed partway".into());
+            }
+            let rewrite = |p: &PathBuf| p.strip_prefix(from).ok().map(|rest| to.join(rest));
+            let dirs: Vec<PathBuf> = self.dirs.borrow().iter().filter_map(rewrite).collect();
+            let files: Vec<PathBuf> = self.files.borrow().iter().filter_map(rewrite).collect();
+            self.dirs.borrow_mut().extend(dirs);
+            self.files.borrow_mut().extend(files);
+            self.dirs.borrow_mut().insert(to.to_path_buf());
+            Ok(())
+        }
+        fn move_path(&self, from: &Path, to: &Path) -> Result<(), String> {
+            self.moves.borrow_mut().push((from.to_path_buf(), to.to_path_buf()));
+            if self.fail_aside && to.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".wordcraft-previous-")) {
+                return Err("could not rename the previous installation".into());
+            }
+            if self.fail_swap && from.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".wordcraft-update-")) {
+                return Err("could not rename the new build into place".into());
+            }
+            let rewrite = |p: &PathBuf| p.strip_prefix(from).ok().map(|rest| to.join(rest));
+            let dirs: Vec<PathBuf> = self.dirs.borrow().iter().filter_map(rewrite).collect();
+            let files: Vec<PathBuf> = self.files.borrow().iter().filter_map(rewrite).collect();
+            self.retain_not_under(from);
+            self.dirs.borrow_mut().extend(dirs);
+            self.files.borrow_mut().extend(files);
+            self.dirs.borrow_mut().insert(to.to_path_buf());
+            Ok(())
+        }
+        fn remove_tree(&self, path: &Path) -> Result<(), String> {
+            self.retain_not_under(path);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn portable_validation_requires_the_executable() {
+        let ops = FakePortable::default().with_dir("/extract");
+        assert!(validate_portable(&ops, Path::new("/extract"), PEXE).is_err(), "no executable");
+        let ops = portable(&pstaged(), false);
+        assert!(validate_portable(&ops, &pstaged(), PEXE).is_ok());
+        assert!(validate_portable(&ops, &pstaged(), "").is_err(), "empty exe name");
+        assert!(validate_portable(&ops, Path::new("/nope"), PEXE).is_err(), "not a folder");
+    }
+
+    /// A staging copy that fails partway must leave the installation untouched and no partial copy
+    /// behind.
+    #[test]
+    fn portable_staging_partial_copy_cleans_up_and_keeps_the_install() {
+        let ops = FakePortable { partial_copy: true, ..portable(&pstaged(), true) }.with_dir("/extract").with_file(Path::new("/extract").join(PEXE));
+        let err = stage_portable(&ops, Path::new("/extract"), &pstaged(), PEXE).unwrap_err();
+        assert!(err.contains("partway") || err.contains("copy"), "{err}");
+        assert!(ops.is_dir(&pdest()), "the installed app is untouched");
+        assert!(ops.is_file(&pdest().join(PEXE)));
+        assert!(!ops.has_artifact(), "no partial staging left");
+    }
+
+    #[test]
+    fn portable_replace_swaps_and_clears_backup() {
+        let ops = portable(&pstaged(), true);
+        replace_portable(&ops, &pstaged(), &pdest(), PEXE).unwrap();
+        assert!(ops.is_dir(&pdest()), "the new build is in place");
+        assert!(ops.is_file(&pdest().join(PEXE)), "with its executable");
+        assert!(!ops.has_artifact(), "staging and backup removed");
+    }
+
+    /// The regression for #15: when the new build cannot be moved into place after the previous
+    /// installation was set aside, the previous one must come back and nothing partial may remain.
+    #[test]
+    fn portable_replace_restores_previous_when_swap_fails() {
+        let ops = FakePortable { fail_swap: true, ..portable(&pstaged(), true) };
+        let err = replace_portable(&ops, &pstaged(), &pdest(), PEXE).unwrap_err();
+        assert!(err.contains("into place"), "{err}");
+        assert!(ops.is_dir(&pdest()), "the previous installation is restored");
+        assert!(ops.is_file(&pdest().join(PEXE)), "with its executable");
+        assert!(!ops.has_artifact(), "no staging or backup left");
+    }
+
+    #[test]
+    fn portable_replace_keeps_the_install_when_it_cannot_be_set_aside() {
+        let ops = FakePortable { fail_aside: true, ..portable(&pstaged(), true) };
+        assert!(replace_portable(&ops, &pstaged(), &pdest(), PEXE).is_err());
+        assert!(ops.is_dir(&pdest()), "the installation is untouched");
+    }
+
+    #[test]
+    fn portable_replace_refuses_a_staged_folder_without_the_executable() {
+        let ops = FakePortable::default().with_dir(pstaged()).with_dir(pdest());
+        let err = replace_portable(&ops, &pstaged(), &pdest(), PEXE).unwrap_err();
+        assert!(err.contains("executable"), "{err}");
+        assert!(ops.is_dir(&pdest()), "the installation is untouched");
+    }
+
+    #[test]
+    fn portable_replace_creates_a_fresh_install() {
+        let ops = portable(&pstaged(), false);
+        replace_portable(&ops, &pstaged(), &pdest(), PEXE).unwrap();
+        assert!(ops.is_dir(&pdest()), "installed where none existed");
     }
 }

@@ -101,17 +101,21 @@ pub fn detect_install_kind(exe: &str, env: &dyn EnvRead) -> InstallKind {
     if let Some(kind) = env.install_override() {
         return kind;
     }
-    let exe = exe.replace('\\', "/");
-    let lower = exe.to_ascii_lowercase();
+    let normalized = exe.replace('\\', "/");
+    let lower = normalized.to_ascii_lowercase();
     if env.windows() {
-        if lower.contains("/program files/") || lower.contains("/program files (x86)/") {
-            return InstallKind::WindowsMsi;
+        // A portable zip extracts into a folder named `wordcraft-…-portable`; that stays portable
+        // wherever it is unpacked, including under Program Files. Check it before the Program Files
+        // rule, or a portable copy there would be mistaken for an MSI install.
+        if lower.contains("portable") {
+            return InstallKind::WindowsPortableZip;
         }
-        if lower.contains("-portable/") || lower.ends_with("/wordcraft.exe") && !lower.contains("/program files") {
-            // Portable zip extracts to a folder named wordcraft-*-windows-*-portable.
-            if lower.contains("portable") {
-                return InstallKind::WindowsPortableZip;
-            }
+        // A bare `wordcraft.exe` under Program Files is only an MSI install when the installer's own
+        // evidence says so (the `App Paths` registry entry the MSI writes). A folder that merely
+        // happens to live there has no such evidence: guessing MSI would download and run the wrong
+        // installer, so we stay ambiguous and offer the release page instead.
+        if lower.contains("/program files/") || lower.contains("/program files (x86)/") {
+            return if env.windows_msi_installed(exe) { InstallKind::WindowsMsi } else { InstallKind::Unknown };
         }
         return InstallKind::Unknown;
     }
@@ -123,7 +127,7 @@ pub fn detect_install_kind(exe: &str, env: &dyn EnvRead) -> InstallKind {
     }
     if env.linux() {
         if linux_system_install_path(&lower) {
-            if env.linux_deb_package(&exe) {
+            if env.linux_deb_package(exe) {
                 return InstallKind::LinuxDeb;
             }
             return InstallKind::Unknown;
@@ -147,6 +151,12 @@ pub trait EnvRead {
     fn linux(&self) -> bool;
     /// True when `dpkg-query -S` reports the installed binary (`.deb` installs only).
     fn linux_deb_package(&self, exe: &str) -> bool;
+    /// True when `exe` is the executable a Windows MSI installed, judged by the installer's own
+    /// evidence (the `App Paths\wordcraft.exe` registry entry the MSI writes). Portable copies
+    /// leave no such entry, so this tells the two apart when both live under Program Files.
+    fn windows_msi_installed(&self, _exe: &str) -> bool {
+        false
+    }
     /// Packagers and locked-down runs can turn the automatic check off entirely
     /// (`WORDCRAFT_NO_UPDATE_CHECK`): no release request is ever made.
     fn no_update_check(&self) -> bool {
@@ -167,12 +177,54 @@ fn linux_deb_package_query(_exe: &str) -> bool {
     false
 }
 
+/// Does the Windows registry say an MSI installed this exact executable? The MSI writes the
+/// installed `wordcraft.exe`'s full path to `App Paths` (`packaging/windows/wordcraft.wxs`), which a
+/// portable copy never does. An x86 package on 64-bit Windows lands in the 32-bit registry view, so
+/// both views are queried.
+#[cfg(target_os = "windows")]
+fn windows_msi_path_matches(exe: &str) -> bool {
+    if exe.is_empty() || exe.len() > 1024 {
+        return false;
+    }
+    ["/reg:64", "/reg:32"].iter().any(|view| {
+        let output = std::process::Command::new("reg")
+            .args(["query", r"HKLM\Software\Microsoft\Windows\CurrentVersion\App Paths\wordcraft.exe", "/ve", view])
+            .output();
+        match output {
+            Ok(out) if out.status.success() => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                text.split("REG_SZ")
+                    .nth(1)
+                    .and_then(|rest| rest.lines().next())
+                    .map(str::trim)
+                    .is_some_and(|registered| same_windows_path(registered, exe))
+            }
+            _ => false,
+        }
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_msi_path_matches(_exe: &str) -> bool {
+    false
+}
+
+/// Compare two Windows paths for identity, ignoring separators, quotes and case.
+#[cfg(target_os = "windows")]
+fn same_windows_path(a: &str, b: &str) -> bool {
+    let norm = |s: &str| s.trim().trim_matches('"').replace('/', "\\").to_ascii_lowercase();
+    !a.is_empty() && norm(a) == norm(b)
+}
+
 /// Production environment reader.
 pub struct SystemEnv;
 
 impl EnvRead for SystemEnv {
     fn linux_deb_package(&self, exe: &str) -> bool {
         linux_deb_package_query(exe)
+    }
+    fn windows_msi_installed(&self, exe: &str) -> bool {
+        windows_msi_path_matches(exe)
     }
     fn flatpak(&self) -> bool {
         std::env::var_os("FLATPAK_ID").is_some() || std::path::Path::new("/.flatpak-info").exists()
@@ -492,6 +544,8 @@ mod tests {
         override_kind: Option<InstallKind>,
         linux_deb: bool,
         os: &'static str,
+        /// What the fake registry reports for the `App Paths` entry.
+        windows_msi: bool,
     }
 
     impl EnvRead for FakeEnv {
@@ -516,25 +570,51 @@ mod tests {
         fn linux_deb_package(&self, _exe: &str) -> bool {
             self.linux_deb
         }
+        fn windows_msi_installed(&self, _exe: &str) -> bool {
+            self.windows_msi
+        }
+    }
+
+    fn win_env(windows_msi: bool) -> FakeEnv {
+        FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "windows", windows_msi }
     }
 
     #[test]
     fn install_kind_detection() {
-        let e = FakeEnv { flatpak: true, appimage: None, override_kind: None, linux_deb: false, os: "linux" };
+        let e = FakeEnv { flatpak: true, appimage: None, override_kind: None, linux_deb: false, os: "linux", windows_msi: false };
         assert_eq!(detect_install_kind("/usr/bin/wordcraft", &e), InstallKind::Flatpak);
-        let e = FakeEnv { flatpak: false, appimage: Some("/x.AppImage".into()), override_kind: None, linux_deb: false, os: "linux" };
+        let e =
+            FakeEnv { flatpak: false, appimage: Some("/x.AppImage".into()), override_kind: None, linux_deb: false, os: "linux", windows_msi: false };
         assert_eq!(detect_install_kind("/tmp/wordcraft", &e), InstallKind::AppImage);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: true, os: "linux" };
+        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: true, os: "linux", windows_msi: false };
         assert_eq!(detect_install_kind("/usr/bin/wordcraft", &e), InstallKind::LinuxDeb);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "linux" };
+        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "linux", windows_msi: false };
         assert_eq!(detect_install_kind("/usr/bin/wordcraft", &e), InstallKind::Unknown);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "macos" };
+        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "macos", windows_msi: false };
         assert_eq!(detect_install_kind("/Applications/WordCraft.app/Contents/MacOS/wordcraft", &e), InstallKind::MacApp);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: None, linux_deb: false, os: "windows" };
-        assert_eq!(detect_install_kind("C:/Program Files/WordCraft/wordcraft.exe", &e), InstallKind::WindowsMsi);
-        assert_eq!(detect_install_kind("D:/wordcraft-0.6.0-windows-x64-portable/wordcraft.exe", &e), InstallKind::WindowsPortableZip);
-        let e = FakeEnv { flatpak: false, appimage: None, override_kind: Some(InstallKind::Unknown), linux_deb: false, os: "linux" };
+        let e =
+            FakeEnv { flatpak: false, appimage: None, override_kind: Some(InstallKind::Unknown), linux_deb: false, os: "linux", windows_msi: false };
         assert_eq!(detect_install_kind("/build/wordcraft", &e), InstallKind::Unknown);
+    }
+
+    /// #15 review: the Program Files rule must not swallow a portable copy there. Portable is
+    /// recognised by its folder name; a bare copy under Program Files only counts as MSI with the
+    /// installer's own registry evidence, and is otherwise left ambiguous (release page).
+    #[test]
+    fn windows_install_detection_uses_evidence_not_just_the_folder() {
+        let e = win_env(true);
+        assert_eq!(detect_install_kind(r"C:\Program Files\WordCraft\wordcraft.exe", &e), InstallKind::WindowsMsi);
+        // A portable copy under Program Files is still portable, whatever the registry says.
+        assert_eq!(detect_install_kind(r"C:\Program Files\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &e), InstallKind::WindowsPortableZip);
+        assert_eq!(
+            detect_install_kind(r"C:\Program Files (x86)\wordcraft-0.6.0-windows-x86-portable\wordcraft.exe", &e),
+            InstallKind::WindowsPortableZip
+        );
+        // Without the App Paths entry, a folder under Program Files is not assumed to be an MSI.
+        let no_evidence = win_env(false);
+        assert_eq!(detect_install_kind(r"C:\Program Files\WordCraft\wordcraft.exe", &no_evidence), InstallKind::Unknown);
+        // A portable extraction outside Program Files is recognised too.
+        assert_eq!(detect_install_kind(r"D:\wordcraft-0.6.0-windows-x64-portable\wordcraft.exe", &e), InstallKind::WindowsPortableZip);
     }
 
     #[test]

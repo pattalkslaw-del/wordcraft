@@ -109,7 +109,8 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                         if id == "discord" {
                             let _ = app.run("ui.discord", json!({}));
                         } else if id == "checkUpdates" {
-                            let _ = app.run("file.checkForUpdates", json!({"force": true}));
+                            let result = app.run("file.checkForUpdates", json!({"force": true}));
+                            report_update_check(app, result);
                         } else {
                             app.dialog = crate::dialogs::Dialog::open("about", app);
                         }
@@ -129,6 +130,32 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             _ => home_page(app, ui),
         });
     });
+}
+
+/// Report a manual **Check for updates** in the status bar when the notice bar won't: a newer
+/// release already shows its own notice, but "up to date" and network errors produced no visible
+/// answer before (#15 review).
+fn report_update_check(app: &mut WordApp, result: Result<serde_json::Value, String>) {
+    match result {
+        Ok(v) => match v.get("status").and_then(serde_json::Value::as_str) {
+            // `available` draws the update notice through the command's UI request.
+            Some("available") => {}
+            Some("error") => {
+                let key = v.get("error").and_then(serde_json::Value::as_str).unwrap_or("");
+                if let Some(detail) = v.get("errorDetail").and_then(serde_json::Value::as_str) {
+                    log::warn!("update check failed: {detail}");
+                }
+                let text = if key.is_empty() { tl!(wordcraft_engine::update::MSG_CHECK_FAILED) } else { tl!(key) };
+                app.status(text);
+            }
+            // `current`, or a throttled automatic check that the user forced past: say so.
+            _ => app.status(tl!("WordCraft is up to date.")),
+        },
+        Err(e) => {
+            log::warn!("update check failed: {e}");
+            app.status(tl!(wordcraft_engine::update::MSG_CHECK_FAILED));
+        }
+    }
 }
 
 fn heading(ui: &mut Ui, s: &str) {
@@ -396,8 +423,24 @@ mod tests {
     use egui_kittest::kittest::Queryable;
     use serde_json::json;
 
-    use super::matching_templates;
+    use super::{matching_templates, report_update_check};
     use crate::{Services, WordApp};
+
+    /// #15 review: a manual check that finds nothing new, or cannot reach GitHub, must say so in
+    /// the status bar; only an available update draws its own notice.
+    #[test]
+    fn manual_update_check_reports_current_error_and_failure() {
+        let mut a = WordApp::new(wordcraft_engine::Session::new(wordcraft_doc::Document::new()), Services::default());
+        report_update_check(&mut a, Ok(json!({"status": "current", "current": "0.6.1"})));
+        assert!(a.status_msg.as_ref().is_some_and(|(m, _)| m.contains("up to date")), "{:?}", a.status_msg);
+        report_update_check(&mut a, Ok(json!({"status": "error", "error": wordcraft_engine::update::MSG_CHECK_FAILED, "errorDetail": "dns"})));
+        assert!(a.status_msg.as_ref().is_some_and(|(m, _)| m.contains("reach GitHub")), "{:?}", a.status_msg);
+        report_update_check(&mut a, Err("nope".to_string()));
+        assert!(a.status_msg.as_ref().is_some_and(|(m, _)| m.contains("reach GitHub")), "{:?}", a.status_msg);
+        a.status_msg = None;
+        report_update_check(&mut a, Ok(json!({"status": "available"})));
+        assert!(a.status_msg.is_none(), "the notice bar speaks for itself: {:?}", a.status_msg);
+    }
 
     #[test]
     fn template_search_matches_labels_case_insensitively() {
