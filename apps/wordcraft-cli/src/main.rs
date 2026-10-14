@@ -2,6 +2,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
 mod automation_args;
+mod update_check;
 
 use std::fmt;
 use std::io::Write;
@@ -27,6 +28,7 @@ USAGE:
                                               who tracked changes and comments are by)
   wordcraft-cli commands [--json]             list every command
   wordcraft-cli parity [--markdown]           feature-catalog parity
+  wordcraft-cli update --check                ask GitHub for a newer release (JSON)
   wordcraft-cli mcp [--connect HOST:PORT | --author NAME] [--automation-read-root DIR] [--automation-write-root DIR]
                                               MCP server on stdio (headless, or bridged to the app).
                                               --automation-read-root / --automation-write-root confine
@@ -120,6 +122,7 @@ const RUN_OPTIONS: &[OptionSpec] = &[
 const COMMANDS_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--json", takes_value: false }];
 const PARITY_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--markdown", takes_value: false }];
 const MCP_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--connect", takes_value: true }, OptionSpec { name: "--author", takes_value: true }];
+const UPDATE_OPTIONS: &[OptionSpec] = &[OptionSpec { name: "--check", takes_value: false }];
 const ZOTERO_OPTIONS: &[OptionSpec] = &[
     OptionSpec { name: "--cmd", takes_value: true },
     OptionSpec { name: "--save", takes_value: true },
@@ -291,6 +294,19 @@ fn run(args: &[String]) -> Result<(), Failure> {
             } else {
                 write_stdout(|o| writeln!(o, "{}", serde_json::to_string_pretty(&p).unwrap_or_default()))
             }
+        }
+        "update" => {
+            validate_options("update", &rest, UPDATE_OPTIONS)?;
+            if !rest.iter().any(|a| a == "--check") {
+                return Err(format!("update: pass --check\n\n{USAGE}").into());
+            }
+            let mut s = Session::new(wordcraft_doc::Document::new());
+            s.update_http = Some(update_check::http_get());
+            if let Ok(exe) = std::env::current_exe() {
+                s.update_exe = Some(exe.to_string_lossy().into_owned());
+            }
+            let r = s.run("file.checkForUpdates", &serde_json::json!({"force": true})).map_err(|e| e.to_string())?;
+            write_stdout(|o| writeln!(o, "{}", serde_json::to_string_pretty(&r).unwrap_or_default()))
         }
         "mcp" => {
             let (roots, rest) = automation_roots("mcp", &rest)?;

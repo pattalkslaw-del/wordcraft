@@ -73,6 +73,7 @@ pub mod table_pen;
 pub mod table_resize;
 pub mod table_ruler;
 pub mod theme;
+pub mod update;
 pub mod widgets;
 pub mod window_geometry;
 pub mod wordart_menus;
@@ -147,6 +148,8 @@ pub struct Services {
     /// `xdg-mime`. `None` (web, macOS) hides the button; macOS shows how to do it in Finder
     /// instead. An error means nothing changed.
     pub make_default_app: Option<Box<dyn Fn() -> Result<DefaultApp, String>>>,
+    /// Desktop: fetch GitHub's latest-release JSON for the daily update check (#15).
+    pub check_update: Option<update::Fetch>,
 }
 
 /// What [`Services::make_default_app`] did.
@@ -253,6 +256,8 @@ pub struct UiState {
     pub update_fields_before_print: bool,
     /// The custom dictionary (File › Options › Proofing, Add to Dictionary), kept between runs.
     pub dictionary: Vec<String>,
+    /// Desktop update check (#15).
+    pub update_prefs: wordcraft_engine::update::UpdatePrefs,
 }
 
 /// Most recent documents kept (File › Options › Advanced offers 0–50, as Word does).
@@ -302,6 +307,7 @@ impl Default for UiState {
             print_backgrounds: false,
             update_fields_before_print: false,
             dictionary: Vec::new(),
+            update_prefs: wordcraft_engine::update::UpdatePrefs::default(),
         }
     }
 }
@@ -417,6 +423,8 @@ pub struct WordApp {
     pub(crate) outline_prev_tab: Option<String>,
     /// Zotero commands in flight (`ui.zotero.*`).
     pub zotero: zotero::ZoteroLink,
+    pub update: update::UpdateCheck,
+    pub show_update_startup_prompt: bool,
     /// The egui context, once the first frame has run (background work wakes the UI with it).
     pub(crate) ctx: Option<egui::Context>,
     /// Read Aloud: the start of the sentence the caret was last moved to, and the last error shown.
@@ -506,6 +514,8 @@ impl WordApp {
             smart_art_typing: None,
             outline_prev_tab: None,
             zotero: zotero::ZoteroLink::default(),
+            update: update::UpdateCheck::default(),
+            show_update_startup_prompt: false,
             ctx: None,
             read_aloud_at: None,
             read_aloud_error: None,
@@ -554,6 +564,7 @@ impl WordApp {
         ui.keyboard = self.session.keymap.clone();
         ui.ribbon = self.session.ribbon.clone();
         ui.ink_pens = self.session.view.draw.pens.clone();
+        ui.update_prefs = self.session.update_prefs.clone();
         ui
     }
 
@@ -587,6 +598,7 @@ impl WordApp {
         self.session.keymap.retain_known(&reg);
         // So are ribbon and toolbar commands.
         self.session.ribbon = std::mem::take(&mut self.ui.ribbon);
+        self.session.update_prefs = self.ui.update_prefs.clone();
         self.session.ribbon.retain_known(&reg);
         self.session.view.draw.pens = std::mem::take(&mut self.ui.ink_pens);
     }
@@ -912,6 +924,12 @@ impl WordApp {
         }
         if req.get("close").is_some() {
             self.quit_requested = true;
+        }
+        if req.get("quit").and_then(Value::as_bool) == Some(true) {
+            self.quit_requested = true;
+        }
+        if let Some(up) = req.get("update") {
+            update::apply_command_result(self, up);
         }
     }
 
@@ -1364,6 +1382,7 @@ impl WordApp {
         self.drain_control(ctx);
         zotero::poll(self, ctx);
         read_aloud::poll(self, ctx);
+        update::poll(self, ctx);
         self.clear_stale_change_picture();
         let _ = self.poll_file_dialog();
         self.drain_inbox();
@@ -1519,6 +1538,7 @@ impl WordApp {
         } else {
             chrome::title_bar(self, ui);
             ribbon::show(self, ui);
+            update::bar(self, ui);
             chrome::status_bar(self, ui);
             panes::show(self, ui);
             egui::CentralPanel::default().frame(egui::Frame::NONE.fill(t.canvas)).show(ui, |ui| {
@@ -1532,6 +1552,13 @@ impl WordApp {
         colors::show(self, &ctx);
         zotero::show_alert(self, &ctx);
         read_aloud::show(self, &ctx);
+        if self.show_update_startup_prompt {
+            let mut open = true;
+            update::startup_prompt(self, ui, &mut open);
+            if !open {
+                self.show_update_startup_prompt = false;
+            }
+        }
         crate::keytips::show(self, &ctx, ui);
         keys::global_shortcuts(self, &ctx);
         if let Some(url) = self.canvas.open_url.take() {

@@ -402,6 +402,16 @@ pub struct Session {
     pub merge: crate::cmd::mailings::MergeState,
     /// Requests from commands to the UI (open a dialog, scroll…), drained by the front end.
     pub ui_requests: Vec<Value>,
+    /// Update check settings (mirrored in `ui.json` by the desktop app).
+    pub update_prefs: crate::update::UpdatePrefs,
+    /// HTTP GET for update checks (desktop/CLI set ureq; tests inject fakes).
+    pub update_http: Option<crate::update::HttpGet>,
+    /// Platform installer handoff after a verified download.
+    pub update_install: Option<crate::update::InstallFn>,
+    /// Path to the running executable (install-type detection).
+    pub update_exe: Option<String>,
+    /// Wall clock for throttling (overridden in tests).
+    pub update_now_unix: fn() -> u64,
     /// Read Aloud player (Review › Speech).
     pub read_aloud: crate::speech::ReadAloud,
     /// Preferences the front end saves between runs.
@@ -602,6 +612,11 @@ impl Session {
             bib_style,
             merge: Default::default(),
             ui_requests: Vec::new(),
+            update_prefs: crate::update::UpdatePrefs::default(),
+            update_http: None,
+            update_install: None,
+            update_exe: None,
+            update_now_unix: crate::update::unix_now,
             math: None,
             math_latex: false,
             math_normal_text: false,
@@ -1032,6 +1047,11 @@ impl Session {
             bib_style: _,
             merge: _,
             ui_requests: _,
+            update_prefs: _,
+            update_http: _,
+            update_install: _,
+            update_exe: _,
+            update_now_unix: _,
             document_id: _,
             read_aloud: _,
             prefs: _,

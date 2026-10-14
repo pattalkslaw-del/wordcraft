@@ -21,6 +21,8 @@ mod graphics;
 mod logging;
 mod print;
 mod region;
+mod update_check;
+mod update_install;
 
 use wordcraft_engine::Session;
 use wordcraft_ui_egui::{
@@ -214,6 +216,7 @@ fn services(file_dialog: file_dialogs::Hook, ctx: &egui::Context) -> Services {
         clipboard_html: Some(Box::new(clipboard::html)),
         clipboard_rtf: Some(Box::new(clipboard::rtf)),
         clipboard_formats: Some(Box::new(clipboard::formats)),
+        check_update: update_check::service(prefs_enabled()),
         ..Default::default()
     }
 }
@@ -320,6 +323,12 @@ fn main() -> eframe::Result {
             let mut app = WordApp::new(session, services(file_dialog, &cc.egui_ctx));
             load_prefs(&mut app);
             load_user_dictionary(&mut app);
+            app.session.update_http = Some(update_check::http_get());
+            app.session.update_install = Some(update_install::handoff());
+            if let Ok(exe) = std::env::current_exe() {
+                app.session.update_exe = Some(exe.to_string_lossy().into_owned());
+            }
+            wordcraft_ui_egui::update::maybe_startup_prompt(&mut app);
             // A region chosen in File › Options replaces the system's for the first blank
             // document too (#838).
             if !sample && app.session.prefs.region.is_some() {

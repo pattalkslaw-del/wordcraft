@@ -2109,3 +2109,15 @@
 	Start-up	Käivitamine
 	Show the Start screen when WordCraft starts	Näita WordCrafti käivitamisel avakuva
 	On: WordCraft opens on File › Home, with a blank document, the templates and your recent documents. Off: it opens a blank document.	Sees: WordCraft avaneb vaates Fail › Avaleht, kus on tühi dokument, mallid ja hiljutised dokumendid. Väljas: avaneb tühi dokument.
+	Check for Updates	Check for Updates
+	Check for updates	Check for updates
+	Check for updates on startup	Check for updates on startup
+	WordCraft {version} is available.	WordCraft {version} is available.
+	Download	Download
+	Skip this version	Skip this version
+	Later	Later
+	Update	Update
+	Check for updates?	Check for updates?
+	Once a day, WordCraft can ask GitHub whether a newer WordCraft release is out. Nothing else is sent.	Once a day, WordCraft can ask GitHub whether a newer WordCraft release is out. Nothing else is sent.
+	Once a day, ask GitHub whether a newer WordCraft release is out and show a notice. Nothing else is sent.	Once a day, ask GitHub whether a newer WordCraft release is out and show a notice. Nothing else is sent.
+	Updates for this install are provided by Flatpak or AppImage, not from here.	Updates for this install are provided by Flatpak or AppImage, not from here.

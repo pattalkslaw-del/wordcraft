@@ -2087,3 +2087,15 @@
 	Start-up	Inicialização
 	Show the Start screen when WordCraft starts	Mostrar a tela inicial ao abrir o WordCraft
 	On: WordCraft opens on File › Home, with a blank document, the templates and your recent documents. Off: it opens a blank document.	Ativado: o WordCraft abre em Arquivo › Início, com um documento em branco, os modelos e seus documentos recentes. Desativado: abre um documento em branco.
+	Check for Updates	Check for Updates
+	Check for updates	Check for updates
+	Check for updates on startup	Check for updates on startup
+	WordCraft {version} is available.	WordCraft {version} is available.
+	Download	Download
+	Skip this version	Skip this version
+	Later	Later
+	Update	Update
+	Check for updates?	Check for updates?
+	Once a day, WordCraft can ask GitHub whether a newer WordCraft release is out. Nothing else is sent.	Once a day, WordCraft can ask GitHub whether a newer WordCraft release is out. Nothing else is sent.
+	Once a day, ask GitHub whether a newer WordCraft release is out and show a notice. Nothing else is sent.	Once a day, ask GitHub whether a newer WordCraft release is out and show a notice. Nothing else is sent.
+	Updates for this install are provided by Flatpak or AppImage, not from here.	Updates for this install are provided by Flatpak or AppImage, not from here.

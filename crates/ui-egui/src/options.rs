@@ -194,6 +194,15 @@ fn general(app: &mut WordApp, ui: &mut Ui) {
     {
         let _ = app.run("ui.startScreen", json!({"value": start}));
     }
+    let mut check_updates = app.session.update_prefs.check_on_startup;
+    if ui
+        .checkbox(&mut check_updates, tl!("Check for updates on startup"))
+        .on_hover_text(tl!("Once a day, ask GitHub whether a newer WordCraft release is out and show a notice. Nothing else is sent."))
+        .changed()
+    {
+        app.session.update_prefs.check_on_startup = check_updates;
+        app.session.update_prefs.asked_startup = true;
+    }
     ui.add_space(8.0);
     section(ui, "Personalize");
     egui::Grid::new("options_user").num_columns(2).spacing(vec2(8.0, 6.0)).show(ui, |ui| {
