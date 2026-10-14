@@ -3,8 +3,10 @@
 use serde_json::{Value, json};
 
 use crate::update::{
-    CheckResult, CheckStatus, InstallHandoff, LATEST_API, MAX_DOWNLOAD, MAX_JSON, ReleaseInfo, SystemEnv, checksum_for, checksums_download_url,
-    detect_install_kind, due, http_get, offer, parse_latest_release, parse_version, pick_asset_name, skipped, verify_sha256, version_text,
+    CheckResult, CheckStatus, InstallHandoff, LATEST_API, MAX_DOWNLOAD, MAX_JSON, MSG_APPLY_FAILED, MSG_BAD_RELEASE, MSG_CHECK_FAILED,
+    MSG_CHECKSUM_MISMATCH, MSG_CHECKSUM_MISSING, MSG_CHECKSUMS_UNREADABLE, MSG_NO_CHECKSUMS, MSG_NO_INSTALL_FN, MSG_NO_INSTALLER, ReleaseInfo,
+    UpdateError, checksum_for, checksums_download_url, detect_install_kind, due, env_of, http_get, offer, parse_latest_release, parse_version,
+    pick_asset_name, skipped, verify_sha256, version_text,
 };
 use crate::{CmdError, CmdResult, CommandSpec, Session, p};
 
@@ -50,41 +52,46 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
     let last_check = s.update_prefs.last_check_unix;
     let skipped_ver = s.update_prefs.skipped_version.clone();
 
+    if startup && env_of(s).no_update_check() {
+        return Ok(json_result(throttled(&current_text)));
+    }
     if startup && !due(check_on_startup, last_check, now, false) {
-        return Ok(json_result(CheckResult { status: CheckStatus::Throttled, current: current_text, release: None, error: None }));
+        return Ok(json_result(throttled(&current_text)));
     }
     if !force && !startup && last_check != 0 {
         let elapsed = now.checked_sub(last_check);
         if now != 0 && elapsed.is_some_and(|e| e < crate::update::INTERVAL_SECS) {
-            return Ok(json_result(CheckResult { status: CheckStatus::Throttled, current: current_text, release: None, error: None }));
+            return Ok(json_result(throttled(&current_text)));
         }
     }
 
     if startup && !check_on_startup {
-        return Ok(json_result(CheckResult { status: CheckStatus::Throttled, current: current_text, release: None, error: None }));
+        return Ok(json_result(throttled(&current_text)));
     }
 
     s.update_prefs.last_check_unix = now;
 
     let json = match http_get(s, LATEST_API, MAX_JSON) {
         Ok(b) => b,
-        Err(e) => {
-            return Ok(json_result(CheckResult { status: CheckStatus::Error, current: current_text, release: None, error: Some(e) }));
-        }
+        Err(e) => return Ok(json_result(failed(&current_text, MSG_CHECK_FAILED, e))),
     };
 
     let release = match parse_latest_release(&json, current) {
         Ok(Some(r)) => r,
         Ok(None) => {
-            return Ok(json_result(CheckResult { status: CheckStatus::Current, current: current_text, release: None, error: None }));
+            return Ok(json_result(CheckResult {
+                status: CheckStatus::Current,
+                current: current_text,
+                release: None,
+                error: None,
+                error_detail: None,
+            }));
         }
-        Err(e) => {
-            return Ok(json_result(CheckResult { status: CheckStatus::Error, current: current_text, release: None, error: Some(e) }));
-        }
+        Err(e) => return Ok(json_result(failed(&current_text, MSG_BAD_RELEASE, e))),
     };
 
     if skipped(&release, &skipped_ver) {
-        return Ok(json_result(CheckResult { status: CheckStatus::Current, current: current_text, release: None, error: None }));
+        return Ok(json_result(CheckResult { status: CheckStatus::Current, current: current_text, release: None, error: None, error_detail: None }));
     }
 
     let exe = s.update_exe.as_deref().unwrap_or("");
@@ -99,7 +106,13 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
             return Err(CmdError::Failed("Open the release page in your browser to update.".into()));
         }
         if let Err(e) = download_and_install(s, &json, &release, kind) {
-            return Ok(json_result(CheckResult { status: CheckStatus::Error, current: current_text, release: Some(offer), error: Some(e) }));
+            return Ok(json_result(CheckResult {
+                status: CheckStatus::Error,
+                current: current_text,
+                release: Some(offer),
+                error: Some(e.message.into()),
+                error_detail: Some(e.detail),
+            }));
         }
         s.ui_requests.push(json!({"quit": true}));
     } else {
@@ -115,30 +128,41 @@ fn check(s: &mut Session, v: &Value) -> CmdResult {
         }));
     }
 
-    Ok(json_result(CheckResult { status: CheckStatus::Available, current: current_text, release: Some(offer), error: None }))
+    Ok(json_result(CheckResult { status: CheckStatus::Available, current: current_text, release: Some(offer), error: None, error_detail: None }))
 }
 
 fn json_result(r: CheckResult) -> Value {
     serde_json::to_value(r).unwrap_or(json!({"status": "error"}))
 }
 
-fn install_kind(s: &Session, exe: &str) -> crate::update::InstallKind {
-    if let Some(env) = s.update_env.as_ref() { detect_install_kind(exe, env.as_ref()) } else { detect_install_kind(exe, &SystemEnv) }
+fn throttled(current: &str) -> CheckResult {
+    CheckResult { status: CheckStatus::Throttled, current: current.into(), release: None, error: None, error_detail: None }
 }
 
-fn download_and_install(s: &mut Session, latest_json: &[u8], release: &ReleaseInfo, kind: crate::update::InstallKind) -> Result<(), String> {
-    let file_name = pick_asset_name(release.version, kind).ok_or_else(|| "no installer for this install type".to_string())?;
-    let asset_url = crate::update::asset_download_url(latest_json, &file_name).ok_or_else(|| "release has no matching installer".to_string())?;
-    let sums_url = checksums_download_url(latest_json).ok_or_else(|| "release has no checksum file".to_string())?;
-    let sums = http_get(s, &sums_url, MAX_JSON)?;
-    let expected = checksum_for(&sums, &file_name)?.ok_or_else(|| format!("checksums do not list {file_name}"))?;
-    let bytes = http_get(s, &asset_url, MAX_DOWNLOAD)?;
+fn failed(current: &str, message: &'static str, detail: impl Into<String>) -> CheckResult {
+    CheckResult { status: CheckStatus::Error, current: current.into(), release: None, error: Some(message.into()), error_detail: Some(detail.into()) }
+}
+
+fn install_kind(s: &Session, exe: &str) -> crate::update::InstallKind {
+    detect_install_kind(exe, env_of(s))
+}
+
+fn download_and_install(s: &mut Session, latest_json: &[u8], release: &ReleaseInfo, kind: crate::update::InstallKind) -> Result<(), UpdateError> {
+    let file_name = pick_asset_name(release.version, kind).ok_or_else(|| UpdateError::new(MSG_NO_INSTALLER, "no asset name for this kind"))?;
+    let asset_url = crate::update::asset_download_url(latest_json, &file_name)
+        .ok_or_else(|| UpdateError::new(MSG_NO_INSTALLER, format!("release does not list {file_name}")))?;
+    let sums_url = checksums_download_url(latest_json).ok_or_else(|| UpdateError::new(MSG_NO_CHECKSUMS, "release has no SHA256SUMS asset"))?;
+    let sums = http_get(s, &sums_url, MAX_JSON).map_err(|e| UpdateError::new(MSG_CHECKSUMS_UNREADABLE, e))?;
+    let expected = checksum_for(&sums, &file_name)
+        .map_err(|e| UpdateError::new(MSG_CHECKSUMS_UNREADABLE, e))?
+        .ok_or_else(|| UpdateError::new(MSG_CHECKSUM_MISSING, format!("checksums do not list {file_name}")))?;
+    let bytes = http_get(s, &asset_url, MAX_DOWNLOAD).map_err(|e| UpdateError::new(MSG_APPLY_FAILED, e))?;
     if !verify_sha256(&bytes, &expected) {
-        return Err("Downloaded file does not match the published SHA-256 checksum.".into());
+        return Err(UpdateError::new(MSG_CHECKSUM_MISMATCH, format!("sha256 mismatch for {file_name}")));
     }
-    let install = s.update_install.as_ref().ok_or_else(|| "installer is not available".to_string())?;
+    let install = s.update_install.as_ref().ok_or_else(|| UpdateError::new(MSG_NO_INSTALL_FN, "no installer hook"))?;
     let exe = s.update_exe.clone().unwrap_or_default();
-    install(InstallHandoff { kind, file_name, bytes, exe_path: exe })
+    install(InstallHandoff { kind, file_name, bytes, exe_path: exe }).map_err(|e| UpdateError::new(MSG_APPLY_FAILED, e))
 }
 
 #[cfg(test)]
@@ -158,6 +182,7 @@ mod tests {
 
     struct TestEnv {
         kind: InstallKind,
+        no_update: bool,
     }
 
     impl EnvRead for TestEnv {
@@ -182,15 +207,65 @@ mod tests {
         fn linux_deb_package(&self, _exe: &str) -> bool {
             self.kind == InstallKind::LinuxDeb
         }
+        fn no_update_check(&self) -> bool {
+            self.no_update
+        }
     }
 
-    fn session_with(http: TestHttp) -> Session {
+    fn session_with_kind(http: TestHttp, kind: InstallKind) -> Session {
         let mut s = Session::new(wordcraft_doc::Document::new());
         s.update_http = Some(http);
         s.update_exe = Some("/usr/bin/wordcraft".into());
-        s.update_env = Some(Arc::new(TestEnv { kind: InstallKind::LinuxDeb }) as EnvReadBox);
+        s.update_env = Some(Arc::new(TestEnv { kind, no_update: false }) as EnvReadBox);
         s.update_now_unix = test_now;
         s
+    }
+
+    fn session_with(http: TestHttp) -> Session {
+        session_with_kind(http, InstallKind::LinuxDeb)
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(data);
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// A latest-release JSON that lists the checksum file and the asset for `kind`.
+    fn latest_for(asset: &str) -> String {
+        format!(
+            r#"{{"tag_name":"v9.0.0","draft":false,"prerelease":false,"body":"Hi","html_url":"https://github.com/storytold/wordcraft/releases/tag/v9.0.0","assets":[{{"name":"SHA256SUMS.txt","browser_download_url":"https://example.com/sums"}},{{"name":"{asset}","browser_download_url":"https://example.com/pkg"}}]}}"#
+        )
+    }
+
+    /// Run an apply check for `kind` with a healthy download and capture the handoff.
+    fn apply_for(kind: InstallKind) -> (Value, Option<InstallHandoff>) {
+        let bytes = b"hello";
+        let asset = pick_asset_name((9, 0, 0), kind).expect("asset for a supported install kind");
+        let sums = format!("{}  {asset}\n", sha256_hex(bytes));
+        let latest = latest_for(&asset);
+        let got: Arc<Mutex<Option<InstallHandoff>>> = Arc::new(Mutex::new(None));
+        let g = Arc::clone(&got);
+        let mut s = session_with_kind(
+            Arc::new(move |u, _| {
+                Ok(if u == LATEST_API {
+                    latest.clone().into_bytes()
+                } else if u.contains("sums") {
+                    sums.clone().into_bytes()
+                } else {
+                    bytes.to_vec()
+                })
+            }),
+            kind,
+        );
+        s.update_install = Some(Arc::new(move |h: InstallHandoff| {
+            *g.lock().unwrap_or_else(|e| e.into_inner()) = Some(h);
+            Ok(())
+        }));
+        let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
+        let got = got.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        (r, got)
     }
 
     const LATEST: &str = r#"{"tag_name":"v9.0.0","draft":false,"prerelease":false,"body":"Hi","html_url":"https://github.com/storytold/wordcraft/releases/tag/v9.0.0","assets":[{"name":"SHA256SUMS.txt","browser_download_url":"https://example.com/sums"},{"name":"wordcraft-9.0.0-linux-x86_64.deb","browser_download_url":"https://example.com/pkg.deb"}]}"#;
@@ -317,53 +392,91 @@ mod tests {
     }
 
     #[test]
-    fn each_install_handoff_selected() {
-        let installed = Arc::new(Mutex::new(None));
-        let got = Arc::clone(&installed);
-        let sums = b"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824  wordcraft-9.0.0-linux-x86_64.deb\n";
-        let mut s = session_with(Arc::new(move |u, _| {
-            Ok(if u.contains("sums") {
-                sums.to_vec()
-            } else if u.contains("pkg") {
-                b"hello".to_vec()
-            } else {
-                LATEST.as_bytes().to_vec()
-            })
-        }));
-        let got2 = Arc::clone(&got);
-        s.update_install = Some(Arc::new(move |h: InstallHandoff| {
-            *got2.lock().unwrap_or_else(|e| e.into_inner()) = Some(h.kind);
-            Ok(())
-        }));
-        let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
-        assert_eq!(r["status"], "available");
-        assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), Some(InstallKind::LinuxDeb));
+    fn every_supported_install_kind_hands_off() {
+        for kind in [InstallKind::WindowsMsi, InstallKind::WindowsPortableZip, InstallKind::MacDmg, InstallKind::MacApp, InstallKind::LinuxDeb] {
+            let (r, got) = apply_for(kind);
+            assert_eq!(r["status"], "available", "{kind:?}");
+            let h = got.unwrap_or_else(|| panic!("no handoff for {kind:?}"));
+            assert_eq!(h.kind, kind, "handoff kind");
+            assert_eq!(Some(h.file_name), pick_asset_name((9, 0, 0), kind), "asset for {kind:?}");
+            assert_eq!(h.bytes, b"hello", "verified bytes for {kind:?}");
+        }
     }
 
     #[test]
-    fn dirty_session_never_invokes_installer() {
-        let calls = Arc::new(Mutex::new(0));
-        let c = Arc::clone(&calls);
-        let mut s = session_with(Arc::new(|_, _| Ok(LATEST.as_bytes().to_vec())));
-        s.dirty = true;
+    fn external_and_unknown_kinds_fall_back_to_release_page() {
+        for kind in [InstallKind::Flatpak, InstallKind::AppImage, InstallKind::Unknown] {
+            let mut s = session_with_kind(Arc::new(|_, _| Ok(LATEST.as_bytes().to_vec())), kind);
+            s.update_exe = Some("/tmp/dev/wordcraft".into());
+            let err = check(&mut s, &json!({"force": true, "apply": true})).unwrap_err();
+            assert!(err.to_string().to_ascii_lowercase().contains("release page"), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn missing_checksum_refused_with_catalogued_message() {
+        let asset = pick_asset_name((9, 0, 0), InstallKind::LinuxDeb).unwrap();
+        let sums = format!("{}  some-other-file.deb\n", sha256_hex(b"hello"));
+        let latest = latest_for(&asset);
+        let called = Arc::new(Mutex::new(false));
+        let c = Arc::clone(&called);
+        let mut s = session_with(Arc::new(move |u, _| {
+            Ok(if u == LATEST_API {
+                latest.clone().into_bytes()
+            } else if u.contains("sums") {
+                sums.clone().into_bytes()
+            } else {
+                b"hello".to_vec()
+            })
+        }));
         s.update_install = Some(Arc::new(move |_| {
-            *c.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            *c.lock().unwrap_or_else(|e| e.into_inner()) = true;
             Ok(())
         }));
-        let err = check(&mut s, &json!({"force": true, "apply": true})).unwrap_err();
-        assert!(err.to_string().contains("unsaved"));
+        let r = check(&mut s, &json!({"force": true, "apply": true})).unwrap();
+        assert_eq!(r["status"], "error");
+        assert_eq!(r["error"], crate::update::MSG_CHECKSUM_MISSING);
+        assert!(r["errorDetail"].as_str().is_some_and(|d| d.contains(&asset)));
+        assert!(!*called.lock().unwrap_or_else(|e| e.into_inner()), "installer must not run");
+    }
+
+    #[test]
+    fn no_update_check_skips_startup_request() {
+        let calls = Arc::new(Mutex::new(0));
+        let c = Arc::clone(&calls);
+        let mut s = session_with(Arc::new(move |_, _| {
+            *c.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Ok(LATEST.as_bytes().to_vec())
+        }));
+        s.update_env = Some(Arc::new(TestEnv { kind: InstallKind::LinuxDeb, no_update: true }) as EnvReadBox);
+        s.update_prefs.check_on_startup = true;
+        let r = check(&mut s, &json!({"startup": true})).unwrap();
+        assert_eq!(r["status"], "throttled");
         assert_eq!(*calls.lock().unwrap_or_else(|e| e.into_inner()), 0);
     }
 
     #[test]
-    fn unknown_install_type_falls_back_on_apply() {
-        let s = session_with(Arc::new(|_, _| Ok(LATEST.as_bytes().to_vec())));
-        let mut s = s;
-        s.update_env = Some(Arc::new(TestEnv { kind: InstallKind::Unknown }) as EnvReadBox);
-        s.update_exe = Some("/tmp/dev/wordcraft".into());
-        s.update_prefs.check_on_startup = false;
+    fn dirty_session_downloads_nothing_and_never_invokes_installer() {
+        let installs = Arc::new(Mutex::new(0));
+        let downloads = Arc::new(Mutex::new(0));
+        let i = Arc::clone(&installs);
+        let d = Arc::clone(&downloads);
+        let mut s = session_with(Arc::new(move |u, _| {
+            // The release metadata check is fine; no *asset* may be fetched once dirty.
+            if u != LATEST_API {
+                *d.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            }
+            Ok(LATEST.as_bytes().to_vec())
+        }));
+        s.dirty = true;
+        s.update_install = Some(Arc::new(move |_| {
+            *i.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+            Ok(())
+        }));
         let err = check(&mut s, &json!({"force": true, "apply": true})).unwrap_err();
-        assert!(err.to_string().to_ascii_lowercase().contains("release page"));
+        assert!(err.to_string().contains("unsaved"));
+        assert_eq!(*installs.lock().unwrap_or_else(|e| e.into_inner()), 0);
+        assert_eq!(*downloads.lock().unwrap_or_else(|e| e.into_inner()), 0, "no asset download before the save prompt");
     }
 
     #[test]

@@ -100,13 +100,26 @@ pub fn bar(app: &mut WordApp, ui: &mut Ui) {
                                 match app.run("file.checkForUpdates", json!({"force": true, "apply": true})) {
                                     Ok(v) => {
                                         if v.get("status") == Some(&Value::String("error".into())) {
-                                            let msg = v.get("error").and_then(Value::as_str).unwrap_or("Update failed.");
-                                            app.status(tl!(msg));
+                                            // The command reports a catalogued English key plus the
+                                            // technical cause; translate the key, log the detail.
+                                            let key = v.get("error").and_then(Value::as_str).unwrap_or("");
+                                            let text = if key.is_empty() {
+                                                tl!("The update could not be installed.").to_string()
+                                            } else {
+                                                tl!(key).to_string()
+                                            };
+                                            if let Some(detail) = v.get("errorDetail").and_then(Value::as_str) {
+                                                log::warn!("update failed: {detail}");
+                                            }
+                                            app.status(text);
                                         } else if app.quit_requested {
                                             close = true;
                                         }
                                     }
-                                    Err(e) => app.status(tl!(&e)),
+                                    Err(e) => {
+                                        log::warn!("update failed: {e}");
+                                        app.status(tl!(wordcraft_engine::update::MSG_START_FAILED));
+                                    }
                                 }
                             }
                         }

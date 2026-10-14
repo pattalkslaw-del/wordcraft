@@ -25,4 +25,6 @@ Unknown or development installs open the release page in your browser instead. O
 ## Disabling checks
 
 - Turn off **Check for updates on startup** in File › Options.
-- Set `WORDCRAFT_NO_UPDATE_CHECK=1` for a single run, or build with `WORDCRAFT_NO_UPDATE_CHECK=1` for packagers who ship updates another way.
+- Set `WORDCRAFT_NO_UPDATE_CHECK=1` (or any non-empty value other than `0`) for a single run, or
+  compile with it set for packagers who ship updates another way. Automatic startup checks make no
+  request at all; a manual **Check for updates** still works.

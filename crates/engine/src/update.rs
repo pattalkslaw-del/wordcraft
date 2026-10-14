@@ -24,6 +24,32 @@ pub const MAX_DOWNLOAD: usize = 512 * 1024 * 1024;
 
 pub type Version = (u64, u64, u64);
 
+/// Catalogued English messages for update failures. The interface translates these by key; the
+/// technical cause rides along in [`UpdateError::detail`] and is only logged, never shown raw.
+pub const MSG_CHECK_FAILED: &str = "The update check could not reach GitHub. Check your connection and try again.";
+pub const MSG_BAD_RELEASE: &str = "GitHub returned an update WordCraft could not read.";
+pub const MSG_NO_INSTALLER: &str = "This release has no installer for your system.";
+pub const MSG_NO_CHECKSUMS: &str = "The release does not publish SHA-256 checksums, so the download was not installed.";
+pub const MSG_CHECKSUMS_UNREADABLE: &str = "The release's checksum file could not be read.";
+pub const MSG_CHECKSUM_MISSING: &str = "The release does not list a checksum for this file.";
+pub const MSG_CHECKSUM_MISMATCH: &str = "The downloaded file does not match the published SHA-256 checksum.";
+pub const MSG_NO_INSTALL_FN: &str = "The update installer is not available in this build.";
+pub const MSG_APPLY_FAILED: &str = "The update could not be installed.";
+pub const MSG_START_FAILED: &str = "The update could not be started.";
+
+/// An update failure: a stable, catalogued message plus the underlying technical detail.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpdateError {
+    pub message: &'static str,
+    pub detail: String,
+}
+
+impl UpdateError {
+    pub fn new(message: &'static str, detail: impl Into<String>) -> Self {
+        Self { message, detail: detail.into() }
+    }
+}
+
 /// Persisted update settings (saved in `ui.json` with the rest of the UI state).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -121,6 +147,11 @@ pub trait EnvRead {
     fn linux(&self) -> bool;
     /// True when `dpkg-query -S` reports the installed binary (`.deb` installs only).
     fn linux_deb_package(&self, exe: &str) -> bool;
+    /// Packagers and locked-down runs can turn the automatic check off entirely
+    /// (`WORDCRAFT_NO_UPDATE_CHECK`): no release request is ever made.
+    fn no_update_check(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -171,6 +202,23 @@ impl EnvRead for SystemEnv {
     fn linux(&self) -> bool {
         cfg!(all(unix, not(target_os = "macos")))
     }
+    fn no_update_check(&self) -> bool {
+        // Build-time (a packager ships updates another way) or a single run's environment.
+        if option_env!("WORDCRAFT_NO_UPDATE_CHECK").is_some() {
+            return true;
+        }
+        matches!(std::env::var("WORDCRAFT_NO_UPDATE_CHECK"), Ok(v) if !v.is_empty() && v != "0")
+    }
+}
+
+static SYSTEM_ENV: SystemEnv = SystemEnv;
+
+/// The environment reader for a session: its test/override hook, else the real system.
+pub fn env_of(s: &crate::Session) -> &dyn EnvRead {
+    match s.update_env.as_ref() {
+        Some(env) => env.as_ref(),
+        None => &SYSTEM_ENV,
+    }
 }
 
 /// `v1.2.3`, `1.2` → version; pre-releases and junk → `None`.
@@ -215,8 +263,12 @@ pub struct CheckResult {
     pub current: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub release: Option<ReleaseOffer>,
+    /// A catalogued English message the interface translates by key.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The technical cause, logged for support, never shown raw (may contain interpolated text).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_detail: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
