@@ -907,7 +907,11 @@ impl WordApp {
                     self.ui.backstage = true;
                     self.ui.backstage_page = "options".into();
                     if let Some(pane) = req.get("pane").and_then(Value::as_str) {
-                        self.ui.options_pane = pane.into();
+                        if self.ui.options_pane == "law" && pane != "law" && !law::commit_pending_drafts(self) {
+                            // Stay on LawCraft until pending edits save or are fixed.
+                        } else {
+                            self.ui.options_pane = pane.into();
+                        }
                     }
                 }
                 "pasteSpecial" => self.dialog = Some(dialogs::Dialog::paste_special(self, req)),
@@ -956,6 +960,8 @@ impl WordApp {
                 let tab = s("tab").unwrap_or("Home").to_string();
                 if tab == "File" {
                     self.ui.backstage = true;
+                } else if law::on_settings_page(self) && !law::commit_pending_drafts(self) {
+                    // Stay in Options on LawCraft until pending edits save.
                 } else {
                     self.ui.tab = tab;
                     self.ui.backstage = false;
@@ -963,12 +969,26 @@ impl WordApp {
                 json!({"tab": self.ui.tab})
             }
             "ui.backstage" => {
-                self.ui.backstage = p.get("value").and_then(Value::as_bool).unwrap_or(!self.ui.backstage);
+                let want = p.get("value").and_then(Value::as_bool).unwrap_or(!self.ui.backstage);
+                if !want && law::on_settings_page(self) && !law::commit_pending_drafts(self) {
+                    // Leave backstage open.
+                } else {
+                    self.ui.backstage = want;
+                }
                 if let Some(pg) = s("page") {
-                    self.ui.backstage_page = pg.into();
+                    let leave_options = self.ui.backstage_page == "options" && pg != "options" && law::on_settings_page(self);
+                    if leave_options && !law::commit_pending_drafts(self) {
+                        // Stay on the LawCraft pane.
+                    } else {
+                        self.ui.backstage_page = pg.into();
+                    }
                 }
                 if let Some(pane) = s("pane") {
-                    self.ui.options_pane = pane.into();
+                    if self.ui.options_pane == "law" && pane != "law" && !law::commit_pending_drafts(self) {
+                        // Stay on LawCraft.
+                    } else {
+                        self.ui.options_pane = pane.into();
+                    }
                 }
                 json!({"backstage": self.ui.backstage})
             }

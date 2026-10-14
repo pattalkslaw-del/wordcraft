@@ -69,6 +69,9 @@ fn apply_module_toggle(app: &mut WordApp, on: bool) {
         sync_module(app);
         app.ui.options_pane = "law".into();
     } else if app.ui.options_pane == "law" {
+        if !commit_pending_drafts(app) {
+            return;
+        }
         app.ui.options_pane = "addins".into();
     }
 }
@@ -163,6 +166,40 @@ fn apply_drafts(law: &LawUi, profile_id: &str, profile: &mut Value) {
 /// that never received its blur — because another profile was clicked before it lost focus — would
 /// otherwise be wiped when its draft keys are cleared. Drafts are kept when the save fails, so
 /// returning to the profile shows the text again and it can be retried.
+/// Profile ids that still have uncommitted text edits on the LawCraft page.
+fn profile_ids_with_drafts(law: &LawUi) -> Vec<String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for key in
+        law.section_name_drafts.keys().chain(law.check_source_drafts.keys()).chain(law.check_font_drafts.keys()).chain(law.style_font_drafts.keys())
+    {
+        if let Some(id) = key.split('\0').next().filter(|s| !s.is_empty()) {
+            ids.insert(id.to_string());
+        }
+    }
+    ids.into_iter().collect()
+}
+
+/// Save every pending LawCraft text edit. Call before leaving the LawCraft pane or closing Options.
+pub(crate) fn commit_pending_drafts(app: &mut WordApp) -> bool {
+    for id in profile_ids_with_drafts(&app.law) {
+        if !flush_drafts(app, &id) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Whether File › Options is showing the LawCraft pane.
+pub(crate) fn on_settings_page(app: &WordApp) -> bool {
+    app.ui.backstage && app.ui.backstage_page == "options" && app.ui.options_pane == "law" && enabled(app)
+}
+
+fn reload_profile(app: &mut WordApp, profile_id: &str, profile: &mut Value) {
+    if let Ok(p) = app.run("law.profiles.get", json!({"id": profile_id})) {
+        *profile = p;
+    }
+}
+
 fn flush_drafts(app: &mut WordApp, profile_id: &str) -> bool {
     if !has_drafts(&app.law, profile_id) {
         return true;
@@ -607,6 +644,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
     ui.horizontal(|ui| {
         ui.label(RichText::new(tl!("Checks for this document type")).small().weak());
         if ui.button(tl!("Add check")).clicked() && flush_drafts(app, profile_id) {
+            reload_profile(app, profile_id, profile);
             let mut checks = current_checks(profile, doc_key);
             checks.push(json!({"kind": "wordLimit", "limit": 10000, "source": "Edited in LawCraft settings"}));
             save_doc(app, profile_id, doc_key, profile, json!({"checks": checks}));
@@ -635,6 +673,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     },
                 );
                 if selected_kind != kind && flush_drafts(app, profile_id) {
+                    reload_profile(app, profile_id, profile);
                     let mut checks = current_checks(profile, doc_key);
                     if let Some(c) = checks.get_mut(i) {
                         *c = default_check(&selected_kind, c);
@@ -643,6 +682,7 @@ fn checks_editor(app: &mut WordApp, ui: &mut Ui, profile_id: &str, doc_key: &str
                     return;
                 }
                 if ui.button(tl!("Remove")).clicked() && flush_drafts(app, profile_id) {
+                    reload_profile(app, profile_id, profile);
                     let mut checks = current_checks(profile, doc_key);
                     if i < checks.len() {
                         checks.remove(i);

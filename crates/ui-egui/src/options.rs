@@ -136,7 +136,12 @@ pub fn page(app: &mut WordApp, ui: &mut Ui) {
                 let font = if active { semibold(14.0) } else { crate::theme::regular(14.0) };
                 ui.painter().text(egui::pos2(r.min.x + 12.0, r.center().y), egui::Align2::LEFT_CENTER, label, font, t.text);
                 if resp.clicked() {
-                    app.ui.options_pane = id.to_string();
+                    let leaving_law = current == "law" && id != "law";
+                    if leaving_law && !crate::law::commit_pending_drafts(app) {
+                        // Stay on LawCraft: drafts could not be saved.
+                    } else {
+                        app.ui.options_pane = id.to_string();
+                    }
                 }
             }
         });

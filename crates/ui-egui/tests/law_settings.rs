@@ -766,7 +766,7 @@ fn switching_document_type_commits_or_keeps_check_source_draft() {
 
 #[test]
 fn failed_section_name_update_keeps_draft_for_retry() {
-    let (_lock, _) = serial();
+    let (_lock, store_dir) = serial();
     let mut a = law_app();
     let id = unique_id("ui-law-failed-retry");
     a.run(
@@ -809,6 +809,136 @@ fn failed_section_name_update_keeps_draft_for_retry() {
 
     let before = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
     assert_eq!(before["docs"]["brief"]["checks"][0]["source"], json!("OK"), "the invalid draft was not saved");
+
+    let draft_key = format!("{id}\0brief\00");
+    h.state_mut().law.check_source_drafts.insert(draft_key.clone(), "Saved after retry".into());
+
+    let profile_file = store_dir.join(format!("{}.json", id));
+    let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&profile_file, perms).unwrap();
+
+    h.get_by_label("Add check").click();
+    h.run_steps(4);
+    assert!(h.state().law.validation.is_some(), "a failed flush keeps the error visible");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&profile_file, perms).unwrap();
+    }
+
+    h.get_by_label("General").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.options_pane, "general", "retry commits drafts before leaving LawCraft");
+    assert!(h.state().law.validation.is_none(), "a successful retry clears the inline error: {:?}", h.state().law.validation);
+    let after = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let saved = after["docs"]["brief"]["checks"][0]["source"].as_str().unwrap_or("");
+    assert!(saved.contains("Saved after retry"), "the retried edit persisted: {saved:?}");
+    assert!(!h.state().law.check_source_drafts.contains_key(&draft_key), "draft removed after success");
+}
+
+#[test]
+fn add_check_after_editing_source_keeps_flushed_source() {
+    let (_lock, _) = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-add-check-source");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Add check source test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "Before"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("Source:").focus();
+    h.run_steps(2);
+    for ch in "After flush".chars() {
+        h.get_by_label("Source:").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+    h.get_by_label("Add check").click();
+    h.run_steps(6);
+
+    let p = h.state_mut().run("law.profiles.get", json!({"id": id})).unwrap();
+    let source = p["docs"]["brief"]["checks"][0]["source"].as_str().unwrap_or("");
+    assert!(source.contains("After flush"), "Add check kept the flushed source edit: {source:?}");
+    assert_eq!(p["docs"]["brief"]["checks"].as_array().map(|a| a.len()), Some(2));
+}
+
+#[test]
+fn leaving_law_options_cancels_when_pending_drafts_fail_to_commit() {
+    let (_lock, store_dir) = serial();
+    let mut a = law_app();
+    let id = unique_id("ui-law-leave-options");
+    a.run(
+        "law.profiles.create",
+        json!({
+            "schema": 1,
+            "id": id,
+            "name": "Leave options test",
+            "jurisdiction": "Test",
+            "docs": {
+                "brief": {
+                    "styles": [],
+                    "sections": [{"id": "cover", "name": "Cover"}],
+                    "checks": [{"kind": "noHyperlinks", "source": "OK"}],
+                    "source": "Test"
+                }
+            }
+        }),
+    )
+    .unwrap();
+    open_law_options(&mut a);
+    a.law.selected = Some(id.clone());
+    a.law.doc_type = "brief".into();
+    let mut h = harness(a);
+    h.run_steps(8);
+
+    h.get_by_label("1.").focus();
+    h.run_steps(2);
+    for ch in " Page".chars() {
+        h.get_by_label("1.").type_text(&ch.to_string());
+        h.run_steps(1);
+    }
+
+    let profile_file = store_dir.join(format!("{}.json", id));
+    let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
+    perms.set_readonly(true);
+    std::fs::set_permissions(&profile_file, perms).unwrap();
+
+    h.get_by_label("General").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.options_pane, "law", "navigation away from LawCraft is cancelled when flush fails");
+    assert!(h.state().law.validation.is_some(), "the flush error is shown inline");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&profile_file).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&profile_file, perms).unwrap();
+    }
+    h.get_by_label("General").click();
+    h.run_steps(4);
+    assert_eq!(h.state().ui.options_pane, "general", "navigation succeeds after the draft saves");
 }
 
 #[test]

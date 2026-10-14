@@ -53,8 +53,12 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
             };
             // Escape in the built-in file browser closes only the browser.
             if back.clicked() || (!app.file_dialog_open() && ui.input(|i| i.key_pressed(egui::Key::Escape))) {
-                app.ui.backstage = false;
-                app.canvas.want_focus = true;
+                if crate::law::on_settings_page(app) && !crate::law::commit_pending_drafts(app) {
+                    // Keep Options open so the inline error stays visible.
+                } else {
+                    app.ui.backstage = false;
+                    app.canvas.want_focus = true;
+                }
             }
             ui.add_space(if mac { 12.0 } else { 6.0 });
             for (id, label) in PAGES {
@@ -74,6 +78,10 @@ pub fn show(app: &mut WordApp, ui: &mut Ui) {
                     egui::Color32::WHITE,
                 );
                 if resp.clicked() {
+                    let leave_options = app.ui.backstage_page == "options" && id != "options" && crate::law::on_settings_page(app);
+                    if leave_options && !crate::law::commit_pending_drafts(app) {
+                        continue;
+                    }
                     match id {
                         // A document without a file goes to the Save As page (as in Word) instead
                         // of `file.save`, which would also open the native Save As dialog.
