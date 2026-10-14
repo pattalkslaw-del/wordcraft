@@ -83,6 +83,12 @@ pub struct DocSpec {
     /// Certificate of compliance text for [`crate::certificate`] (`{wordCount}`, `{wordLimit}`…).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate_of_compliance: Option<ComplianceCertificateSpec>,
+    /// Table of authorities: print `passim` when an entry appears on at least this many pages (default 5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toa_passim_at: Option<u32>,
+    /// Table of authorities: use `passim` for entries with many page references (default true).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub toa_passim: Option<bool>,
     /// The rule these formatting rules come from (`Mo. Sup. Ct. R. 84.03`).
     pub source: String,
     /// When the rule took effect (`2025-01-01`).
@@ -404,6 +410,11 @@ fn check_doc(out: &mut Vec<String>, at: &str, d: &DocSpec) {
     }
     if let Some(pn) = &d.page_numbers {
         check_page_numbers(out, &format!("{at}.pageNumbers"), pn);
+    }
+    if let Some(n) = d.toa_passim_at
+        && !((1..=99).contains(&n))
+    {
+        out.push(format!("{at}.toaPassimAt must be between 1 and 99"));
     }
     if d.styles.len() > MAX_STYLES {
         out.push(format!("{at}.styles has {} styles (at most {MAX_STYLES})", d.styles.len()));

@@ -26,6 +26,9 @@ pub struct PackRule {
     pub valid: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub extend_tail: bool,
+    /// When true, valid matches (see `valid`) are included in the table-of-authorities finder.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub finder: bool,
     pub message: String,
 }
 
@@ -52,6 +55,7 @@ pub struct CompiledRule {
     pub valid: Option<Regex>,
     /// When true, extend the match with an optional pin cite and parenthetical before `valid`.
     pub extend_tail: bool,
+    pub finder: bool,
 }
 
 /// A loaded pack with compiled regexes.
@@ -80,7 +84,16 @@ impl CitationPack {
                 Some(s) => Some(compile_regex(s, "valid")?),
                 None => None,
             };
-            rules.push(CompiledRule { id: r.id, kind: r.kind, source: r.source, message: r.message, detect, valid, extend_tail: r.extend_tail });
+            rules.push(CompiledRule {
+                id: r.id,
+                kind: r.kind,
+                source: r.source,
+                message: r.message,
+                detect,
+                valid,
+                extend_tail: r.extend_tail,
+                finder: r.finder,
+            });
         }
         Ok(CompiledPack { id: self.id, name: self.name, jurisdiction: self.jurisdiction, rules })
     }

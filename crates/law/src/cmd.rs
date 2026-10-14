@@ -30,6 +30,7 @@ const LOC: &str = "Law › Court Profiles";
 const CHECKS_LOC: &str = "Law › Court Checks";
 const PROOF_LOC: &str = "Law › Proofing";
 const CITATIONS_LOC: &str = "Law › Citations";
+const TOA_LOC: &str = "Law › Table of Authorities";
 
 static PACKS: OnceLock<BTreeMap<String, CompiledPack>> = OnceLock::new();
 
@@ -37,7 +38,7 @@ fn packs() -> &'static BTreeMap<String, CompiledPack> {
     PACKS.get_or_init(crate::citation_pack::bundled_map)
 }
 
-fn pack_by_id(id: &str) -> Result<&'static CompiledPack, CmdError> {
+pub(crate) fn pack_by_id(id: &str) -> Result<&'static CompiledPack, CmdError> {
     packs().get(id).ok_or_else(|| CmdError::Failed(format!("no citation pack `{id}`")))
 }
 const CERT_LOC: &str = "Law › Certificates";
@@ -278,6 +279,11 @@ fn profile_and_doc(s: &Session, v: &Value) -> Result<(Profile, String), CmdError
             .to_string(),
     };
     Ok((profile, doc_type))
+        CommandSpec::new("law.toa.build", "Build Table of Authorities", TOA_LOC, crate::toa::build)
+        .params(
+            r#"{"pack"?: string, "id"?: profile id, "doc"?: document type, "at"?: "cursor" (default: the profile's Table of Authorities section when present), "passim"?: bool (default true), "passimAt"?: number (default 5)} → {"pack", "entries", "blocks", "start"}"#,
+        ),
+    ]
 }
 
 fn not_found(id: &str) -> CmdError {

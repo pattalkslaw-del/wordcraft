@@ -45,6 +45,7 @@ pub mod profile;
 mod proofing;
 pub mod store;
 pub mod symbols;
+mod toa;
 
 use wordcraft_engine::Session;
 
@@ -68,6 +69,7 @@ pub fn install(session: &mut Session) -> usize {
     session.module_en = proofing::module_hooks();
     checks::register_document_hook();
     symbols::register_text_hook();
+    toa::register_field_hook();
     // A host may open the file *before* it installs LawCraft (`Session::new(doc)`), so the
     // document-loaded hook never runs for it. Restore the applied profile's export checks from
     // the document's own metadata at installation, the same way `set_document` would.
@@ -95,3 +97,4 @@ mod tests_certificate;
 
 #[cfg(test)]
 mod tests_integration;
+mod tests_toa;
