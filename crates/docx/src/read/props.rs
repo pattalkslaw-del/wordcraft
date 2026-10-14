@@ -566,6 +566,34 @@ fn page_num_prefix_val(raw: Option<&str>) -> Option<String> {
     if p.is_empty() { None } else { Some(p) }
 }
 
+/// Apply the per-section page-number prefixes kept in `w:docVars` (see
+/// [`wordcraft_doc::section::PAGE_NUM_PREFIX_DOCVAR`]). `w:sectPr` has no extension slot, so the
+/// prefix rides in Word's document variables; this runs once every section is known and removes the
+/// consumed variables (a save writes them again from the sections).
+pub fn apply_section_doc_vars(doc: &mut wordcraft_doc::Document) {
+    let reserved = wordcraft_doc::section::PAGE_NUM_PREFIX_DOCVAR;
+    let vars = std::mem::take(&mut doc.settings.doc_vars);
+    let mut prefixes: Vec<(usize, String)> = Vec::new();
+    for (name, val) in vars {
+        let Some(idx) = name.strip_prefix(reserved).filter(|n| !n.is_empty()).and_then(|n| n.parse::<usize>().ok()) else {
+            doc.settings.doc_vars.push((name, val));
+            continue;
+        };
+        if let Some(prefix) = page_num_prefix_val(Some(&val)) {
+            prefixes.push((idx, prefix));
+        }
+    }
+    if prefixes.is_empty() {
+        return;
+    }
+    let ends: Vec<usize> = doc.sections().iter().map(|(e, _)| *e).collect();
+    for (idx, prefix) in prefixes {
+        if let Some(end) = ends.get(idx).copied() {
+            doc.section_mut(end).page_num_prefix = Some(prefix);
+        }
+    }
+}
+
 /// `w:sectPr` (header/footer references are returned for the caller to resolve).
 pub fn sectpr(e: &El) -> (SectionProps, Vec<HfRef>) {
     let mut s = SectionProps::default();
@@ -643,21 +671,11 @@ pub fn sectpr(e: &El) -> (SectionProps, Vec<HfRef>) {
                     s.page_num_format = NumFormat::from_ooxml(f);
                 }
             }
-            // Legacy WordCraft writer (pre-extension); not valid OOXML — still read for old files.
+            // A WordCraft build before the `w:docVars` fix wrote this element, which is not a valid
+            // `w:sectPr` child; keep reading it so those files still show their prefix.
             "w:pgNumPrefix" => {
                 if s.page_num_prefix.is_none() {
                     s.page_num_prefix = page_num_prefix_val(k.attr("w:val"));
-                }
-            }
-            "w:extLst" => {
-                for ext in k.children("w:ext") {
-                    if ext.attr("uri") != Some(crate::PAGE_NUM_PREFIX_EXT) {
-                        continue;
-                    }
-                    let el = ext.child("wc:pgNumPrefix").or_else(|| ext.els().find(|e| e.name.ends_with(":pgNumPrefix") || e.name == "pgNumPrefix"));
-                    if let Some(el) = el {
-                        s.page_num_prefix = page_num_prefix_val(el.attr("wc:val").or_else(|| el.attr("w:val")));
-                    }
                 }
             }
             "w:lnNumType" => {

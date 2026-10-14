@@ -740,6 +740,12 @@ fn is_horizontal(d: &crate::props::TextDirection) -> bool {
     !d.is_turned()
 }
 
+/// Prefix of the `w:docVars` name that carries a section's [`SectionProps::page_num_prefix`] across
+/// a `.docx` round trip: `wordcraft.section.pgNumPrefix.N` holds section `N`'s prefix. `w:sectPr`
+/// has no extension slot, so WordCraft keeps the prefix in Word's document variables (`w:docVars`)
+/// instead. This is a general serialization hook; it holds no legal logic.
+pub const PAGE_NUM_PREFIX_DOCVAR: &str = "wordcraft.section.pgNumPrefix.";
+
 impl SectionProps {
     /// Width of the text area, points.
     pub fn text_width(&self) -> f32 {

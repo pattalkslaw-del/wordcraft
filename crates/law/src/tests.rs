@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use wordcraft_doc::props::LineSpacing;
 use wordcraft_doc::section::LineNumberRestart;
 use wordcraft_doc::{Document, StoryRef};
+use wordcraft_engine::layout::Placed;
 use wordcraft_engine::{CmdError, Session};
 
 use crate::cmd::store;
@@ -49,6 +50,31 @@ fn layout_page_labels(s: &mut Session) -> Vec<String> {
     let l = s.layout();
     let sections = s.doc.sections();
     l.pages.iter().map(|p| sections.get(p.section).map(|(_, sp)| sp.format_page_number(p.number)).unwrap_or_else(|| p.number.to_string())).collect()
+}
+
+/// The text a page's footer actually shows, with its fields filled in for that page (the prefix is
+/// literal text, the page number is the laid-out PAGE field's text).
+fn rendered_footer(s: &mut Session, page: usize) -> String {
+    let l = s.layout();
+    let Some(p) = l.pages.get(page) else { return String::new() };
+    let mut out = String::new();
+    for it in &p.footer {
+        let Placed::Lines { story, path, para, l0, l1, .. } = it else { continue };
+        let src = s.doc.para(*story, path);
+        for li in *l0..*l1 {
+            let Some(line) = para.lines.get(li) else { continue };
+            for k in line.c0..line.c1 {
+                if let Some((_, t, _)) = para.shown.iter().find(|(sk, _, _)| *sk == k) {
+                    out.push_str(t);
+                } else if let (Some(c), Some(src)) = (para.clusters.get(k), src)
+                    && let Some(t) = src.text.get(c.start..c.end)
+                {
+                    out.push_str(t);
+                }
+            }
+        }
+    }
+    out
 }
 
 fn session_from_doc(doc: Document) -> Session {
@@ -278,11 +304,13 @@ fn missouri_appendix_pages_are_numbered_from_a1() {
     let text = s.doc.plain_text(wordcraft_doc::StoryRef::Part(footer));
     assert_eq!(text, "A1", "appendix pages are numbered A1, A2…: {text:?}");
     assert_eq!(layout_page_labels(&mut s)[0], "A1", "layout page 1");
+    assert_eq!(rendered_footer(&mut s, 0), "A1", "rendered footer on page 1");
     run(&mut s, "text.pageBreak", json!({}));
     let labels = layout_page_labels(&mut s);
     assert!(labels.len() >= 2, "at least two pages: {labels:?}");
     assert_eq!(labels[0], "A1");
     assert_eq!(labels[1], "A2", "layout page 2");
+    assert_eq!(rendered_footer(&mut s, 1), "A2", "rendered footer on page 2");
     let doc = roundtrip(&s);
     let sect = section(&doc);
     assert_eq!(sect.page_num_start, Some(1), "page numbering restarts at 1 in a saved .docx");
@@ -294,6 +322,8 @@ fn missouri_appendix_pages_are_numbered_from_a1() {
     let after = layout_page_labels(&mut reopened);
     assert_eq!(after[0], "A1", "layout after .docx round-trip");
     assert_eq!(after[1], "A2", "layout page 2 after .docx round-trip");
+    assert_eq!(rendered_footer(&mut reopened, 0), "A1", "rendered footer after .docx round-trip");
+    assert_eq!(rendered_footer(&mut reopened, 1), "A2", "rendered footer page 2 after .docx round-trip");
 }
 
 #[test]
@@ -331,16 +361,18 @@ fn law_appendix_apply_restyles_the_open_document() {
 
 #[test]
 fn federal_addendum_pages_use_add_prefix() {
-    let s = apply_session(FEDERAL, "addendum");
+    let mut s = apply_session(FEDERAL, "addendum");
     let sect = section(&s.doc);
     assert_eq!(sect.page_num_prefix.as_deref(), Some("Add. "));
     let text = s.doc.plain_text(StoryRef::Part(sect.footers.default.expect("footer")));
     assert_eq!(text, "Add. 1", "federal addendum numbering: {text:?}");
+    assert_eq!(rendered_footer(&mut s, 0), "Add. 1", "rendered federal addendum footer");
     let doc = roundtrip(&s);
     let sect = section(&doc);
     assert_eq!(sect.page_num_prefix.as_deref(), Some("Add. "));
     let text = doc.plain_text(StoryRef::Part(sect.footers.default.expect("footer")));
     assert_eq!(text, "Add. 1");
+    assert_eq!(rendered_footer(&mut session_from_doc(doc), 0), "Add. 1", "rendered federal addendum footer after .docx round-trip");
 }
 
 #[test]
