@@ -11,7 +11,7 @@
       "source": "Bluebook R. 10.4 (U.S. Reports)",
       "detect": "\\b\\d+\\s+U\\.\\s*S\\.\\s+\\d+\\b",
       "extendTail": true,
-      "valid": "^\\d+\\s+U\\.\\s*S\\.\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*\\d{4}[^)]*\\)$",
+      "valid": "^\\d+\\s+U\\.\\s*S\\.\\s+\\d+(?:,\\s*\\d+(?:-\\d+)?)?\\s+\\(\\s*\\d{4}\\s*\\)$",
       "message": "U.S. Reports citations use U.S. with periods and usually include a year parenthetical."
     },
     {
@@ -20,7 +20,7 @@
       "source": "Bluebook R. 10.4 (Supreme Court Reporter)",
       "detect": "\\b\\d+\\s+S\\.\\s+Ct\\.\\s+\\d+\\b",
       "extendTail": true,
-      "valid": "^\\d+\\s+S\\.\\s+Ct\\.\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*\\d{4}[^)]*\\)$",
+      "valid": "^\\d+\\s+S\\.\\s+Ct\\.\\s+\\d+(?:,\\s*\\d+(?:-\\d+)?)?\\s+\\(\\s*\\d{4}\\s*\\)$",
       "message": "Supreme Court Reporter citations use S. Ct. with a space after S. and a year parenthetical."
     },
     {
@@ -50,7 +50,7 @@
       "source": "Bluebook R. 10.4 (court parenthetical)",
       "detect": "\\b\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+\\b",
       "extendTail": true,
-      "valid": "^\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+(?:,\\s*\\d+)?\\s+\\([^)]*[A-Za-z][^)]*\\d{4}[^)]*\\)$",
+      "valid": "^\\d+\\s+F\\.(?:2d|3d|4th| Supp\\. (?:2d|3d))\\s+\\d+(?:,\\s*\\d+(?:-\\d+)?)?\\s+\\(\\s*(?:(?:[1-9]\\d?(?:st|nd|rd|th)|D\\.C\\.|Fed\\.)\\s+Cir\\.|(?:[A-Z]\\.\\s*){1,4}(?:[A-Z][a-z]+\\.?)?)\\s*\\d{4}\\s*\\)$",
       "message": "Federal appellate and district reporter citations need a court parenthetical with the year, e.g. (8th Cir. 2009)."
     },
     {

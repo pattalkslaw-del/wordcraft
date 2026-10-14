@@ -24,9 +24,9 @@
       "id": "moCaseParenthetical",
       "kind": "case",
       "source": "Show Me Citations (parenthetical)",
-      "detect": "\\b[A-Z][\\w.'\\s-]{0,80}\\s+v\\.\\s+[\\w.'\\s-]{0,80},\\s*\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+\\b",
+      "detect": "\\b\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+\\b",
       "extendTail": true,
-      "valid": "^[\\w.'\\s,-]+,\\s*\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+(?:,\\s*\\d+)?\\s+\\(\\s*Mo\\.\\s+(?:banc|App\\.\\s+(?:E\\.D\\.|W\\.D\\.|S\\.D\\.))\\s+\\d{4}\\s*\\)$",
+      "valid": "^\\d+\\s+S\\.W\\.(?:2d|3d)\\s+\\d+(?:,\\s*\\d+(?:-\\d+)?)?\\s+\\(\\s*Mo\\.\\s+(?:banc|App\\.\\s+(?:E\\.D\\.|W\\.D\\.|S\\.D\\.))\\s+\\d{4}\\s*\\)$",
       "message": "A Missouri case citation with a S.W. reporter needs a court and year parenthetical, e.g. (Mo. banc 1978)."
     },
     {
