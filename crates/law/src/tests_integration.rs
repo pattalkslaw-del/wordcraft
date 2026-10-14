@@ -33,4 +33,17 @@ fn missouri_brief_runs_checks_proofing_citations_symbols_and_certificate() {
     assert_eq!(cert["doc"], json!("brief"));
     assert!(cert["wordCount"].as_u64().is_some_and(|n| n > 0));
     assert!(cert["findings"].as_array().is_none_or(|f| f.is_empty()), "{cert:?}");
+
+    let toa = run(&mut s, "law.toa.build", json!({"store": false}));
+    assert_eq!(toa["pack"], json!("missouri"));
+    assert!(toa["entries"].as_u64().is_some_and(|n| n > 0), "{toa:?}");
+    let body = s.doc.plain_text(wordcraft_doc::StoryRef::Body);
+    assert!(body.contains("570 S.W.2d 679"), "the table lists the cited case: {body}");
+
+    let appendix = run(&mut s, "law.appendix.create", json!({}));
+    assert_eq!(appendix["profile"], json!(MISSOURI));
+    assert_eq!(appendix["doc"], json!("appendix"));
+    assert_eq!(s.doc.custom_prop(crate::checks::PROP_DOC_TYPE), Some("appendix"));
+    let findings = run(&mut s, "law.checks.run", json!({"doc": "appendix", "store": false}));
+    assert!(findings["findings"].as_array().is_some_and(|f| f.is_empty()), "{findings:?}");
 }

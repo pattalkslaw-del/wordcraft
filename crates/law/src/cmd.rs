@@ -253,6 +253,10 @@ pub fn specs() -> Vec<CommandSpec> {
             Ok(json!({"refreshed": true}))
         })
         .params(r#"{} → {"refreshed": true} (updates LAWWORDCOUNT fields; runs before export when a profile is applied)"#),
+        CommandSpec::new("law.toa.build", "Build Table of Authorities", TOA_LOC, crate::toa::build)
+        .params(
+            r#"{"pack"?: string, "id"?: profile id, "doc"?: document type, "at"?: "cursor" (default: the profile's Table of Authorities section when present), "passim"?: bool (default true), "passimAt"?: number (default 5)} → {"pack", "entries", "blocks", "start"}"#,
+        ),
     ]);
     v
 }
@@ -280,11 +284,6 @@ fn profile_and_doc(s: &Session, v: &Value) -> Result<(Profile, String), CmdError
             .to_string(),
     };
     Ok((profile, doc_type))
-        CommandSpec::new("law.toa.build", "Build Table of Authorities", TOA_LOC, crate::toa::build)
-        .params(
-            r#"{"pack"?: string, "id"?: profile id, "doc"?: document type, "at"?: "cursor" (default: the profile's Table of Authorities section when present), "passim"?: bool (default true), "passimAt"?: number (default 5)} → {"pack", "entries", "blocks", "start"}"#,
-        ),
-    ]
 }
 
 fn not_found(id: &str) -> CmdError {
