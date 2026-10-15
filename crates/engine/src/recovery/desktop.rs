@@ -583,6 +583,20 @@ mod tests {
         settle(&mut s);
         s
     }
+    /// A session reopened on `root` whose scan has listed the record. A record's lock can be
+    /// briefly held by a process another test is starting (a forked child holds the descriptor
+    /// until it execs), and a record that can't be locked is skipped, not reported: retry rather
+    /// than read a skipped record as gone.
+    fn session_with_record(root: &Path) -> Session {
+        for _ in 0..50 {
+            let s = session(root);
+            if !s.recovery_documents().is_empty() {
+                return s;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("the recovery record was never listed");
+    }
     fn save_now(s: &mut Session) {
         s.recovery.as_mut().unwrap().due = Instant::now();
         s.recovery_tick();
@@ -754,7 +768,7 @@ mod tests {
         assert!(s.recovery_wait().is_none(), "unchanged documents must not schedule idle work");
         let expected = s.doc.clone();
         drop(s);
-        let mut s = session(&t.0);
+        let mut s = session_with_record(&t.0);
         let id = s.recovery_documents()[0].id.clone();
         s.run("file.recover", &json!({"restore": id})).unwrap();
         settle(&mut s);
@@ -780,7 +794,7 @@ mod tests {
         save_now(&mut s);
         let expected = s.doc.clone();
         drop(s);
-        let mut s = session(&root);
+        let mut s = session_with_record(&root);
         let id = s.recovery_documents()[0].id.clone();
         s.run("file.recover", &json!({"restore": id})).unwrap();
         settle(&mut s);
@@ -837,7 +851,7 @@ mod tests {
         s.run("text.insert", &json!({"text": "Saved draft"})).unwrap();
         save_now(&mut s);
         drop(s);
-        let mut s = session(&t.0);
+        let mut s = session_with_record(&t.0);
         let id = s.recovery_documents()[0].id.clone();
         s.run("file.recover", &json!({"restore": id})).unwrap();
         s.run("text.insert", &json!({"text": "New work"})).unwrap();
