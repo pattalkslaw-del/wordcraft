@@ -1072,12 +1072,21 @@ fn typing_rtl_letters_into_an_empty_paragraph_makes_it_rtl() {
 #[test]
 fn select_all_then_delete_removes_tables() {
     let tables = |s: &Session| s.doc.body.iter().filter(|b| b.as_table().is_some()).count();
+    let select_whole_story = |s: &mut Session| {
+        for _ in 0..6 {
+            run(s, "select.all", json!({}));
+            if s.selects_whole_story() {
+                return;
+            }
+        }
+        panic!("select.all never reached the whole story");
+    };
     for key in ["text.delete", "text.backspace"] {
         let mut s = typed("");
         run(&mut s, "insert.table", json!({"rows": 2, "cols": 2}));
         typ(&mut s, "cell");
         assert_eq!(tables(&s), 1);
-        run(&mut s, "select.all", json!({}));
+        select_whole_story(&mut s);
         run(&mut s, key, json!({}));
         assert_eq!(tables(&s), 0, "{key}: a table at the start of the document goes");
         assert_eq!(s.doc.plain_text(StoryRef::Body), "", "{key}");
@@ -1086,7 +1095,7 @@ fn select_all_then_delete_removes_tables() {
         run(&mut s, "insert.table", json!({"rows": 2, "cols": 2}));
         typ(&mut s, "cell");
         assert_eq!(tables(&s), 1);
-        run(&mut s, "select.all", json!({}));
+        select_whole_story(&mut s);
         run(&mut s, key, json!({}));
         assert_eq!(tables(&s), 0, "{key}: a table after text goes");
         assert_eq!(s.doc.plain_text(StoryRef::Body), "", "{key}");
