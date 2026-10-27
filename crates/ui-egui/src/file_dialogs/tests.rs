@@ -237,6 +237,36 @@ fn pdf_import_picker_and_report_keep_the_conversion_unsaved() {
     assert!(body_text(&app).starts_with("Edited: "));
 }
 
+#[test]
+fn programmatic_pdf_import_returns_metadata_without_opening_a_dialog() {
+    let (mut app, _) = async_app();
+    let bytes = wordcraft_engine::io::save_bytes("original.pdf", &wordcraft_doc::Document::from_text("Imported by automation")).unwrap();
+    let result = app.execute("file.open", json!({"path": "original.pdf", "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)})).unwrap();
+    assert_eq!(result["import"]["format"], "pdf");
+    assert_eq!(result["import"]["saveAsRequired"], true);
+    assert!(!result["import"]["warnings"].as_array().unwrap().is_empty());
+    assert!(app.dialog.is_none(), "MCP/control imports must not open a modal report");
+    assert!(app.session.ui_requests.is_empty());
+    assert!(app.session.dirty && app.session.path.is_none());
+    assert!(body_text(&app).contains("Imported by automation"));
+    app.run("text.insert", json!({"text": "Edited: "})).unwrap();
+    assert!(app.dialog.is_none(), "a later interactive command must not surface a queued report");
+}
+
+#[test]
+fn interactive_pdf_open_completion_shows_the_import_report() {
+    let (mut app, _) = async_app();
+    let bytes = wordcraft_engine::io::save_bytes("picked.pdf", &wordcraft_doc::Document::from_text("Picked by the user")).unwrap();
+    // File-picker completion and password retries enter here, without another run() call.
+    let result = app.execute_user("file.open", json!({"path": "picked.pdf", "data": wordcraft_engine::cmd::insert::base64_encode(&bytes)})).unwrap();
+    let warnings = result["import"]["warnings"].as_array().unwrap();
+    assert!(
+        matches!(&app.dialog, Some(crate::dialogs::Dialog::PdfImportReport { warnings: shown }) if shown.len() == warnings.len() && !shown.is_empty())
+    );
+    assert!(app.session.dirty && app.session.path.is_none());
+    assert_eq!(app.session.file_name.as_deref(), Some("picked"));
+}
+
 /// Dialogs the fake host was asked to show, each with the channel its answer goes through.
 type Shown = Rc<RefCell<Vec<(FileDialogRequest, Sender<FileDialogAnswer>)>>>;
 

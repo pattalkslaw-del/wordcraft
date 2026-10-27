@@ -43,6 +43,12 @@ cannot become editable text. Missing Unicode mappings produce replacement charac
 warning. Files containing only unsupported vector content are rejected instead of silently
 opening as an empty document. A failed import leaves the current document unchanged.
 
+Interactive opens show the import report; CLI, MCP and control-channel opens return its metadata
+without opening a dialog.
+
+Path-based opening checks a small header and rejects PDFs above 64 MiB before buffering the
+remaining contents, including PDFs with misleading filenames. Reads stay bounded if a file grows.
+
 Import accepts up to 64 MiB of encoded PDF input and 500 pages, with up to 100,000 glyphs per
 page and one million overall (at most 8 MiB of decoded text and 4096 fonts per page). Pictures are limited to 16 megapixels each, 64 megapixels total
 and 1000 occurrences. These bound the conversion's own collections; decoding is provided by

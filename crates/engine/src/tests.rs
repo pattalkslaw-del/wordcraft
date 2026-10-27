@@ -10288,6 +10288,7 @@ fn pdf_import_is_editable_and_save_as_does_not_overwrite_the_source() {
     let result = run(&mut session, "file.open", json!({"path": source.to_string_lossy()}));
     assert_eq!(result["import"]["format"], "pdf");
     assert_eq!(result["import"]["saveAsRequired"], true);
+    assert!(session.ui_requests.is_empty(), "headless PDF imports return metadata without queuing a dialog");
     assert!(session.path.is_none() && session.dirty);
     assert_eq!(session.file_name.as_deref(), Some("source"), "Save As suggests the PDF's name");
     assert!(text(&session).contains("Editable PDF text"));

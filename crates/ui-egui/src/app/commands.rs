@@ -331,6 +331,14 @@ impl WordApp {
             self.dialog = Some(dialogs::Dialog::Password { name, params, password: Default::default(), message: String::new() });
             return Ok(json!({"pending": "password"}));
         }
+        if id == "file.open"
+            && let Ok(result) = &r
+            && let Some(import) = result.get("import").filter(|v| v.get("format").and_then(Value::as_str) == Some("pdf"))
+        {
+            let warnings =
+                import.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+            self.dialog = Some(dialogs::Dialog::PdfImportReport { warnings });
+        }
         r
     }
 
@@ -431,11 +439,6 @@ impl WordApp {
         if let Some(what) = req.get("open").and_then(Value::as_str) {
             match what {
                 "openFile" => self.open_dialog(),
-                "pdfImportReport" => {
-                    let warnings =
-                        req.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
-                    self.dialog = Some(dialogs::Dialog::PdfImportReport { warnings });
-                }
                 "saveAs" => {
                     self.save_as_dialog();
                 }

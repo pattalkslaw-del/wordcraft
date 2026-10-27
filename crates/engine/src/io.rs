@@ -5,6 +5,9 @@ use wordcraft_doc::Document;
 #[cfg(not(target_arch = "wasm32"))]
 mod safe_save;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
+
 /// Formats WordCraft opens.
 pub const OPEN_EXTS: &[&str] = &[
     "pdf",
@@ -450,15 +453,12 @@ pub fn open_path_report(path: &std::path::Path, password: Option<&str>) -> Resul
 }
 
 /// [`open_path_report`] using the region's paper for formats without a page size. The file is
-/// read as [`read_document`] reads it; a PDF must also be within the import limit.
+/// read through [`read_document`], including its PDF import limit.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_path_report_in(path: &std::path::Path, password: Option<&str>, region: &wordcraft_geom::Region) -> Result<OpenedDocument, String> {
     let bytes = read_document(path)?;
     let name = path.to_string_lossy();
     let pdf = wordcraft_pdf::import::is_pdf(&bytes);
-    if (pdf || ext_of(&name) == "pdf") && bytes.len() > wordcraft_pdf::import::MAX_BYTES {
-        return Err(format!("{}: file exceeds the {} MiB import limit", path.display(), wordcraft_pdf::import::MAX_BYTES / (1024 * 1024)));
-    }
     if !pdf && matches!(ext_of(&name).as_str(), "html" | "htm" | "xhtml") {
         // Pictures referenced by a relative path load from beside the HTML file.
         let images = LocalImages::new(path.parent().unwrap_or(std::path::Path::new("")));
@@ -475,26 +475,45 @@ pub fn open_path_report_in(path: &std::path::Path, password: Option<&str>, regio
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_DOCUMENT: u64 = 2 << 30;
 
-/// The bytes of the document at `path`, read as `file.open` reads a path: inside the automation
-/// read root, and only a regular file of at most 2 GB. A named pipe would block the open and a
-/// device such as `/dev/zero` would never end ([`read_regular_file`]). Public for the app, which
-/// opens a file whose name isn't valid Unicode through `file.open`'s `data` (#1440).
+/// The bytes of the document at `path`, inside the automation read root and from a regular file.
+/// PDFs (by header or extension) are limited to 64 MiB before buffering the rest; other documents
+/// retain the 2 GB ceiling. The same opened handle supplies the header, metadata and bounded read.
+/// Public for the app, which opens non-Unicode paths through `file.open`'s `data` (#1440).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_document(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    crate::file_access::check_read(&path.to_string_lossy())?;
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if !meta.is_file() {
-        return Err(format!("{}: not a file", path.display()));
+    let name = path.to_string_lossy();
+    crate::file_access::check_read(&name)?;
+    let (file, meta) = open_regular_file(path)?;
+    read_document_stream(file, meta.len(), &name)
+}
+
+/// Detect a PDF from a small prefix before selecting the bound for the remaining read.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_document_stream(mut file: impl std::io::Read, size: u64, name: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    if size > MAX_DOCUMENT {
+        return Err(format!("{name}: file is larger than 2 GB"));
     }
-    if meta.len() > MAX_DOCUMENT {
-        return Err(format!("{}: file is larger than 2 GB", path.display()));
+    let mut head = Vec::new();
+    file.by_ref().take(1024).read_to_end(&mut head).map_err(|e| format!("{name}: {e}"))?;
+    let pdf = wordcraft_pdf::import::is_pdf(&head) || ext_of(name) == "pdf";
+    let limit = if pdf { wordcraft_pdf::import::MAX_BYTES as u64 } else { MAX_DOCUMENT };
+    let too_large = || {
+        if pdf { format!("{name}: file exceeds the {} MiB import limit", limit / (1024 * 1024)) } else { format!("{name}: file is larger than 2 GB") }
+    };
+    if size > limit {
+        return Err(too_large());
     }
-    // Checked again on the opened file, which may not be the one just looked at.
-    match read_regular_file(path, MAX_DOCUMENT) {
-        Some(bytes) if bytes.len() as u64 <= MAX_DOCUMENT => Ok(bytes),
-        Some(_) => Err(format!("{}: file is larger than 2 GB", path.display())),
-        None => Err(format!("{}: could not be read as a file", path.display())),
+    // A short prefix already reached EOF. Do not start another read if the file grows afterward.
+    if head.len() < 1024 {
+        return Ok(head);
     }
+    // Replay only the prefix in memory: never reopen or seek a potentially replaced path.
+    let bytes = read_bounded(head.as_slice().chain(file), size, limit).map_err(|e| format!("{name}: {e}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(too_large());
+    }
+    Ok(bytes)
 }
 
 /// The pictures an HTML file names by a path relative to its folder.
@@ -592,7 +611,7 @@ impl LocalImages {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_regular_file(path: &std::path::Path, limit: u64) -> Option<Vec<u8>> {
     let (file, meta) = open_regular_file(path).ok()?;
-    read_bounded(file, &meta, limit).ok()
+    read_bounded(file, meta.len(), limit).ok()
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -610,7 +629,7 @@ pub fn read_regular_file_within(path: &std::path::Path, limit: u64) -> Option<Ve
     if meta.len() > limit {
         return None;
     }
-    read_bounded(file, &meta, limit).ok().filter(|b| b.len() as u64 <= limit)
+    read_bounded(file, meta.len(), limit).ok().filter(|b| b.len() as u64 <= limit)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -643,9 +662,9 @@ fn open_regular_file(path: &std::path::Path) -> Result<(std::fs::File, std::fs::
 
 /// Up to `limit + 1` bytes of `file` (more than `limit` means too large), however long it says it is.
 #[cfg(not(target_arch = "wasm32"))]
-fn read_bounded(file: std::fs::File, meta: &std::fs::Metadata, limit: u64) -> std::io::Result<Vec<u8>> {
+fn read_bounded(file: impl std::io::Read, size: u64, limit: u64) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
-    let mut out = Vec::with_capacity(usize::try_from(meta.len().min(limit)).unwrap_or(0));
+    let mut out = Vec::with_capacity(usize::try_from(size.min(limit)).unwrap_or(0));
     file.take(limit.saturating_add(1)).read_to_end(&mut out)?;
     Ok(out)
 }
@@ -679,7 +698,7 @@ pub fn read_file_capped(path: &str, max: u64, what: &str) -> Result<Vec<u8>, Str
     if meta.len() > max {
         return Err(too_large());
     }
-    let bytes = read_bounded(file, &meta, max).map_err(|e| format!("{path}: {e}"))?;
+    let bytes = read_bounded(file, meta.len(), max).map_err(|e| format!("{path}: {e}"))?;
     if bytes.len() as u64 > max {
         return Err(too_large());
     }
